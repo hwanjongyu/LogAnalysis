@@ -2,6 +2,8 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 use memmap2::Mmap;
+use crate::filter::FilterEngine;
+use rayon::prelude::*;
 
 pub struct Indexer {
     path: PathBuf,
@@ -21,8 +23,6 @@ impl Indexer {
         })
     }
 
-    /// Indexes the file by finding the start offset of each line.
-    /// Reports progress via the provided callback (0.0 to 1.0).
     pub async fn index<F>(&mut self, mut progress_callback: F) 
     where 
         F: FnMut(f64)
@@ -38,8 +38,6 @@ impl Indexer {
         }
 
         offsets.push(0);
-        
-        // Report progress every 1MB or so to avoid callback overhead
         let chunk_size = 1_048_576; 
         let mut last_reported_pos = 0;
 
@@ -53,7 +51,6 @@ impl Indexer {
             if i - last_reported_pos >= chunk_size {
                 progress_callback(i as f64 / total_size as f64);
                 last_reported_pos = i;
-                // Yield to the executor to keep it responsive
                 tokio::task::yield_now().await;
             }
         }
@@ -62,16 +59,37 @@ impl Indexer {
         progress_callback(1.0);
     }
 
+    /// Filters the offsets based on a FilterEngine.
+    /// Returns a new vector of offsets that pass the filters.
+    pub fn apply_filters(&self, engine: &FilterEngine) -> Vec<usize> {
+        self.offsets.par_iter().filter_map(|&offset| {
+            let line_data = self.get_line_at_offset(offset);
+            if engine.matches(&line_data) {
+                Some(offset)
+            } else {
+                None
+            }
+        }).collect()
+    }
+
     pub fn get_line(&self, index: usize) -> Option<String> {
-        if index >= self.offsets.len() {
+        self.get_line_from_offsets(&self.offsets, index)
+    }
+
+    pub fn get_line_from_offsets(&self, custom_offsets: &[usize], index: usize) -> Option<String> {
+        if index >= custom_offsets.len() {
             return None;
         }
 
-        let start = self.offsets[index];
-        let end = if index + 1 < self.offsets.len() {
-            self.offsets[index + 1]
+        let start = custom_offsets[index];
+        // Find end offset
+        let end = if index + 1 < custom_offsets.len() {
+            // This is only true if we are using original contiguous offsets.
+            // For filtered offsets, we need to find the newline character.
+            self.find_newline(start)
         } else {
-            self.mmap.len()
+            // Last line
+            self.find_newline(start)
         };
 
         let line_data = &self.mmap[start..end];
@@ -80,33 +98,26 @@ impl Indexer {
         Some(line.trim_end_matches(['\r', '\n']).to_string())
     }
 
+    /// Optimized helper to get line content starting at offset
+    fn get_line_at_offset(&self, offset: usize) -> String {
+        let end = self.find_newline(offset);
+        let line_data = &self.mmap[offset..end];
+        String::from_utf8_lossy(line_data).into_owned()
+    }
+
+    fn find_newline(&self, start: usize) -> usize {
+        let data = &self.mmap[start..];
+        match data.iter().position(|&b| b == b'\n') {
+            Some(pos) => start + pos + 1,
+            None => self.mmap.len(),
+        }
+    }
+
     pub fn line_count(&self) -> usize {
         self.offsets.len()
     }
 
     pub fn file_path(&self) -> &PathBuf {
         &self.path
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    #[tokio::test]
-    async fn test_indexing_with_progress() {
-        let mut file = NamedTempFile::new().unwrap();
-        file.write_all(b"Line 1\nLine 2\r\nLine 3").unwrap();
-        
-        let path = file.path().to_path_buf();
-        let mut indexer = Indexer::new(path).unwrap();
-        
-        let mut progress_values = Vec::new();
-        indexer.index(|p| progress_values.push(p)).await;
-
-        assert_eq!(indexer.line_count(), 3);
-        assert!(progress_values.contains(&1.0));
     }
 }

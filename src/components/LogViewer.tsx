@@ -1,22 +1,23 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { LogFilter } from "./FilterSidebar";
 
 interface LogViewerProps {
   filePath: string | null;
   lineCount: number;
   fontSize: number;
+  filters: LogFilter[];
 }
 
-export function LogViewer({ filePath, lineCount, fontSize }: LogViewerProps) {
+export function LogViewer({ filePath, lineCount, fontSize, filters }: LogViewerProps) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [loadedLines, setLoadedLines] = useState<Map<number, string>>(new Map());
 
-  // Clear cache when file changes
+  // Clear cache when file OR filters change
   useEffect(() => {
     setLoadedLines(new Map());
-  }, [filePath]);
+  }, [filePath, lineCount]); // lineCount changes when filters are applied
 
   const loadMore = useCallback(async (startIndex: number, count: number) => {
     try {
@@ -37,30 +38,45 @@ export function LogViewer({ filePath, lineCount, fontSize }: LogViewerProps) {
     }
   }, [lineCount]);
 
+  const getLineStyle = (line: string) => {
+    const activeFilters = filters.filter(f => f.is_enabled && f.color);
+    for (const filter of activeFilters) {
+      try {
+        const re = new RegExp(filter.pattern);
+        if (re.test(line)) {
+          return { backgroundColor: `${filter.color}20`, borderLeftColor: filter.color };
+        }
+      } catch (e) {
+        // Skip invalid regex
+      }
+    }
+    return {};
+  };
+
   const rowRenderer = (index: number) => {
     const line = loadedLines.get(index);
     
-    // If line isn't loaded, trigger a batch load
     if (line === undefined) {
-      // Load a buffer of 100 lines around the current index
       const batchStart = Math.max(0, index - 50);
       loadMore(batchStart, 100);
       return (
         <div 
-          className="px-4 py-0.5 text-muted-foreground/50 border-l-2 border-transparent animate-pulse"
+          className="px-4 py-0.5 text-muted-foreground/30 border-l-2 border-transparent"
           style={{ fontSize: `${fontSize}px`, minHeight: `${fontSize * 1.5}px` }}
         >
-          Loading...
+          ...
         </div>
       );
     }
 
+    const style = getLineStyle(line);
+
     return (
       <div 
-        className="px-4 py-0.5 hover:bg-accent/30 border-l-2 border-transparent hover:border-primary/50 whitespace-pre font-mono"
-        style={{ fontSize: `${fontSize}px` }}
+        className="px-4 py-0.5 hover:bg-accent/30 border-l-2 border-transparent whitespace-pre font-mono"
+        style={{ fontSize: `${fontSize}px`, ...style }}
       >
-        <span className="inline-block w-12 text-muted-foreground/50 select-none mr-4 text-right">
+        <span className="inline-block w-12 text-muted-foreground/40 select-none mr-4 text-right tabular-nums">
           {index + 1}
         </span>
         {line || " "}
@@ -79,7 +95,7 @@ export function LogViewer({ filePath, lineCount, fontSize }: LogViewerProps) {
         totalCount={lineCount}
         itemContent={rowRenderer}
         initialTopMostItemIndex={0}
-        increaseViewportBy={200}
+        increaseViewportBy={300}
         className="h-full scrollbar-thin scrollbar-thumb-muted-foreground/20"
       />
     </div>
