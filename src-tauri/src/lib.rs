@@ -2,17 +2,31 @@ pub mod indexer;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tauri::{State, Manager};
+use tauri::{State, AppHandle, Emitter};
 use std::path::PathBuf;
+use serde::Serialize;
 
 pub struct AppState {
     pub indexer: Arc<Mutex<Option<indexer::Indexer>>>,
 }
 
+#[derive(Clone, Serialize)]
+struct IndexProgress {
+    progress: f64,
+}
+
 #[tauri::command]
-async fn open_file(path: String, state: State<'_, AppState>) -> Result<usize, String> {
+async fn open_file(
+    path: String, 
+    app: AppHandle,
+    state: State<'_, AppState>
+) -> Result<usize, String> {
     let mut indexer = indexer::Indexer::new(PathBuf::from(path))?;
-    indexer.index().await;
+    
+    // We can use a move closure to capture the app handle and emit events
+    indexer.index(|p| {
+        let _ = app.emit("indexing-progress", IndexProgress { progress: p });
+    }).await;
     
     let line_count = indexer.line_count();
     let mut state_indexer = state.indexer.lock().await;
@@ -45,6 +59,7 @@ pub fn run() {
             indexer: Arc::new(Mutex::new(None)),
         })
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![open_file, get_log_lines])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
