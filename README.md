@@ -3,8 +3,6 @@
 > **A high-performance, cross-platform log viewer and real-time monitoring tool**  
 > Built with **Tauri** • **Rust** • **React**
 
-[![Screenshot](assets/screenshot.png)](assets/screenshot.png)
-
 **LogAnalysis** is designed to handle multi-gigabyte log files and high-velocity ADB streams while maintaining a silky-smooth 60fps user interface. Experience blazing-fast log analysis with advanced filtering, real-time monitoring, and beautiful syntax highlighting.
 
 ---
