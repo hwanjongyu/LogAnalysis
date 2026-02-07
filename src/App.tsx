@@ -1,13 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
-import { 
-  Settings, 
-  Search, 
-  Menu, 
-  X, 
-  FileText, 
-  Play, 
+import {
+  Search,
+  Menu,
+  X,
+  FileText,
+  Play,
   Square,
-  Trash2, 
+  Trash2,
   Filter,
   Loader2,
   Smartphone
@@ -30,7 +29,7 @@ function App() {
   const [fontSize, setFontSize] = useState(13);
   const [filters, setFilters] = useState<LogFilter[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  
+
   useEffect(() => {
     const unlistenIndex = listen<{ progress: number }>("indexing-progress", (event) => {
       setIndexProgress(event.payload.progress * 100);
@@ -52,7 +51,7 @@ function App() {
 
   const handleApplyFilters = useCallback(async (currentFilters: LogFilter[]) => {
     if (!filePath && !isAdbActive) return;
-    
+
     // If ADB is active, we don't apply filters to existing lines in this MVP.
     // Filters are applied by the backend during ingestion.
     if (isAdbActive) return;
@@ -85,11 +84,11 @@ function App() {
 
       if (selected && typeof selected === "string") {
         if (isAdbActive) await handleStopAdb();
-        
+
         setFilePath(selected);
         setIsIndexing(true);
         setIndexProgress(0);
-        
+
         const count = await invoke<number>("open_file", { path: selected });
         setLineCount(count);
         setVisibleLineCount(count);
@@ -157,162 +156,222 @@ function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground font-sans text-sm">
-      {/* Sidebar */}
-      <aside 
-        className={`${
-          isSidebarOpen ? "w-80" : "w-0"
-        } transition-all duration-300 ease-in-out border-r border-border bg-card flex flex-col overflow-hidden`}
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground font-sans text-sm">
+      {/* Header */}
+      <header className="h-12 border-b border-border/50 flex items-center px-4 justify-between bg-card/80 backdrop-blur-xl shrink-0 shadow-md z-30">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className="p-1.5 hover:bg-accent rounded-lg text-muted-foreground transition-all duration-fast hover:scale-110 active:scale-90"
+          >
+            {isSidebarOpen ? <X size={20} /> : <Menu size={20} />}
+          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleOpenFile}
+              className={`
+                flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs 
+                transition-all duration-fast hover:scale-[1.02] active:scale-[0.98]
+                ${filePath
+                  ? "bg-primary/10 border-primary/40 text-primary shadow-glow"
+                  : "bg-accent/50 border-border text-muted-foreground hover:bg-accent hover:shadow-md"
+                }
+              `}
+            >
+              <FileText size={14} />
+              <span className="max-w-[150px] truncate font-medium">
+                {filePath ? filePath.split("/").pop() : "Open File"}
+              </span>
+            </button>
+            <button
+              onClick={handleToggleAdb}
+              className={`
+                flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs 
+                transition-all duration-fast hover:scale-[1.02] active:scale-[0.98]
+                ${isAdbActive
+                  ? "bg-success/10 border-success/40 text-success shadow-[0_0_15px_rgba(16,185,129,0.2)]"
+                  : "bg-accent/50 border-border text-muted-foreground hover:bg-accent hover:shadow-md"
+                }
+              `}
+            >
+              <Smartphone size={14} />
+              <span className="font-medium">ADB Logcat</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <div className="relative group">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary" size={14} />
+            <input
+              type="text"
+              placeholder="Quick search..."
+              className="
+                pl-9 pr-3 py-1.5 bg-accent/50 border border-border rounded-lg text-xs 
+                transition-all duration-fast
+                focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary focus:bg-accent
+                hover:border-border/80
+                w-64
+              "
+            />
+          </div>
+          <div className="h-6 w-[1px] bg-border/50 mx-2"></div>
+          <button
+            className="p-2 hover:bg-destructive/10 hover:text-destructive rounded-lg text-muted-foreground transition-all duration-fast hover:scale-110 active:scale-90"
+            onClick={() => { setFilePath(null); setLineCount(0); setVisibleLineCount(0); if (isAdbActive) handleStopAdb(); }}
+            title="Clear all"
+          >
+            <Trash2 size={18} />
+          </button>
+          <button
+            onClick={handleToggleAdb}
+            className={`
+              p-1.5 rounded-lg flex items-center gap-2 px-4 shadow-md transition-all duration-fast
+              hover:scale-[1.02] active:scale-[0.95]
+              ${isAdbActive
+                ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                : "bg-primary text-primary-foreground hover:bg-primary/90 shadow-glow"
+              }
+            `}
+          >
+            {isAdbActive ? <Square size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
+            <span className="text-xs font-semibold">{isAdbActive ? "Stop" : "Start"} ADB</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Main Content Area (Log View Area) */}
+      <main className="flex-1 overflow-hidden relative font-mono">
+        {isIndexing && (
+          <div className="absolute inset-0 z-40 bg-background/90 backdrop-blur-sm flex flex-col items-center justify-center gap-6">
+            <Loader2 size={52} className="animate-spin text-primary drop-shadow-[0_0_8px_rgba(250,95,235,0.4)]" />
+            <div className="w-80 space-y-3">
+              <div className="h-2.5 bg-accent/50 rounded-full overflow-hidden shadow-inner border border-white/5">
+                <div
+                  className="h-full bg-gradient-to-r from-primary via-purple-500 to-primary bg-[length:200%_100%] animate-shimmer transition-all duration-300 shadow-md"
+                  style={{ width: `${indexProgress}%` }}
+                />
+              </div>
+              <p className="text-muted-foreground text-center text-sm font-medium animate-pulse">
+                Indexing log file...
+                <span className="text-primary font-bold ml-2 tabular-nums">{indexProgress.toFixed(0)}%</span>
+              </p>
+            </div>
+          </div>
+        )}
+
+        {isFiltering && !isAdbActive && (
+          <div className="absolute top-4 right-4 z-50 bg-card/80 backdrop-blur-md border border-primary/20 px-4 py-2 rounded-full shadow-glow flex items-center gap-3 animate-in fade-in slide-in-from-top-2 duration-300">
+            <Loader2 size={16} className="animate-spin text-primary" />
+            <span className="text-xs font-bold tracking-tight text-primary">FILTERING...</span>
+          </div>
+        )}
+
+        {errorMessage && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-destructive text-destructive-foreground px-4 py-2 rounded shadow-lg flex items-center gap-3 max-w-[80%]">
+            <X size={16} className="cursor-pointer shrink-0" onClick={() => setErrorMessage(null)} />
+            <span className="text-sm font-medium truncate">Error: {errorMessage}</span>
+          </div>
+        )}
+
+        {filePath || isAdbActive ? (
+          <LogViewer
+            key={filePath || "adb-stream"}
+            filePath={filePath || "ADB_STREAM"}
+            lineCount={visibleLineCount}
+            fontSize={fontSize}
+            filters={filters}
+          />
+        ) : (
+          <div
+            className="absolute inset-0 flex items-center justify-center text-muted-foreground/20 flex-col gap-6 cursor-pointer hover:bg-accent/5 transition-all group duration-slow"
+            onClick={handleOpenFile}
+          >
+            <div className="relative">
+              <Filter size={80} strokeWidth={0.5} className="group-hover:scale-110 group-hover:text-primary/30 transition-all duration-slow" />
+              <div className="absolute inset-0 bg-primary/5 blur-3xl rounded-full scale-150 opacity-0 group-hover:opacity-100 transition-opacity duration-slow" />
+            </div>
+            <div className="text-center space-y-2 animate-in fade-in slide-in-from-bottom-4 duration-slow">
+              <p className="text-2xl font-bold tracking-tight text-muted-foreground/40 group-hover:text-primary/40 transition-colors">Start Your Analysis</p>
+              <p className="text-sm font-medium text-muted-foreground/30 group-hover:text-muted-foreground/40 transition-colors italic">Select a log file or start an ADB stream to begin</p>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Filter Panel (Bottom) */}
+      <aside
+        className={`
+          ${isSidebarOpen ? "h-72" : "h-0"} 
+          transition-all duration-slow ease-in-out 
+          border-t border-border/50 bg-card/80 backdrop-blur-md
+          flex flex-col overflow-hidden shrink-0
+          shadow-[0_-4px_12px_rgba(0,0,0,0.3)]
+          z-20
+        `}
       >
-        <FilterSidebar 
+        <FilterSidebar
           filters={filters}
           onAddFilter={handleAddFilter}
           onUpdateFilter={handleUpdateFilter}
           onRemoveFilter={handleRemoveFilter}
         />
-
-        <div className="p-4 border-t border-border mt-auto">
-          <button className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors w-full">
-            <Settings size={16} />
-            <span>Settings</span>
-          </button>
-        </div>
       </aside>
 
-      {/* Main Content Area */}
-      <main className="flex-1 flex flex-col min-w-0">
-        {/* Header */}
-        <header className="h-12 border-b border-border flex items-center px-4 justify-between bg-card">
-          <div className="flex items-center gap-4">
-            <button 
-              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-              className="p-1 hover:bg-accent rounded text-muted-foreground"
-            >
-              {isSidebarOpen ? <X size={20} /> : <Menu size={20} />}
-            </button>
-            <div className="flex gap-2">
-              <button 
-                onClick={handleOpenFile}
-                className={`flex items-center gap-2 px-3 py-1 rounded border text-xs transition-colors ${
-                  filePath ? "bg-primary/10 border-primary/20 text-primary" : "bg-accent/50 border-border text-muted-foreground hover:bg-accent"
-                }`}
-              >
-                <FileText size={14} />
-                <span className="max-w-[150px] truncate">
-                  {filePath ? filePath.split("/").pop() : "Open File"}
-                </span>
-              </button>
-              <button 
-                onClick={handleToggleAdb}
-                className={`flex items-center gap-2 px-3 py-1 rounded border text-xs transition-colors ${
-                  isAdbActive ? "bg-green-500/10 border-green-500/20 text-green-600" : "bg-accent/50 border-border text-muted-foreground hover:bg-accent"
-                }`}
-              >
-                <Smartphone size={14} />
-                <span>ADB Logcat</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" size={14} />
-              <input 
-                type="text" 
-                placeholder="Quick search..." 
-                className="pl-8 pr-3 py-1 bg-accent border border-border rounded text-xs focus:outline-none focus:ring-1 focus:ring-ring w-64"
-              />
-            </div>
-            <div className="h-6 w-[1px] bg-border mx-2"></div>
-            <button 
-              className="p-1.5 hover:bg-accent rounded text-muted-foreground"
-              onClick={() => { setFilePath(null); setLineCount(0); setVisibleLineCount(0); if (isAdbActive) handleStopAdb(); }}
-            >
-              <Trash2 size={18} />
-            </button>
-            <button 
-              onClick={handleToggleAdb}
-              className={`p-1.5 rounded flex items-center gap-2 px-3 shadow-sm transition-all ${
-                isAdbActive 
-                ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" 
-                : "bg-primary text-primary-foreground hover:bg-primary/90"
-              }`}
-            >
-              {isAdbActive ? <Square size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
-              <span className="text-xs font-medium">{isAdbActive ? "Stop" : "Start"} ADB</span>
-            </button>
-          </div>
-        </header>
-
-        {/* Log View Area */}
-        <div className="flex-1 overflow-hidden relative font-mono">
-          {isIndexing && (
-            <div className="absolute inset-0 z-10 bg-background/80 flex flex-col items-center justify-center gap-4">
-              <Loader2 size={48} className="animate-spin text-primary" />
-              <div className="w-64 h-2 bg-accent rounded-full overflow-hidden">
-                <div 
-                  className="h-full bg-primary transition-all duration-300" 
-                  style={{ width: `${indexProgress}%` }}
-                />
-              </div>
-              <p className="text-muted-foreground">Indexing log file... {indexProgress.toFixed(0)}%</p>
-            </div>
-          )}
-
-          {isFiltering && !isAdbActive && (
-            <div className="absolute top-4 right-4 z-20 bg-background/90 border border-border px-4 py-2 rounded-full shadow-lg flex items-center gap-3">
-              <Loader2 size={16} className="animate-spin text-primary" />
-              <span className="text-sm font-medium">Filtering...</span>
-            </div>
-          )}
-
-          {errorMessage && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-destructive text-destructive-foreground px-4 py-2 rounded shadow-lg flex items-center gap-3 max-w-[80%]">
-              <X size={16} className="cursor-pointer shrink-0" onClick={() => setErrorMessage(null)} />
-              <span className="text-sm font-medium truncate">Error: {errorMessage}</span>
-            </div>
-          )}
-
-          {filePath || isAdbActive ? (
-            <LogViewer 
-              key={filePath || "adb-stream"} 
-              filePath={filePath || "ADB_STREAM"} 
-              lineCount={visibleLineCount} 
-              fontSize={fontSize} 
-              filters={filters} 
-            />
-          ) : (
-            <div 
-              className="absolute inset-0 flex items-center justify-center text-muted-foreground/30 flex-col gap-4 cursor-pointer hover:bg-accent/5 transition-colors"
-              onClick={handleOpenFile}
-            >
-              <Filter size={64} strokeWidth={1} />
-              <p className="text-xl font-sans">Open a log file or start ADB stream</p>
-            </div>
-          )}
+      {/* Status Bar */}
+      <footer className="
+        h-6 border-t border-border/50 bg-card/90 backdrop-blur-sm
+        flex items-center px-3 text-[10px] text-muted-foreground justify-between shrink-0
+        shadow-[0_-1px_3px_rgba(0,0,0,0.2)]
+        z-30
+      ">
+        <div className="flex gap-4 items-center">
+          <span className="flex items-center gap-1.5 transition-all duration-base">
+            <span className="text-muted-foreground/60">Total:</span>
+            <span className="font-semibold text-foreground tabular-nums">{lineCount.toLocaleString()}</span>
+          </span>
+          <div className="h-2.5 w-[1px] bg-border/40"></div>
+          <span className={`flex items-center gap-1.5 transition-all duration-base ${visibleLineCount !== lineCount ? "text-primary font-bold drop-shadow-[0_0_4px_rgba(250,95,235,0.3)]" : ""}`}>
+            <span className="text-muted-foreground/60">Visible:</span>
+            <span className="font-semibold tabular-nums">{visibleLineCount.toLocaleString()}</span>
+          </span>
         </div>
 
-        {/* Status Bar */}
-        <footer className="h-6 border-t border-border bg-card flex items-center px-3 text-[10px] text-muted-foreground justify-between">
-          <div className="flex gap-4">
-            <span>Total: {lineCount.toLocaleString()}</span>
-            <span className={visibleLineCount !== lineCount ? "text-primary font-bold" : ""}>
-              Visible: {visibleLineCount.toLocaleString()}
+        <div className="flex gap-4 items-center">
+          <span className={`flex items-center gap-2 transition-all duration-base ${isAdbActive ? "text-success font-semibold" : ""}`}>
+            {isAdbActive && (
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
+              </span>
+            )}
+            <span className="text-muted-foreground/60">ADB:</span>
+            {isAdbActive ? "Streaming" : "Disconnected"}
+          </span>
+
+          <div className="h-3 w-[1px] bg-border/70 mx-1"></div>
+
+          <div className="flex gap-1.5 items-center">
+            <button
+              onClick={() => handleZoom(-1)}
+              className="hover:text-foreground hover:bg-accent/50 transition-all duration-fast px-1.5 py-0.5 rounded-md hover:scale-110 active:scale-90"
+              title="Zoom out"
+            >
+              −
+            </button>
+            <span className="w-12 text-center tabular-nums font-medium text-foreground/80">
+              {((fontSize / 13) * 100).toFixed(0)}%
             </span>
+            <button
+              onClick={() => handleZoom(1)}
+              className="hover:text-foreground hover:bg-accent/50 transition-all duration-fast px-1.5 py-0.5 rounded-md hover:scale-110 active:scale-90"
+              title="Zoom in"
+            >
+              +
+            </button>
           </div>
-          <div className="flex gap-4 items-center">
-            <span className={isAdbActive ? "text-green-500 animate-pulse font-bold" : ""}>
-              ADB: {isAdbActive ? "Streaming" : "Disconnected"}
-            </span>
-            <div className="h-3 w-[1px] bg-border mx-1"></div>
-            <div className="flex gap-2">
-              <button onClick={() => handleZoom(-1)} className="hover:text-foreground">Zoom-</button>
-              <span className="w-12 text-center">Scale: {((fontSize / 13) * 100).toFixed(0)}%</span>
-              <button onClick={() => handleZoom(1)} className="hover:text-foreground">Zoom+</button>
-            </div>
-          </div>
-        </footer>
-      </main>
+        </div>
+      </footer>
     </div>
   );
 }
