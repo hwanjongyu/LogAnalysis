@@ -30,7 +30,19 @@ This plan outlines the roadmap for developing the high-performance log viewer us
 - **Sidecar/Process Management:** Use Tauri's `Command` API to spawn and pipe `adb logcat`.
 - **Streaming Pipeline:** Batch incoming lines in Rust before emitting events to the frontend to prevent IPC saturation.
 
-## Phase 6: Polish & Persistence (Next Steps)
+## Phase 6: Polish & Persistence ✅
 - **Config Storage:** Save filter profiles and user settings to the local app data folder as JSON.
 - **Clipboard/Export:** Implement "Smart Copy" to strip/keep timestamps.
 - **Final Optimization:** Profile memory usage with large (>5GB) files.
+
+## Phase 7: Aesthetic Excellence & Minimap (Current)
+- **Log Minimap:**
+    - Backend: Implement `get_minimap_data` command to return downsampled match density.
+    - Frontend: Render a vertical canvas overlay for high-level navigation.
+    - Navigation: Clicking the minimap scrolls the virtual list to the target position.
+- **Enhanced Glow & Micro-interactions:**
+    - Add "Pro" glow effects to active buttons and indicators.
+    - Implement smooth springs for panel transitions.
+- **High-Density Mode:**
+    - Toggle for compact layout (reduced line height/padding).
+    - JetBrains Mono font optimization.

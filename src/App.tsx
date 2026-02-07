@@ -28,7 +28,10 @@ function App() {
   const [indexProgress, setIndexProgress] = useState(0);
   const [fontSize, setFontSize] = useState(13);
   const [filters, setFilters] = useState<LogFilter[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isHighDensity, setIsHighDensity] = useState(false);
+  const [filterCounts, setFilterCounts] = useState<Record<string, number>>({});
 
   useEffect(() => {
     const unlistenIndex = listen<{ progress: number }>("indexing-progress", (event) => {
@@ -49,7 +52,7 @@ function App() {
     };
   }, []);
 
-  const handleApplyFilters = useCallback(async (currentFilters: LogFilter[]) => {
+  const handleApplyFilters = useCallback(async (currentFilters: LogFilter[], query: string) => {
     if (!filePath && !isAdbActive) return;
 
     // If ADB is active, we don't apply filters to existing lines in this MVP.
@@ -58,8 +61,9 @@ function App() {
 
     setIsFiltering(true);
     try {
-      const count = await invoke<number>("apply_filters", { filters: currentFilters });
-      setVisibleLineCount(count);
+      const result = await invoke<{ visible_count: number, filter_counts: Record<string, number> }>("apply_filters", { filters: currentFilters, searchQuery: query });
+      setVisibleLineCount(result.visible_count);
+      setFilterCounts(result.filter_counts);
     } catch (error) {
       console.error("Failed to apply filters:", error);
     } finally {
@@ -69,10 +73,10 @@ function App() {
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      handleApplyFilters(filters);
+      handleApplyFilters(filters, searchQuery);
     }, 500);
     return () => clearTimeout(timer);
-  }, [filters, handleApplyFilters]);
+  }, [filters, searchQuery, handleApplyFilters]);
 
   const handleOpenFile = async () => {
     setErrorMessage(null);
@@ -115,7 +119,7 @@ function App() {
       setFilePath(null);
       setLineCount(0);
       setVisibleLineCount(0);
-      await invoke("start_adb", { filters });
+      await invoke("start_adb", { filters, searchQuery });
       setIsAdbActive(true);
     } catch (error) {
       console.error("Failed to start ADB:", error);
@@ -139,6 +143,8 @@ function App() {
       pattern: "",
       is_include: true,
       is_enabled: true,
+      color: "#fa5feb",
+      text_color: "#121212"
     };
     setFilters([...filters, newFilter]);
   };
@@ -149,6 +155,20 @@ function App() {
 
   const handleRemoveFilter = (id: string) => {
     setFilters(filters.filter(f => f.id !== id));
+  };
+
+  const handleMoveFilter = (id: string, direction: "left" | "right") => {
+    const index = filters.findIndex((f) => f.id === id);
+    if (index === -1) return;
+    const newFilters = [...filters];
+    const targetIndex = direction === "left" ? index - 1 : index + 1;
+    if (targetIndex >= 0 && targetIndex < newFilters.length) {
+      [newFilters[index], newFilters[targetIndex]] = [
+        newFilters[targetIndex],
+        newFilters[index],
+      ];
+      setFilters(newFilters);
+    }
   };
 
   const handleZoom = (delta: number) => {
@@ -206,10 +226,12 @@ function App() {
             <input
               type="text"
               placeholder="Quick search..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
               className="
                 pl-9 pr-3 py-1.5 bg-accent/50 border border-border rounded-lg text-xs 
                 transition-all duration-fast
-                focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary focus:bg-accent
+                focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary focus:bg-accent focus:shadow-glow-sm
                 hover:border-border/80
                 w-64
               "
@@ -281,6 +303,8 @@ function App() {
             lineCount={visibleLineCount}
             fontSize={fontSize}
             filters={filters}
+            searchQuery={searchQuery}
+            isHighDensity={isHighDensity}
           />
         ) : (
           <div
@@ -315,6 +339,8 @@ function App() {
           onAddFilter={handleAddFilter}
           onUpdateFilter={handleUpdateFilter}
           onRemoveFilter={handleRemoveFilter}
+          onMoveFilter={handleMoveFilter}
+          filterCounts={filterCounts}
         />
       </aside>
 
@@ -370,6 +396,21 @@ function App() {
               +
             </button>
           </div>
+
+          <div className="h-3 w-[1px] bg-border/70 mx-1"></div>
+
+          <button
+            onClick={() => setIsHighDensity(!isHighDensity)}
+            className={`
+              px-2 py-0.5 rounded-md transition-all duration-fast font-medium uppercase tracking-tighter
+              ${isHighDensity
+                ? "bg-primary/20 text-primary shadow-glow border border-primary/30"
+                : "hover:bg-accent text-muted-foreground/60 border border-transparent"
+              }
+            `}
+          >
+            HD Mode
+          </button>
         </div>
       </footer>
     </div>

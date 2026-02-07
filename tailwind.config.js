@@ -12,7 +12,8 @@ export default {
         'slow': '350ms',
       },
       boxShadow: {
-        'glow': '0 0 20px rgba(250, 95, 235, 0.3)',
+        'glow': '0 0 25px rgba(250, 95, 235, 0.4)',
+        'glow-sm': '0 0 15px rgba(250, 95, 235, 0.25)',
       },
       colors: {
         border: "hsl(var(--border))",
