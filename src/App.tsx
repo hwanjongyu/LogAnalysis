@@ -1,15 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
 import { 
-  Plus, 
   Settings, 
   Search, 
   Menu, 
   X, 
   FileText, 
   Play, 
+  Square,
   Trash2, 
   Filter,
-  Loader2
+  Loader2,
+  Smartphone
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -24,22 +25,38 @@ function App() {
   const [visibleLineCount, setVisibleLineCount] = useState(0);
   const [isIndexing, setIsIndexing] = useState(false);
   const [isFiltering, setIsFiltering] = useState(false);
+  const [isAdbActive, setIsAdbActive] = useState(false);
   const [indexProgress, setIndexProgress] = useState(0);
   const [fontSize, setFontSize] = useState(13);
   const [filters, setFilters] = useState<LogFilter[]>([]);
-
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  
   useEffect(() => {
-    const unlisten = listen<{ progress: number }>("indexing-progress", (event) => {
+    const unlistenIndex = listen<{ progress: number }>("indexing-progress", (event) => {
       setIndexProgress(event.payload.progress * 100);
     });
 
+    const unlistenAdb = listen<string[]>("adb-new-lines", (event) => {
+      setLineCount((prev) => {
+        const next = prev + event.payload.length;
+        setVisibleLineCount(next);
+        return next;
+      });
+    });
+
     return () => {
-      unlisten.then((fn) => fn());
+      unlistenIndex.then((fn) => fn());
+      unlistenAdb.then((fn) => fn());
     };
   }, []);
 
   const handleApplyFilters = useCallback(async (currentFilters: LogFilter[]) => {
-    if (!filePath) return;
+    if (!filePath && !isAdbActive) return;
+    
+    // If ADB is active, we don't apply filters to existing lines in this MVP.
+    // Filters are applied by the backend during ingestion.
+    if (isAdbActive) return;
+
     setIsFiltering(true);
     try {
       const count = await invoke<number>("apply_filters", { filters: currentFilters });
@@ -49,9 +66,8 @@ function App() {
     } finally {
       setIsFiltering(false);
     }
-  }, [filePath]);
+  }, [filePath, isAdbActive]);
 
-  // Debounce filter application
   useEffect(() => {
     const timer = setTimeout(() => {
       handleApplyFilters(filters);
@@ -60,6 +76,7 @@ function App() {
   }, [filters, handleApplyFilters]);
 
   const handleOpenFile = async () => {
+    setErrorMessage(null);
     try {
       const selected = await open({
         multiple: false,
@@ -67,6 +84,8 @@ function App() {
       });
 
       if (selected && typeof selected === "string") {
+        if (isAdbActive) await handleStopAdb();
+        
         setFilePath(selected);
         setIsIndexing(true);
         setIndexProgress(0);
@@ -75,12 +94,43 @@ function App() {
         setLineCount(count);
         setVisibleLineCount(count);
         setIsIndexing(false);
-        // Clear filtered view on new file
-        handleApplyFilters(filters);
       }
     } catch (error) {
       console.error("Failed to open file:", error);
+      setErrorMessage(String(error));
       setIsIndexing(false);
+    }
+  };
+
+  const handleToggleAdb = async () => {
+    setErrorMessage(null);
+    if (isAdbActive) {
+      await handleStopAdb();
+    } else {
+      await handleStartAdb();
+    }
+  };
+
+  const handleStartAdb = async () => {
+    try {
+      setFilePath(null);
+      setLineCount(0);
+      setVisibleLineCount(0);
+      await invoke("start_adb", { filters });
+      setIsAdbActive(true);
+    } catch (error) {
+      console.error("Failed to start ADB:", error);
+      setErrorMessage(String(error));
+    }
+  };
+
+  const handleStopAdb = async () => {
+    try {
+      await invoke("stop_adb");
+      setIsAdbActive(false);
+    } catch (error) {
+      console.error("Failed to stop ADB:", error);
+      setErrorMessage(String(error));
     }
   };
 
@@ -140,15 +190,28 @@ function App() {
             >
               {isSidebarOpen ? <X size={20} /> : <Menu size={20} />}
             </button>
-            <button 
-              onClick={handleOpenFile}
-              className="flex items-center gap-2 px-3 py-1 bg-accent/50 hover:bg-accent rounded border border-border text-xs transition-colors"
-            >
-              <FileText size={14} className="text-muted-foreground" />
-              <span className="max-w-[200px] truncate">
-                {filePath ? filePath.split("/").pop() : "Open Log File..."}
-              </span>
-            </button>
+            <div className="flex gap-2">
+              <button 
+                onClick={handleOpenFile}
+                className={`flex items-center gap-2 px-3 py-1 rounded border text-xs transition-colors ${
+                  filePath ? "bg-primary/10 border-primary/20 text-primary" : "bg-accent/50 border-border text-muted-foreground hover:bg-accent"
+                }`}
+              >
+                <FileText size={14} />
+                <span className="max-w-[150px] truncate">
+                  {filePath ? filePath.split("/").pop() : "Open File"}
+                </span>
+              </button>
+              <button 
+                onClick={handleToggleAdb}
+                className={`flex items-center gap-2 px-3 py-1 rounded border text-xs transition-colors ${
+                  isAdbActive ? "bg-green-500/10 border-green-500/20 text-green-600" : "bg-accent/50 border-border text-muted-foreground hover:bg-accent"
+                }`}
+              >
+                <Smartphone size={14} />
+                <span>ADB Logcat</span>
+              </button>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -163,20 +226,27 @@ function App() {
             <div className="h-6 w-[1px] bg-border mx-2"></div>
             <button 
               className="p-1.5 hover:bg-accent rounded text-muted-foreground"
-              onClick={() => { setFilePath(null); setLineCount(0); setVisibleLineCount(0); }}
+              onClick={() => { setFilePath(null); setLineCount(0); setVisibleLineCount(0); if (isAdbActive) handleStopAdb(); }}
             >
               <Trash2 size={18} />
             </button>
-            <button className="p-1.5 bg-primary text-primary-foreground hover:bg-primary/90 rounded flex items-center gap-2 px-3 shadow-sm">
-              <Play size={16} />
-              <span className="text-xs font-medium">ADB Logcat</span>
+            <button 
+              onClick={handleToggleAdb}
+              className={`p-1.5 rounded flex items-center gap-2 px-3 shadow-sm transition-all ${
+                isAdbActive 
+                ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" 
+                : "bg-primary text-primary-foreground hover:bg-primary/90"
+              }`}
+            >
+              {isAdbActive ? <Square size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
+              <span className="text-xs font-medium">{isAdbActive ? "Stop" : "Start"} ADB</span>
             </button>
           </div>
         </header>
 
         {/* Log View Area */}
         <div className="flex-1 overflow-hidden relative font-mono">
-          {isIndexing ? (
+          {isIndexing && (
             <div className="absolute inset-0 z-10 bg-background/80 flex flex-col items-center justify-center gap-4">
               <Loader2 size={48} className="animate-spin text-primary" />
               <div className="w-64 h-2 bg-accent rounded-full overflow-hidden">
@@ -187,15 +257,30 @@ function App() {
               </div>
               <p className="text-muted-foreground">Indexing log file... {indexProgress.toFixed(0)}%</p>
             </div>
-          ) : isFiltering ? (
+          )}
+
+          {isFiltering && !isAdbActive && (
             <div className="absolute top-4 right-4 z-20 bg-background/90 border border-border px-4 py-2 rounded-full shadow-lg flex items-center gap-3">
               <Loader2 size={16} className="animate-spin text-primary" />
               <span className="text-sm font-medium">Filtering...</span>
             </div>
-          ) : null}
+          )}
 
-          {filePath ? (
-            <LogViewer filePath={filePath} lineCount={visibleLineCount} fontSize={fontSize} filters={filters} />
+          {errorMessage && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-destructive text-destructive-foreground px-4 py-2 rounded shadow-lg flex items-center gap-3 max-w-[80%]">
+              <X size={16} className="cursor-pointer shrink-0" onClick={() => setErrorMessage(null)} />
+              <span className="text-sm font-medium truncate">Error: {errorMessage}</span>
+            </div>
+          )}
+
+          {filePath || isAdbActive ? (
+            <LogViewer 
+              key={filePath || "adb-stream"} 
+              filePath={filePath || "ADB_STREAM"} 
+              lineCount={visibleLineCount} 
+              fontSize={fontSize} 
+              filters={filters} 
+            />
           ) : (
             <div 
               className="absolute inset-0 flex items-center justify-center text-muted-foreground/30 flex-col gap-4 cursor-pointer hover:bg-accent/5 transition-colors"
@@ -216,7 +301,9 @@ function App() {
             </span>
           </div>
           <div className="flex gap-4 items-center">
-            <span>ADB: Disconnected</span>
+            <span className={isAdbActive ? "text-green-500 animate-pulse font-bold" : ""}>
+              ADB: {isAdbActive ? "Streaming" : "Disconnected"}
+            </span>
             <div className="h-3 w-[1px] bg-border mx-1"></div>
             <div className="flex gap-2">
               <button onClick={() => handleZoom(-1)} className="hover:text-foreground">Zoom-</button>

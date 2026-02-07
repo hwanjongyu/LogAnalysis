@@ -1,0 +1,13 @@
+{
+  "identifier": "all-commands",
+  "description": "Allow all custom commands",
+  "commands": {
+    "allow": [
+      "open_file",
+      "get_log_lines",
+      "apply_filters",
+      "start_adb",
+      "stop_adb"
+    ]
+  }
+}

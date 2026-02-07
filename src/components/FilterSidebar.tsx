@@ -1,4 +1,4 @@
-import { Plus, Trash2, Eye, EyeOff, Hash } from "lucide-react";
+import { Plus, Trash2, Eye, EyeOff } from "lucide-react";
 
 export interface LogFilter {
   id: string;
