@@ -322,6 +322,8 @@ pub fn render_filter_dock(
                         .filter_tabs
                         .get(workspace.active_tab_index)
                         .map(|tab| {
+                            let is_filtering_rules = !workspace.filter_search_query.trim().is_empty();
+                            let total_rules = tab.filters.len();
                             let counts = workspace
                                 .filter_result
                                 .as_ref()
@@ -496,6 +498,52 @@ pub fn render_filter_dock(
                                                         })
                                                         .child(format!("{}", count)),
                                                 )
+                                                // Reorder Up
+                                                .children(if !is_filtering_rules && r_idx > 0 {
+                                                    Some(
+                                                        div()
+                                                            .id(ElementId::NamedInteger(
+                                                                "up-rule".into(),
+                                                                r_idx as u64,
+                                                            ))
+                                                            .px(px(3.0))
+                                                            .cursor_pointer()
+                                                            .text_size(px(10.0))
+                                                            .text_color(theme.text_muted)
+                                                            .hover(move |s| s.text_color(theme.accent))
+                                                            .on_click(cx.listener(
+                                                                move |this, _, _window, cx| {
+                                                                    this.move_rule_up(r_idx, cx);
+                                                                },
+                                                            ))
+                                                            .child("▲"),
+                                                    )
+                                                } else {
+                                                    None
+                                                })
+                                                // Reorder Down
+                                                .children(if !is_filtering_rules && r_idx + 1 < total_rules {
+                                                    Some(
+                                                        div()
+                                                            .id(ElementId::NamedInteger(
+                                                                "down-rule".into(),
+                                                                r_idx as u64,
+                                                            ))
+                                                            .px(px(3.0))
+                                                            .cursor_pointer()
+                                                            .text_size(px(10.0))
+                                                            .text_color(theme.text_muted)
+                                                            .hover(move |s| s.text_color(theme.accent))
+                                                            .on_click(cx.listener(
+                                                                move |this, _, _window, cx| {
+                                                                    this.move_rule_down(r_idx, cx);
+                                                                },
+                                                            ))
+                                                            .child("▼"),
+                                                    )
+                                                } else {
+                                                    None
+                                                })
                                                 // Edit Rule Button
                                                 .child(
                                                     div()

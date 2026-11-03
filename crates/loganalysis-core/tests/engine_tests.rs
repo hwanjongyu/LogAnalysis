@@ -478,3 +478,83 @@ fn test_cancellation_token_filtering_and_search_abort() {
     let search_res = search_in_log(&stream, &visible_indices, &query, None, Some(&token), 1, None);
     assert!(matches!(search_res, Err(SearchError::Cancelled)));
 }
+
+#[test]
+fn test_zero_width_regex_highlighting_safety() {
+    let patterns = vec!["^", "$", r"\b", ".*", "a*", "(?=test)"];
+    let sample_text = "This is a test line for zero-width highlighting safety.";
+
+    for pat in patterns {
+        if let Ok(matcher) = CompiledMatcher::new(pat, false, true) {
+            let ranges = matcher.find_match_ranges(sample_text, 32);
+            for r in &ranges {
+                // Must strictly filter out zero-width matches (start < end)
+                assert!(r.start < r.end, "Range must not be zero-width for pattern '{}': {:?}", pat, r);
+                // Must be valid UTF-8 boundaries
+                assert!(sample_text.is_char_boundary(r.start));
+                assert!(sample_text.is_char_boundary(r.end));
+                let _slice = &sample_text[r.clone()];
+            }
+            // Must be strictly non-overlapping
+            for w in ranges.windows(2) {
+                assert!(w[0].end <= w[1].start, "Ranges must be non-overlapping: {:?} vs {:?}", w[0], w[1]);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_literal_and_case_insensitive_highlight_ranges() {
+    let sample = "Alpha beta ALPHA Beta alpha";
+    
+    // Case-insensitive literal
+    let matcher_ci = CompiledMatcher::new("alpha", false, false).unwrap();
+    let ranges_ci = matcher_ci.find_match_ranges(sample, 32);
+    assert_eq!(ranges_ci.len(), 3);
+    for r in &ranges_ci {
+        assert_eq!(&sample[r.clone()].to_lowercase(), "alpha");
+    }
+
+    // Case-sensitive literal
+    let matcher_cs = CompiledMatcher::new("alpha", true, false).unwrap();
+    let ranges_cs = matcher_cs.find_match_ranges(sample, 32);
+    assert_eq!(ranges_cs.len(), 1);
+    assert_eq!(&sample[ranges_cs[0].clone()], "alpha");
+}
+
+#[test]
+fn test_rule_reorder_precedence_inversion_and_anchor_stability() {
+    let sample_line = b"Fatal database deadlock encountered";
+    let rule_fatal = FilterRule {
+        text: "Fatal".to_string(),
+        bg_color: "Red".to_string(),
+        text_color: "White".to_string(),
+        active: true,
+        ..Default::default()
+    };
+    let rule_db = FilterRule {
+        text: "database".to_string(),
+        bg_color: "Yellow".to_string(),
+        text_color: "Black".to_string(),
+        active: true,
+        ..Default::default()
+    };
+
+    // Order 1: Fatal (idx 0), database (idx 1) -> database (later in list) has precedence via reverse inheritance
+    let p1 = PreparedFilter::new(rule_fatal.clone(), 0, 0).unwrap();
+    let p2 = PreparedFilter::new(rule_db.clone(), 1, 0).unwrap();
+    let (_, style1, _) = evaluate_and_style_line(sample_line, &[p1, p2], true, None);
+    assert_eq!(style1.bg_hex, parse_color_spec("Yellow", true));
+
+    // Order 2 (Swapped): database (idx 0), Fatal (idx 1) -> Fatal (later in list) now has precedence
+    let p1_swapped = PreparedFilter::new(rule_db, 0, 0).unwrap();
+    let p2_swapped = PreparedFilter::new(rule_fatal, 1, 0).unwrap();
+    let (_, style2, _) = evaluate_and_style_line(sample_line, &[p1_swapped, p2_swapped], true, None);
+    assert_eq!(style2.bg_hex, parse_color_spec("Red", true));
+
+    // Anchor stability check
+    let visible_indices = vec![0, 10, 20, 30, 40];
+    let anchor_target = 20; // Anchor on raw line 20
+    let nearest = find_nearest_anchor_row(&visible_indices, anchor_target);
+    assert_eq!(nearest, Some(2));
+}

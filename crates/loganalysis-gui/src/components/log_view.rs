@@ -2,7 +2,6 @@ use gpui::*;
 use loganalysis_core::LogSource;
 
 use crate::components::find_bar::render_find_bar;
-use crate::types::InputFocusTarget;
 use crate::workspace::LogAnalysisWorkspace;
 
 pub fn render_log_viewport(
@@ -24,6 +23,30 @@ pub fn render_log_viewport(
     let has_log_source = workspace.log_source.is_some();
     let weak_self = cx.weak_entity();
 
+    let search_matcher = if workspace.is_search_visible && !workspace.search_query.trim().is_empty() {
+        loganalysis_core::CompiledMatcher::new(
+            &workspace.search_query,
+            workspace.is_search_case_sensitive,
+            workspace.is_search_regex,
+        ).ok()
+    } else {
+        None
+    };
+    let search_matcher = std::sync::Arc::new(search_matcher);
+
+    let highlight_fg = if workspace.is_dark_theme {
+        rgb(0xffffff)
+    } else {
+        rgb(0x000000)
+    };
+
+    let highlight_style = HighlightStyle {
+        background_color: Some(theme.highlight_search.into()),
+        color: Some(highlight_fg.into()),
+        font_weight: Some(FontWeight::BOLD),
+        ..Default::default()
+    };
+
     div()
         .flex_1()
         .h_full()
@@ -31,6 +54,20 @@ pub fn render_log_viewport(
         .flex_col()
         .bg(theme.bg_dark)
         .overflow_hidden()
+        .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+            if this.is_dragging_scrollbar && event.dragging() {
+                this.scroll_to_ratio_from_mouse_y(event.position.y, cx);
+            }
+        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                if this.is_dragging_scrollbar {
+                    this.is_dragging_scrollbar = false;
+                    cx.notify();
+                }
+            }),
+        )
         // Interactive Find Bar
         .children(render_find_bar(workspace, cx))
         // Virtualized Log Rows or Polished Empty State
@@ -102,9 +139,7 @@ pub fn render_log_viewport(
                             .cursor_pointer()
                             .on_click(move |_, _window, cx| {
                                 let _ = entity_handle.update(cx, |this, cx| {
-                                    this.selection.select(idx, real_idx);
-                                    this.input_focus = InputFocusTarget::None;
-                                    cx.notify();
+                                    this.select_log_row(idx, real_idx, cx);
                                 });
                             })
                             // Line Number Gutter (Fixed 64px + Subtle Right Border)
@@ -144,7 +179,17 @@ pub fn render_log_viewport(
                                     .flex_1()
                                     .px(px(10.0))
                                     .whitespace_nowrap()
-                                    .child(text),
+                                    .child(if let Some(ref matcher) = *search_matcher {
+                                        let ranges = matcher.find_match_ranges(&text, 32);
+                                        if !ranges.is_empty() {
+                                            let highlights = ranges.into_iter().map(|r| (r, highlight_style));
+                                            StyledText::new(text).with_highlights(highlights).into_any_element()
+                                        } else {
+                                            text.into_any_element()
+                                        }
+                                    } else {
+                                        text.into_any_element()
+                                    }),
                             )
                     })
                     .collect::<Vec<_>>()
@@ -155,8 +200,91 @@ pub fn render_log_viewport(
                     list.with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained);
             }
 
-            list.track_scroll(workspace.scroll_handle.clone())
+            let list_el = list
+                .track_scroll(workspace.scroll_handle.clone())
+                .flex_1();
+
+            // Compute scrollbar thumb position
+            let (thumb_top, thumb_height) = {
+                let scroll_state = workspace.scroll_handle.0.borrow();
+                let bounds = scroll_state.base_handle.bounds();
+                let track_height: f32 = bounds.size.height.into();
+                let scroll_y: f32 = (-scroll_state.base_handle.offset().y).into();
+                drop(scroll_state);
+
+                let font_size_f32: f32 = font_size.into();
+                let row_height_f32 = font_size_f32 * 1.55;
+                let total_content_height = (row_count as f32) * row_height_f32;
+
+                if track_height > 0.0 && total_content_height > track_height {
+                    let visible_ratio = (track_height / total_content_height).clamp(0.03, 1.0);
+                    let h = (track_height * visible_ratio).max(24.0);
+                    let max_scroll = (total_content_height - track_height).max(1.0);
+                    let ratio = (scroll_y / max_scroll).clamp(0.0, 1.0);
+                    let top = ratio * (track_height - h);
+                    (top, h)
+                } else {
+                    (0.0, track_height)
+                }
+            };
+
+            let is_dragging = workspace.is_dragging_scrollbar;
+            let scrollbar_thumb_color = if is_dragging {
+                theme.accent
+            } else if workspace.is_dark_theme {
+                rgba(0xffffff40)
+            } else {
+                rgba(0x00000040)
+            };
+
+            let scrollbar_track = div()
+                .id("log-scrollbar-track")
+                .w(px(14.0))
+                .h_full()
+                .bg(theme.bg_gutter)
+                .border_l_1()
+                .border_color(theme.border_subtle)
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                        this.is_dragging_scrollbar = true;
+                        this.scroll_to_ratio_from_mouse_y(event.position.y, cx);
+                    }),
+                )
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                    if this.is_dragging_scrollbar && event.dragging() {
+                        this.scroll_to_ratio_from_mouse_y(event.position.y, cx);
+                    }
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                        this.is_dragging_scrollbar = false;
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    div()
+                        .id("log-scrollbar-thumb")
+                        .absolute()
+                        .left(px(2.0))
+                        .right(px(2.0))
+                        .top(px(thumb_top))
+                        .h(px(thumb_height))
+                        .rounded_full()
+                        .bg(scrollbar_thumb_color)
+                        .hover(move |s| s.bg(theme.accent)),
+                );
+
+            div()
                 .flex_1()
+                .h_full()
+                .flex()
+                .flex_row()
+                .overflow_hidden()
+                .child(list_el)
+                .child(scrollbar_track)
                 .into_any_element()
         } else {
             // Modern Onboarding Empty State Card

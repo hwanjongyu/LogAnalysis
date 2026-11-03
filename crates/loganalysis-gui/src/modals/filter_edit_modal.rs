@@ -49,9 +49,6 @@ pub fn render_filter_edit_modal(
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                        this.handle_key_down(event, cx);
-                    }))
                     // Modal Header
                     .child(
                         div()

@@ -14,7 +14,7 @@ use components::log_view::render_log_viewport;
 use components::status_bar::render_status_bar;
 use components::toolbar::render_toolbar;
 use modals::filter_edit_modal::render_filter_edit_modal;
-use types::FilterPanelPosition;
+use types::{FilterPanelPosition, InputFocusTarget};
 pub use workspace::LogAnalysisWorkspace;
 
 impl Render for LogAnalysisWorkspace {
@@ -83,15 +83,27 @@ impl Render for LogAnalysisWorkspace {
                 this.prompt_save_filters(cx);
             }))
             .on_action(cx.listener(|this, _: &ClearLogs, _window, cx| {
+                if this.input_focus != InputFocusTarget::None {
+                    return;
+                }
                 this.clear_logs(cx);
             }))
             .on_action(cx.listener(|this, _: &AddFilterTab, _window, cx| {
+                if this.input_focus != InputFocusTarget::None {
+                    return;
+                }
                 this.add_filter_tab(cx);
             }))
             .on_action(cx.listener(|this, _: &DeleteFilterTab, _window, cx| {
+                if this.input_focus != InputFocusTarget::None {
+                    return;
+                }
                 this.delete_current_tab(cx);
             }))
             .on_action(cx.listener(|this, _: &RenameFilterTab, _window, cx| {
+                if this.input_focus != InputFocusTarget::None {
+                    return;
+                }
                 this.rename_current_tab(cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleTheme, _window, cx| {
@@ -110,6 +122,9 @@ impl Render for LogAnalysisWorkspace {
                 this.zoom(-1.0, cx);
             }))
             .on_action(cx.listener(|this, _: &TogglePauseStream, _window, cx| {
+                if this.input_focus != InputFocusTarget::None {
+                    return;
+                }
                 this.toggle_pause_stream(cx);
             }))
             .on_action(cx.listener(|this, _: &AddIncludeFromSelection, _window, cx| {

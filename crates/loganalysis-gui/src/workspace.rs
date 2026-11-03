@@ -48,6 +48,24 @@ pub struct LogAnalysisWorkspace {
     pub(crate) is_dark_theme: bool,
     pub(crate) full_line_display: bool,
     pub(crate) filter_panel_position: FilterPanelPosition,
+    pub(crate) is_dragging_scrollbar: bool,
+}
+
+fn delete_previous_word(s: &mut String) {
+    while let Some(c) = s.chars().last() {
+        if c.is_whitespace() {
+            s.pop();
+        } else {
+            break;
+        }
+    }
+    while let Some(c) = s.chars().last() {
+        if !c.is_whitespace() {
+            s.pop();
+        } else {
+            break;
+        }
+    }
 }
 
 impl LogAnalysisWorkspace {
@@ -109,6 +127,7 @@ impl LogAnalysisWorkspace {
             is_dark_theme: false,
             full_line_display: false,
             filter_panel_position: FilterPanelPosition::Bottom,
+            is_dragging_scrollbar: false,
         }
     }
 
@@ -506,9 +525,26 @@ impl LogAnalysisWorkspace {
         let key = event.keystroke.key.as_str();
         let m = &event.keystroke.modifiers;
 
-        // Support common text box shortcuts (Ctrl+V paste, Ctrl+U clear)
+        // Support common text box shortcuts (Ctrl+V paste, Ctrl+Backspace delete word, Ctrl+U / Ctrl+A clear)
         if m.control && !m.alt && !m.platform {
-            if key == "v" || key == "V" {
+            if key == "backspace" {
+                match self.input_focus {
+                    InputFocusTarget::ModalPattern => {
+                        delete_previous_word(&mut self.filter_edit_modal.pattern);
+                        cx.notify();
+                    }
+                    InputFocusTarget::SearchBar => {
+                        delete_previous_word(&mut self.search_query);
+                        cx.notify();
+                    }
+                    InputFocusTarget::FilterRuleSearch => {
+                        delete_previous_word(&mut self.filter_search_query);
+                        cx.notify();
+                    }
+                    InputFocusTarget::None => {}
+                }
+                return;
+            } else if key == "v" || key == "V" {
                 if let Some(clipboard) = cx.read_from_clipboard() {
                     if let Some(text) = clipboard.text() {
                         let clean = text.replace(['\r', '\n'], "");
@@ -530,7 +566,7 @@ impl LogAnalysisWorkspace {
                     }
                 }
                 return;
-            } else if key == "u" || key == "U" {
+            } else if key == "u" || key == "U" || key == "a" || key == "A" {
                 match self.input_focus {
                     InputFocusTarget::ModalPattern => {
                         self.filter_edit_modal.pattern.clear();
@@ -711,6 +747,42 @@ impl LogAnalysisWorkspace {
         }
     }
 
+    /// Moves a rule up in the active tab (increases precedence)
+    pub fn move_rule_up(&mut self, rule_idx: usize, cx: &mut Context<Self>) {
+        if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
+            if rule_idx > 0 && rule_idx < tab.filters.len() {
+                tab.filters.swap(rule_idx, rule_idx - 1);
+                if self.filter_edit_modal.is_open {
+                    if self.filter_edit_modal.editing_index == Some(rule_idx) {
+                        self.filter_edit_modal.editing_index = Some(rule_idx - 1);
+                    } else if self.filter_edit_modal.editing_index == Some(rule_idx - 1) {
+                        self.filter_edit_modal.editing_index = Some(rule_idx);
+                    }
+                }
+                cx.notify();
+                self.reapply_filters(cx);
+            }
+        }
+    }
+
+    /// Moves a rule down in the active tab (decreases precedence)
+    pub fn move_rule_down(&mut self, rule_idx: usize, cx: &mut Context<Self>) {
+        if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
+            if rule_idx + 1 < tab.filters.len() {
+                tab.filters.swap(rule_idx, rule_idx + 1);
+                if self.filter_edit_modal.is_open {
+                    if self.filter_edit_modal.editing_index == Some(rule_idx) {
+                        self.filter_edit_modal.editing_index = Some(rule_idx + 1);
+                    } else if self.filter_edit_modal.editing_index == Some(rule_idx + 1) {
+                        self.filter_edit_modal.editing_index = Some(rule_idx);
+                    }
+                }
+                cx.notify();
+                self.reapply_filters(cx);
+            }
+        }
+    }
+
     /// Duplicates a rule in active tab
     pub fn duplicate_rule(&mut self, rule_idx: usize, cx: &mut Context<Self>) {
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
@@ -798,6 +870,67 @@ impl LogAnalysisWorkspace {
         }
     }
 
+    /// Refreshes the status line text based on current selection or system state
+    pub fn refresh_status_line(&mut self, cx: &mut Context<Self>) {
+        if let Some(source_idx) = self.selection.anchor_source_idx {
+            if let (Some(src), Some(tab)) = (&self.log_source, self.filter_tabs.get(self.active_tab_index)) {
+                if let Some(line) = src.get_line(source_idx) {
+                    let mut matched_info = None;
+                    for (r_idx, rule) in tab.filters.iter().enumerate() {
+                        if !rule.active {
+                            continue;
+                        }
+                        if let Ok(matcher) = loganalysis_core::CompiledMatcher::new(&rule.text, rule.case_sensitive, rule.regex) {
+                            if matcher.matches(line.as_bytes()) {
+                                let count = self.filter_result.as_ref()
+                                    .and_then(|r| r.filter_counts.get(r_idx).copied())
+                                    .unwrap_or(0);
+                                matched_info = Some((rule.text.clone(), rule.bg_color.clone(), count));
+                                break;
+                            }
+                        }
+                    }
+                    if let Some((rule_text, color, count)) = matched_info {
+                        self.status_text = format!(
+                            "Line {} | Matched Rule: '{}' ({}) | {} matches in tab",
+                            source_idx + 1,
+                            rule_text,
+                            color,
+                            count
+                        )
+                        .into();
+                        cx.notify();
+                        return;
+                    } else {
+                        self.status_text = format!("Line {} | No filter rule match", source_idx + 1).into();
+                        cx.notify();
+                        return;
+                    }
+                }
+            }
+        }
+
+        if let Some(fname) = &self.active_file_name {
+            self.status_text = format!("Loaded {}", fname).into();
+        } else if self.is_streaming {
+            if self.is_stream_paused {
+                self.status_text = "ADB streaming PAUSED".into();
+            } else {
+                self.status_text = "Streaming live ADB logcat...".into();
+            }
+        } else {
+            self.status_text = "Ready".into();
+        }
+        cx.notify();
+    }
+
+    /// Selects a log row and updates status line attribution
+    pub fn select_log_row(&mut self, visible_idx: usize, source_idx: usize, cx: &mut Context<Self>) {
+        self.selection.select(visible_idx, source_idx);
+        self.input_focus = InputFocusTarget::None;
+        self.refresh_status_line(cx);
+    }
+
     /// Copies selected log row to clipboard (Ctrl+C)
     pub fn copy_selection(&mut self, cx: &mut Context<Self>) {
         let Some(sel_row) = self.selection.selected_row else {
@@ -817,8 +950,20 @@ impl LogAnalysisWorkspace {
 
         if !text_to_copy.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(text_to_copy));
-            self.status_text = "Copied line to clipboard".into();
+            self.status_text = "✓ Copied line to clipboard".into();
             cx.notify();
+
+            cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                let bg_executor = cx.background_executor().clone();
+                let mut async_cx = cx.clone();
+                async move {
+                    bg_executor.timer(std::time::Duration::from_secs(2)).await;
+                    let _ = this.update(&mut async_cx, |workspace, cx| {
+                        workspace.refresh_status_line(cx);
+                    });
+                }
+            })
+            .detach();
         }
     }
 
@@ -928,6 +1073,40 @@ impl LogAnalysisWorkspace {
         let new_size = (current + delta).clamp(8.0, 28.0);
         self.font_size = px(new_size);
         self.status_text = format!("Font size: {:.0}px", new_size).into();
+        cx.notify();
+    }
+
+    /// Scrolls the log viewport based on mouse vertical position in the scrollbar track
+    pub fn scroll_to_ratio_from_mouse_y(&mut self, mouse_y: Pixels, cx: &mut Context<Self>) {
+        let row_count = self
+            .filter_result
+            .as_ref()
+            .map(|r| r.visible_indices.len())
+            .unwrap_or(0);
+
+        if row_count == 0 {
+            return;
+        }
+
+        let bounds = self.scroll_handle.0.borrow().base_handle.bounds();
+        let track_top: f32 = bounds.origin.y.into();
+        let track_height: f32 = bounds.size.height.into();
+        let mouse_y_f32: f32 = mouse_y.into();
+
+        if track_height <= 0.0 {
+            return;
+        }
+
+        let relative_y = (mouse_y_f32 - track_top).clamp(0.0, track_height);
+        let ratio = (relative_y / track_height).clamp(0.0, 1.0);
+        let max_idx = row_count.saturating_sub(1);
+        let target_idx = ((ratio * max_idx as f32).round() as usize).min(max_idx);
+
+        if ratio >= 0.98 {
+            self.scroll_handle.scroll_to_item_strict(target_idx, ScrollStrategy::Bottom);
+        } else {
+            self.scroll_handle.scroll_to_item_strict(target_idx, ScrollStrategy::Top);
+        }
         cx.notify();
     }
 
