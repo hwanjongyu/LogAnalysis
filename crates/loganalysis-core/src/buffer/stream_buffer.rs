@@ -5,6 +5,7 @@ use crate::constants::{MAX_MONITOR_LINES, MONITOR_TRIM_BATCH};
 
 /// High-performance rolling ring buffer for real-time ADB streaming backed by `VecDeque`.
 /// Avoids O(N) memory copying during buffer trim operations.
+#[derive(Clone, Debug)]
 pub struct StreamLogBuffer {
     lines: VecDeque<String>,
     max_capacity: usize,
