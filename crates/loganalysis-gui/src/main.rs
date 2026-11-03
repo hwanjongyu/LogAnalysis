@@ -15,6 +15,7 @@ use actions::*;
 use components::filter_dock::render_filter_dock;
 use components::log_view::render_log_viewport;
 use components::status_bar::render_status_bar;
+use components::titlebar::render_titlebar;
 use components::toolbar::render_toolbar;
 use modals::filter_edit_modal::render_filter_edit_modal;
 use types::{FilterPanelPosition, InputFocusTarget};
@@ -29,6 +30,7 @@ impl Render for LogAnalysisWorkspace {
         let theme = self.theme;
         let is_bottom_dock = self.filter_panel_position == FilterPanelPosition::Bottom;
 
+        let titlebar_el = render_titlebar(self, window, cx);
         let toolbar_el = render_toolbar(self, cx);
         let filter_panel_el = render_filter_dock(self, cx);
         let log_viewport_el = render_log_viewport(self, cx);
@@ -152,6 +154,7 @@ impl Render for LogAnalysisWorkspace {
             .size_full()
             .bg(theme.bg_dark)
             .text_color(theme.text_primary)
+            .child(titlebar_el)
             .child(toolbar_el)
             .child(body)
             .child(status_bar_el)
@@ -159,8 +162,62 @@ impl Render for LogAnalysisWorkspace {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn ensure_desktop_integration() {
+    let Ok(home) = std::env::var("HOME") else { return; };
+    let home_path = std::path::PathBuf::from(home);
+    let apps_dir = home_path.join(".local/share/applications");
+    let icons_dir = home_path.join(".local/share/icons/hicolor/256x256/apps");
+    let desktop_file = apps_dir.join("loganalysis.desktop");
+    let icon_file = icons_dir.join("loganalysis.png");
+
+    let _ = std::fs::create_dir_all(&apps_dir);
+    let _ = std::fs::create_dir_all(&icons_dir);
+
+    // 1. Write icon if missing
+    const ICON_BYTES: &[u8] = include_bytes!("../../../assets/loganalysis.png");
+    if !icon_file.exists() {
+        let _ = std::fs::write(&icon_file, ICON_BYTES);
+    }
+
+    // 2. Resolve executable path (AppImage or binary)
+    let exec_path = std::env::var("APPIMAGE")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_exe().ok());
+
+    if let Some(exec) = exec_path {
+        let content = format!(
+            "[Desktop Entry]\n\
+            Name=LogAnalysis\n\
+            Comment=GPU-Accelerated High Performance Log Analysis Tool\n\
+            Exec=\"{}\" %F\n\
+            Icon={}\n\
+            Terminal=false\n\
+            Type=Application\n\
+            Categories=Development;Utility;System;\n\
+            MimeType=text/plain;application/json;\n\
+            StartupWMClass=loganalysis\n",
+            exec.display(),
+            icon_file.display()
+        );
+        let _ = std::fs::write(&desktop_file, content);
+
+        let _ = std::process::Command::new("update-desktop-database")
+            .arg(&apps_dir)
+            .status();
+        let _ = std::process::Command::new("gtk-update-icon-cache")
+            .args(["-f", "-t"])
+            .arg(home_path.join(".local/share/icons/hicolor"))
+            .status();
+    }
+}
+
 fn main() {
     logging::init_crash_handler();
+
+    #[cfg(target_os = "linux")]
+    ensure_desktop_integration();
 
     // Guard against upstream Zed/GPUI bug on Linux X11:
     // When CJK/Korean IMEs (e.g. ibus, fcitx) send PreeditDraw compound text events,
@@ -204,14 +261,22 @@ fn main() {
             KeyBinding::new("ctrl-shift-l", ToggleFilterPanelPosition, None),
         ]);
 
+        let window_decorations = if std::env::var("LOGANALYSIS_FORCE_CSD").is_ok() {
+            Some(WindowDecorations::Client)
+        } else {
+            None
+        };
+
         let bounds = Bounds::centered(None, size(px(1200.0), px(850.0)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            app_id: Some("loganalysis".into()),
             titlebar: Some(TitlebarOptions {
                 title: Some("LogAnalysis (High Performance)".into()),
                 appears_transparent: false,
                 traffic_light_position: None,
             }),
+            window_decorations,
             ..Default::default()
         };
 
