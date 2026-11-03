@@ -386,3 +386,95 @@ fn test_strongly_typed_domain_errors() {
         _ => panic!("Expected AdbError::InvalidSerial"),
     }
 }
+
+#[test]
+fn test_rayon_multi_chunk_parallel_filtering_reduction() {
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
+
+    // CHUNK_SIZE is 8,192. 25,000 lines tests parallel chunk aggregation across 4 distinct chunks.
+    let total_lines = 25_000;
+    let mut stream = StreamLogBuffer::new(30_000, 1_000);
+    let mut chunk = Vec::with_capacity(total_lines);
+
+    let mut expected_fatal_count = 0;
+    let mut expected_error_count = 0;
+
+    for i in 0..total_lines {
+        if i % 50 == 0 {
+            chunk.push(format!("Line {}: Fatal kernel crash", i));
+            expected_fatal_count += 1;
+        } else if i % 10 == 0 {
+            chunk.push(format!("Line {}: Connection Error occurred", i));
+            expected_error_count += 1;
+        } else {
+            chunk.push(format!("Line {}: Normal system log entry", i));
+        }
+    }
+    stream.append_chunk(chunk);
+
+    let filters = vec![
+        FilterRule {
+            text: "Fatal".to_string(),
+            bg_color: "Red".to_string(),
+            active: true,
+            ..Default::default()
+        },
+        FilterRule {
+            text: "Error".to_string(),
+            bg_color: "Yellow".to_string(),
+            active: true,
+            ..Default::default()
+        },
+    ];
+
+    let token = Arc::new(AtomicU64::new(1));
+    let res = execute_filtering(&stream, &filters, true, Some(&token), 1).expect("filtering completes");
+
+    // All fatal and error lines are matched and visible
+    assert_eq!(res.filter_counts[0], expected_fatal_count);
+    assert_eq!(res.filter_counts[1], expected_error_count);
+    assert_eq!(res.total_matched_lines, expected_fatal_count + expected_error_count);
+    assert_eq!(res.visible_indices.len(), expected_fatal_count + expected_error_count);
+
+    // Indices must be strictly monotonically increasing across chunk boundaries
+    for w in res.visible_indices.windows(2) {
+        assert!(w[0] < w[1], "Indices must be strictly sorted: {} vs {}", w[0], w[1]);
+    }
+}
+
+#[test]
+fn test_cancellation_token_filtering_and_search_abort() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    let total_lines = 20_000;
+    let mut stream = StreamLogBuffer::new(25_000, 1_000);
+    let chunk: Vec<String> = (0..total_lines).map(|i| format!("Log entry {}", i)).collect();
+    stream.append_chunk(chunk);
+
+    let filters = vec![FilterRule {
+        text: "entry".to_string(),
+        active: true,
+        ..Default::default()
+    }];
+
+    // 1. Cancel token has already advanced to generation 2
+    let token = Arc::new(AtomicU64::new(2));
+    // Requesting execution with generation 1 -> must abort immediately and return None
+    let res = execute_filtering(&stream, &filters, false, Some(&token), 1);
+    assert!(res.is_none(), "Filtering must abort when generation != token");
+
+    // 2. Cancellation during search
+    let visible_indices: Vec<usize> = (0..total_lines).collect();
+    let query = SearchQuery {
+        pattern: "entry".to_string(),
+        case_sensitive: false,
+        is_regex: false,
+        forward: true,
+    };
+    token.store(99, Ordering::SeqCst);
+    // Passing generation 1 with token at 99 -> must abort and return Err(SearchError::Cancelled)
+    let search_res = search_in_log(&stream, &visible_indices, &query, None, Some(&token), 1, None);
+    assert!(matches!(search_res, Err(SearchError::Cancelled)));
+}

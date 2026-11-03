@@ -18,7 +18,8 @@ pub fn is_valid_device_serial(serial: &str) -> bool {
 
 /// Scans connected ADB devices via `adb devices` with an enforced timeout and RAII subprocess cleanup.
 pub fn scan_adb_devices(timeout: Duration) -> Result<Vec<String>, AdbError> {
-    let mut cmd = Command::new("adb");
+    let adb_path = super::resolve_adb_path();
+    let mut cmd = Command::new(adb_path);
     cmd.arg("devices");
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());

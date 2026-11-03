@@ -65,7 +65,7 @@ impl FileLogBuffer {
         let mut line_offsets = Vec::with_capacity((file_len / 40).max(1024));
         line_offsets.push(0);
 
-        let mut max_line_len = 0;
+        let mut max_raw_len = 0;
         let mut longest_line_idx = None;
 
         let mut current_line_idx = 0;
@@ -73,10 +73,9 @@ impl FileLogBuffer {
 
         for newline_pos in memchr::memchr_iter(b'\n', bytes) {
             let next_offset = newline_pos + 1;
-            let raw_line = &bytes[prev_offset..newline_pos];
-            let measured = trim_trailing_whitespace(raw_line);
-            if measured.len() > max_line_len {
-                max_line_len = measured.len();
+            let raw_len = newline_pos.saturating_sub(prev_offset);
+            if raw_len > max_raw_len {
+                max_raw_len = raw_len;
                 longest_line_idx = Some(current_line_idx);
             }
 
@@ -87,14 +86,24 @@ impl FileLogBuffer {
 
         // Handle possible trailing line without trailing newline
         if prev_offset < bytes.len() {
-            let raw_line = &bytes[prev_offset..bytes.len()];
-            let measured = trim_trailing_whitespace(raw_line);
-            if measured.len() > max_line_len {
-                max_line_len = measured.len();
+            let raw_len = bytes.len() - prev_offset;
+            if raw_len > max_raw_len {
                 longest_line_idx = Some(current_line_idx);
             }
             line_offsets.push(bytes.len());
         }
+
+        let max_line_len = if let Some(idx) = longest_line_idx {
+            let start = line_offsets[idx];
+            let end = if idx + 1 < line_offsets.len() {
+                line_offsets[idx + 1]
+            } else {
+                bytes.len()
+            };
+            trim_trailing_whitespace(&bytes[start..end]).len()
+        } else {
+            0
+        };
 
         Ok(Self {
             path: path_buf,

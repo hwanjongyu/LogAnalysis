@@ -306,47 +306,65 @@ impl LogAnalysisWorkspace {
                 self.log_source = Some(Arc::new(ActiveLogSource::Stream(stream_buf)));
                 self.status_text = "Streaming adb logcat...".into();
 
-                // Worker task to poll incoming log chunks
+                // Non-blocking async loop using try_recv and async timer to avoid starving GPUI executor
                 cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                     let mut async_cx = cx.clone();
+                    let timer_executor = cx.background_executor().clone();
                     async move {
-                        while let Ok(chunk) = rx.recv() {
-                            let should_continue = this
-                                .update(&mut async_cx, |workspace, cx| {
-                                    if workspace.is_stream_paused {
-                                        // Buffer chunks while paused so logs are not lost
-                                        workspace.paused_stream_buffer.push(chunk);
-                                    } else if let Some(src) = &workspace.log_source {
-                                        if let ActiveLogSource::Stream(ref stream) = **src {
-                                            // Zero-copy Arc<str> pointer cloning (sub-millisecond)
-                                            let mut new_stream = stream.clone();
-                                            new_stream.append_chunk(chunk);
-                                            new_stream.trim_if_needed();
-                                            workspace.log_source =
-                                                Some(Arc::new(ActiveLogSource::Stream(new_stream)));
-                                            workspace.reapply_filters(cx);
+                        loop {
+                            match rx.try_recv() {
+                                Ok(chunk) => {
+                                    let should_continue = this
+                                        .update(&mut async_cx, |workspace, cx| {
+                                            if workspace.is_stream_paused {
+                                                // Buffer chunks while paused so logs are not lost
+                                                workspace.paused_stream_buffer.push(chunk);
+                                            } else if let Some(src) = &workspace.log_source {
+                                                if let ActiveLogSource::Stream(ref stream) = **src {
+                                                    // Zero-copy Arc<str> pointer cloning (sub-millisecond)
+                                                    let mut new_stream = stream.clone();
+                                                    new_stream.append_chunk(chunk);
+                                                    new_stream.trim_if_needed();
+                                                    workspace.log_source =
+                                                        Some(Arc::new(ActiveLogSource::Stream(new_stream)));
+                                                    workspace.reapply_filters(cx);
 
-                                            // Smart Auto-Scroll to bottom if enabled
-                                            if workspace.auto_scroll {
-                                                if let Some(res) = &workspace.filter_result {
-                                                    let count = res.visible_indices.len();
-                                                    if count > 0 {
-                                                        workspace.scroll_handle.scroll_to_item(
-                                                            count - 1,
-                                                            ScrollStrategy::Bottom,
-                                                        );
+                                                    // Smart Auto-Scroll to bottom if enabled
+                                                    if workspace.auto_scroll {
+                                                        if let Some(res) = &workspace.filter_result {
+                                                            let count = res.visible_indices.len();
+                                                            if count > 0 {
+                                                                workspace.scroll_handle.scroll_to_item(
+                                                                    count - 1,
+                                                                    ScrollStrategy::Bottom,
+                                                                );
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
-                                    }
-                                    cx.notify();
-                                    workspace.is_streaming
-                                })
-                                .unwrap_or(false);
+                                            cx.notify();
+                                            workspace.is_streaming
+                                        })
+                                        .unwrap_or(false);
 
-                            if !should_continue {
-                                break;
+                                    if !should_continue {
+                                        break;
+                                    }
+                                }
+                                Err(crossbeam_channel::TryRecvError::Empty) => {
+                                    // Yield execution cooperatively to GPUI async executor
+                                    timer_executor.timer(Duration::from_millis(16)).await;
+                                    let still_streaming = this
+                                        .update(&mut async_cx, |workspace, _| workspace.is_streaming)
+                                        .unwrap_or(false);
+                                    if !still_streaming {
+                                        break;
+                                    }
+                                }
+                                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                                    break;
+                                }
                             }
                         }
                     }

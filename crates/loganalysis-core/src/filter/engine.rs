@@ -171,7 +171,7 @@ pub fn execute_filtering(
                     visible_indices.push(line_idx);
                     visible_styles.push(style);
 
-                    let len = source.get_measured_length(line_idx);
+                    let len = raw_line.len();
                     if len > local_max_len {
                         local_max_len = len;
                         local_longest_idx = Some(line_idx);
@@ -219,9 +219,16 @@ pub fn execute_filtering(
         }
     }
 
-    let widest_visible_text = longest_idx
-        .and_then(|idx| source.get_line(idx).map(|s| s.into_owned()))
-        .unwrap_or_default();
+    let (widest_visible_text, widest_visible_length) = if let Some(idx) = longest_idx {
+        let text = source
+            .get_line(idx)
+            .map(|s| s.into_owned())
+            .unwrap_or_default();
+        let len = source.get_measured_length(idx);
+        (text, len)
+    } else {
+        (String::new(), 0)
+    };
 
     Some(FilterResult {
         visible_indices: combined_indices,
@@ -229,7 +236,7 @@ pub fn execute_filtering(
         filter_counts: combined_counts,
         total_matched_lines,
         widest_visible_text,
-        widest_visible_length: max_len,
+        widest_visible_length,
     })
 }
 

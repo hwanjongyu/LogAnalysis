@@ -60,7 +60,7 @@ pub fn search_in_log(
         if (visited_count & 1023) == 0 {
             if let Some(token) = cancel_token {
                 if token.load(Ordering::Relaxed) != current_generation {
-                    return Ok(None); // Cancelled
+                    return Err(SearchError::Cancelled);
                 }
             }
         }

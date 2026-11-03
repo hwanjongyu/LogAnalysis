@@ -432,6 +432,30 @@ pub fn render_toolbar(
                 } else {
                     None
                 })
+                // ADB Device Selector / Scan Button
+                .child(
+                    div()
+                        .id("btn-toolbar-adb-devices")
+                        .px(px(8.0))
+                        .py(px(4.0))
+                        .rounded_md()
+                        .bg(theme.bg_panel)
+                        .border_1()
+                        .border_color(theme.border_subtle)
+                        .hover(move |s| s.bg(theme.btn_hover))
+                        .text_size(px(11.0))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            this.refresh_adb_devices(cx);
+                        }))
+                        .child(if let Some(dev) = &workspace.selected_device {
+                            format!("📱 {}", dev)
+                        } else if !workspace.adb_devices.is_empty() {
+                            format!("📱 ({} found)", workspace.adb_devices.len())
+                        } else {
+                            "📱 Scan ADB".to_string()
+                        }),
+                )
                 // Start / Stop ADB Stream Pill
                 .child(
                     div()

@@ -5,7 +5,10 @@ pub mod error;
 pub mod filter;
 pub mod search;
 
-pub use adb::{is_valid_device_serial, scan_adb_devices, start_logcat_stream, LogcatStreamHandle};
+pub use adb::{
+    is_valid_device_serial, resolve_adb_path, scan_adb_devices, start_logcat_stream,
+    LogcatStreamHandle,
+};
 pub use buffer::{
     file_buffer::FileLogBuffer, stream_buffer::StreamLogBuffer, ActiveLogSource, LogSource,
 };

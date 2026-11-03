@@ -56,7 +56,8 @@ pub fn start_logcat_stream(
     chunk_tx: Sender<Vec<String>>,
     stop_flag: Arc<AtomicBool>,
 ) -> Result<LogcatStreamHandle, AdbError> {
-    let mut cmd = Command::new("adb");
+    let adb_path = super::resolve_adb_path();
+    let mut cmd = Command::new(adb_path);
     if let Some(serial) = device_serial {
         let s = serial.trim();
         if !is_valid_device_serial(s) {
