@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=LogAnalysis
+Comment=GPU-Accelerated High Performance Log Analysis Tool
+Exec=loganalysis %F
+Icon=loganalysis
+Terminal=false
+Type=Application
+Categories=Development;Utility;System;
+MimeType=text/plain;application/json;
+StartupWMClass=loganalysis
+Keywords=log;viewer;cat;filter;gpui;
