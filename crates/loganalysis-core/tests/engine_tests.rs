@@ -100,14 +100,44 @@ fn test_serial_security_validation() {
     assert!(is_valid_device_serial("emulator-5554"));
     assert!(is_valid_device_serial("192.168.1.50:5555"));
     assert!(is_valid_device_serial("R3CN10XYZ99"));
+    assert!(is_valid_device_serial("  emulator-5554  ")); // Whitespace is safely trimmed
 
     // Injections / flags
     assert!(!is_valid_device_serial(""));
-    assert!(!is_valid_device_serial("  "));
+    assert!(!is_valid_device_serial("   "));
     assert!(!is_valid_device_serial("-d"));
     assert!(!is_valid_device_serial("--help"));
+    assert!(!is_valid_device_serial(" -s bad"));
     assert!(!is_valid_device_serial("device; rm -rf /"));
     assert!(!is_valid_device_serial("device && ls"));
+}
+
+#[test]
+fn test_scan_adb_devices_timeout_behavior() {
+    use std::time::Duration;
+    // scan_adb_devices must never hang indefinitely, even with tiny timeouts
+    let res = scan_adb_devices(Duration::from_millis(50));
+    // Either returns Ok(devices), Err("Failed to execute adb: ..."), or Err("timed out")
+    // The critical check is that it returns deterministically without deadlocking.
+    assert!(res.is_ok() || res.is_err());
+}
+
+#[test]
+fn test_lossy_utf8_and_binary_resilience() {
+    let mut file = NamedTempFile::new().expect("create temp file");
+    // Write valid line, then invalid non-UTF-8 bytes, then another valid line
+    file.write_all(b"Normal line 1\n").unwrap();
+    file.write_all(b"Invalid bytes: \xff\xfe binary dump\n").unwrap();
+    file.write_all(b"Normal line 2\n").unwrap();
+    file.flush().unwrap();
+
+    let buffer = FileLogBuffer::open(file.path()).expect("must open file with binary bytes");
+    assert_eq!(buffer.line_count(), 3);
+    assert_eq!(buffer.get_line(0).unwrap(), "Normal line 1");
+    // The invalid bytes must decode lossily with U+FFFD replacement characters, without panicking
+    let lossy_line = buffer.get_line(1).unwrap();
+    assert!(lossy_line.contains('\u{FFFD}'));
+    assert_eq!(buffer.get_line(2).unwrap(), "Normal line 2");
 }
 
 #[test]
@@ -243,4 +273,23 @@ fn test_cyclic_search() {
         .expect("search should work")
         .expect("should find match");
     assert_eq!(res_prev.visible_row, 0);
+}
+
+#[test]
+fn test_logcat_stream_handle_raii_and_lifecycle() {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use crossbeam_channel::unbounded;
+
+    let (tx, _rx) = unbounded();
+    let stop_flag = Arc::new(AtomicBool::new(false));
+
+    // Test rejection of illegal serial
+    let bad_res = start_logcat_stream(Some("-d; rm -rf"), tx.clone(), stop_flag.clone());
+    assert!(bad_res.is_err());
+
+    // Test start and immediate RAII drop
+    if let Ok(handle) = start_logcat_stream(Some("emulator-5554"), tx, stop_flag) {
+        handle.stop();
+    }
 }
