@@ -558,3 +558,46 @@ fn test_rule_reorder_precedence_inversion_and_anchor_stability() {
     let nearest = find_nearest_anchor_row(&visible_indices, anchor_target);
     assert_eq!(nearest, Some(2));
 }
+
+#[test]
+fn test_custom_foreground_and_background_styling() {
+    let raw_line = b"E/Database: Query execution timed out after 30000ms";
+    let rule = FilterRule {
+        text: "Database".to_string(),
+        bg_color: "Yellow".to_string(),
+        text_color: "DarkRed".to_string(),
+        active: true,
+        ..Default::default()
+    };
+
+    let pf = PreparedFilter::new(rule, 0, 0).unwrap();
+    let (visible, style, is_matched) = evaluate_and_style_line(raw_line, &[pf], true, None);
+
+    assert!(visible);
+    assert!(is_matched);
+    assert_eq!(style.bg_hex, parse_color_spec("Yellow", true));
+    assert_eq!(style.fg_hex, parse_color_spec("DarkRed", false));
+    assert_eq!(style.bg_hex, Some(0xFFFF00));
+    assert_eq!(style.fg_hex, Some(0x8B0000));
+}
+
+#[test]
+fn test_text_only_filter_inherits_theme_bg() {
+    let raw_line = b"W/Network: Packet loss detected on interface wlan0";
+    let rule = FilterRule {
+        text: "Network".to_string(),
+        bg_color: "None".to_string(), // Transparent background
+        text_color: "Red".to_string(), // Custom text color
+        active: true,
+        ..Default::default()
+    };
+
+    let pf = PreparedFilter::new(rule, 0, 0).unwrap();
+    let (visible, style, is_matched) = evaluate_and_style_line(raw_line, &[pf], true, None);
+
+    assert!(visible);
+    assert!(is_matched);
+    assert_eq!(style.bg_hex, None, "Background must remain None (transparent)");
+    assert_eq!(style.fg_hex, parse_color_spec("Red", false));
+    assert_eq!(style.fg_hex, Some(0xFF0000));
+}

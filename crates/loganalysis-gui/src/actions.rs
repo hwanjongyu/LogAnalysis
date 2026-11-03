@@ -16,6 +16,7 @@ actions!(
         CopySelection,
         SaveFilters,
         SaveFiltersAs,
+        LoadFilters,
         ClearLogs,
         ZoomIn,
         ZoomOut,

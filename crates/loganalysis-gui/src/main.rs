@@ -1,5 +1,8 @@
+#![recursion_limit = "512"]
+
 mod actions;
 mod components;
+mod logging;
 mod modals;
 mod selection;
 mod theme;
@@ -52,7 +55,12 @@ impl Render for LogAnalysisWorkspace {
             }))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
                 if let Some(path) = paths.paths().first() {
-                    this.open_file(path, cx);
+                    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+                    if ext.eq_ignore_ascii_case("json") {
+                        this.load_filters_from_path(path, cx);
+                    } else {
+                        this.open_file(path, cx);
+                    }
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenFile, _window, cx| {
@@ -81,6 +89,9 @@ impl Render for LogAnalysisWorkspace {
             }))
             .on_action(cx.listener(|this, _: &SaveFiltersAs, _window, cx| {
                 this.prompt_save_filters(cx);
+            }))
+            .on_action(cx.listener(|this, _: &LoadFilters, _window, cx| {
+                this.prompt_load_filters(cx);
             }))
             .on_action(cx.listener(|this, _: &ClearLogs, _window, cx| {
                 if this.input_focus != InputFocusTarget::None {
@@ -149,6 +160,24 @@ impl Render for LogAnalysisWorkspace {
 }
 
 fn main() {
+    logging::init_crash_handler();
+
+    // Guard against upstream Zed/GPUI bug on Linux X11:
+    // When CJK/Korean IMEs (e.g. ibus, fcitx) send PreeditDraw compound text events,
+    // zed-xim panics with 'Encoding Error: UnsupportedEncoding' at client.rs:237.
+    // Unsetting XMODIFIERS safely bypasses zed-xim in favor of GPUI's native XKB input handler.
+    if std::env::var_os("LOGANALYSIS_KEEP_XMODIFIERS").is_none()
+        && std::env::var_os("XMODIFIERS").is_some()
+    {
+        logging::log_event(
+            "INFO",
+            "Sanitized XMODIFIERS to prevent upstream zed-xim PreeditDraw UnsupportedEncoding panic on X11",
+        );
+        std::env::remove_var("XMODIFIERS");
+    }
+
+    logging::log_event("INFO", "LogAnalysis starting up");
+
     let cli_path = std::env::args().nth(1).map(std::path::PathBuf::from);
 
     Application::new().run(move |cx: &mut App| {
@@ -163,6 +192,7 @@ fn main() {
             KeyBinding::new("ctrl-shift-f", AddFilter, None),
             KeyBinding::new("ctrl-s", SaveFilters, None),
             KeyBinding::new("ctrl-shift-s", SaveFiltersAs, None),
+            KeyBinding::new("ctrl-shift-o", LoadFilters, None),
             KeyBinding::new("ctrl-k", ClearLogs, None),
             KeyBinding::new("ctrl-=", ZoomIn, None),
             KeyBinding::new("ctrl-+", ZoomIn, None),
@@ -198,7 +228,10 @@ fn main() {
             }
             entity
         }) {
-            eprintln!("Failed to open LogAnalysis window: {:?}", e);
+            logging::log_event(
+                "ERROR",
+                &format!("Failed to open LogAnalysis window: {:?}", e),
+            );
         }
     });
 }

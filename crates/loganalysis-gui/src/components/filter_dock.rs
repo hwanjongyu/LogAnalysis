@@ -345,16 +345,22 @@ pub fn render_filter_dock(
                                     let is_active = rule.active;
                                     let is_exclude = rule.exclude;
                                     let is_regex = rule.regex;
-                                    let swatch_rgb = loganalysis_core::parse_color_spec(
-                                        &rule.bg_color,
-                                        true,
-                                    )
-                                    .map(rgb)
-                                    .unwrap_or(if is_exclude {
-                                        theme.error_red
-                                    } else {
-                                        theme.accent
-                                    });
+                                    let bg_opt = loganalysis_core::parse_color_spec(&rule.bg_color, true);
+                                    let fg_opt = loganalysis_core::parse_color_spec(&rule.text_color, false);
+                                    let swatch_bg = bg_opt
+                                        .map(rgb)
+                                        .unwrap_or(if is_exclude {
+                                            theme.error_red
+                                        } else {
+                                            theme.bg_card
+                                        });
+                                    let swatch_fg = fg_opt
+                                        .map(rgb)
+                                        .unwrap_or(if bg_opt.is_some() {
+                                            rgb(0x000000)
+                                        } else {
+                                            theme.text_primary
+                                        });
 
                                     div()
                                         .id(ElementId::NamedInteger(
@@ -387,14 +393,30 @@ pub fn render_filter_dock(
                                                 .items_center()
                                                 .gap_2()
                                                 .overflow_hidden()
-                                                // Vertical Color Swatch Bar
+                                                // Dual-Color Swatch Preview Badge
                                                 .child(
                                                     div()
-                                                        .w(px(4.0))
+                                                        .w(px(20.0))
                                                         .h(px(18.0))
-                                                        .rounded_full()
+                                                        .rounded_sm()
                                                         .flex_shrink_0()
-                                                        .bg(swatch_rgb),
+                                                        .bg(swatch_bg)
+                                                        .border_1()
+                                                        .border_color(if bg_opt.is_none() {
+                                                            theme.border
+                                                        } else {
+                                                            swatch_bg
+                                                        })
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .child(
+                                                            div()
+                                                                .font_weight(FontWeight::BOLD)
+                                                                .text_size(px(9.5))
+                                                                .text_color(swatch_fg)
+                                                                .child("Aa"),
+                                                        ),
                                                 )
                                                 // Active Checkbox
                                                 .child(
@@ -556,10 +578,11 @@ pub fn render_filter_dock(
                                                         .text_size(px(11.0))
                                                         .text_color(theme.text_muted)
                                                         .on_click(cx.listener(
-                                                            move |this, _, _window, cx| {
+                                                            move |this, _, window, cx| {
                                                                 this.open_edit_filter_modal(
                                                                     r_idx, cx,
                                                                 );
+                                                                window.focus(&this.focus_handle);
                                                             },
                                                         ))
                                                         .child("✎"),

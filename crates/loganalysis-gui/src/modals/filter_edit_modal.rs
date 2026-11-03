@@ -15,6 +15,9 @@ pub fn render_filter_edit_modal(
     let theme = workspace.theme;
     let is_edit = workspace.filter_edit_modal.editing_index.is_some();
     let modal_pattern = workspace.filter_edit_modal.pattern.clone();
+    let cursor_pos = workspace.filter_edit_modal.cursor_pos;
+    let chars: Vec<char> = modal_pattern.chars().collect();
+    let safe_cursor = cursor_pos.min(chars.len());
     let is_reg = workspace.filter_edit_modal.is_regex;
     let is_cs = workspace.filter_edit_modal.is_case_sensitive;
     let is_ex = workspace.filter_edit_modal.is_exclude;
@@ -22,23 +25,45 @@ pub fn render_filter_edit_modal(
     let fg_name = workspace.filter_edit_modal.fg_color_name.clone();
     let is_modal_focused = workspace.input_focus == InputFocusTarget::ModalPattern;
 
-    // WCAG 2.1 Contrast Calculation
-    let bg_hex = parse_color_spec(&bg_name, true).unwrap_or(0xFFFFFF);
-    let fg_hex = parse_color_spec(&fg_name, false).unwrap_or(0x000000);
+    // WCAG 2.1 Contrast Calculation with Theme Fallbacks for None / Default
+    let effective_bg = if workspace.is_dark_theme { 0x1E1E1E } else { 0xFFFFFF };
+    let effective_fg = if workspace.is_dark_theme { 0xD4D4D4 } else { 0x1E1E1E };
+
+    let bg_hex = parse_color_spec(&bg_name, true).unwrap_or(effective_bg);
+    let fg_hex = parse_color_spec(&fg_name, false).unwrap_or(effective_fg);
     let (ratio, contrast_level) = evaluate_contrast(bg_hex, fg_hex);
+
+    let preview_bg = parse_color_spec(&bg_name, true)
+        .map(rgb)
+        .unwrap_or(theme.bg_dark);
+    let preview_fg = parse_color_spec(&fg_name, false)
+        .map(rgb)
+        .unwrap_or(theme.text_primary);
 
     Some(
         div()
             .id("modal-overlay-filter-edit")
+            .occlude()
             .absolute()
             .inset_0()
             .bg(rgba(0x000000aa))
             .flex()
             .items_center()
             .justify_center()
+            .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                cx.stop_propagation();
+            })
+            .on_mouse_down(MouseButton::Right, |_, _window, cx| {
+                cx.stop_propagation();
+            })
+            .on_click(cx.listener(|this, _, window, cx| {
+                window.focus(&this.focus_handle);
+                cx.stop_propagation();
+            }))
             .child(
                 div()
                     .id("modal-card-filter-edit")
+                    .occlude()
                     .w(px(500.0))
                     .bg(theme.bg_panel)
                     .border_1()
@@ -49,6 +74,17 @@ pub fn render_filter_edit_modal(
                     .flex()
                     .flex_col()
                     .gap_3()
+                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_mouse_down(MouseButton::Right, |_, _window, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.input_focus = InputFocusTarget::ModalPattern;
+                        window.focus(&this.focus_handle);
+                        cx.stop_propagation();
+                    }))
                     // Modal Header
                     .child(
                         div()
@@ -71,8 +107,12 @@ pub fn render_filter_edit_modal(
                                     .cursor_pointer()
                                     .text_size(px(14.0))
                                     .text_color(theme.text_muted)
+                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                        cx.stop_propagation();
+                                    })
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.close_filter_modal(cx);
+                                        cx.stop_propagation();
                                     }))
                                     .child("✕"),
                             ),
@@ -105,27 +145,152 @@ pub fn render_filter_edit_modal(
                                     .rounded_md()
                                     .font_family("monospace")
                                     .text_size(px(12.5))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
                                     .cursor_pointer()
+                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                        cx.stop_propagation();
+                                    })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.input_focus = InputFocusTarget::ModalPattern;
                                         window.focus(&this.focus_handle);
+                                        cx.stop_propagation();
                                         cx.notify();
                                     }))
-                                    .text_color(if modal_pattern.is_empty() {
-                                        theme.text_muted
-                                    } else {
-                                        theme.text_primary
-                                    })
                                     .child(if modal_pattern.is_empty() {
-                                        if is_modal_focused {
-                                            "| Type pattern here...".to_string()
-                                        } else {
-                                            "Click to type pattern...".to_string()
-                                        }
-                                    } else if is_modal_focused {
-                                        format!("{}|", modal_pattern)
+                                        div()
+                                            .flex_1()
+                                            .cursor_text()
+                                            .text_color(theme.text_muted)
+                                            .child(if is_modal_focused {
+                                                "| Type pattern here...".to_string()
+                                            } else {
+                                                "Click to type pattern...".to_string()
+                                            })
                                     } else {
-                                        modal_pattern
+                                        let mut text_el = div()
+                                            .flex_1()
+                                            .flex()
+                                            .items_center()
+                                            .overflow_hidden()
+                                            .cursor_text();
+
+                                        for (idx, &ch) in chars.iter().enumerate() {
+                                            if is_modal_focused && idx == safe_cursor {
+                                                text_el = text_el.child(
+                                                    div()
+                                                        .w(px(2.0))
+                                                        .h(px(16.0))
+                                                        .bg(theme.accent)
+                                                        .rounded_xs(),
+                                                );
+                                            }
+
+                                            let disp = if ch == ' ' {
+                                                "\u{00A0}".to_string()
+                                            } else {
+                                                ch.to_string()
+                                            };
+
+                                            text_el = text_el.child(
+                                                div()
+                                                    .id(ElementId::NamedInteger(
+                                                        "modal-char".into(),
+                                                        idx as u64,
+                                                    ))
+                                                    .text_color(theme.text_primary)
+                                                    .cursor_text()
+                                                    .on_mouse_down(
+                                                        MouseButton::Left,
+                                                        |_, _window, cx| {
+                                                            cx.stop_propagation();
+                                                        },
+                                                    )
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.filter_edit_modal.cursor_pos =
+                                                                 idx;
+                                                            this.input_focus =
+                                                                InputFocusTarget::ModalPattern;
+                                                            window.focus(&this.focus_handle);
+                                                            cx.stop_propagation();
+                                                            cx.notify();
+                                                        },
+                                                    ))
+                                                    .child(disp),
+                                            );
+                                        }
+
+                                        if is_modal_focused && safe_cursor == chars.len() {
+                                            text_el = text_el.child(
+                                                div()
+                                                    .w(px(2.0))
+                                                    .h(px(16.0))
+                                                    .bg(theme.accent)
+                                                    .rounded_xs(),
+                                            );
+                                        }
+
+                                        text_el = text_el.child(
+                                            div()
+                                                .id("modal-pattern-trailing-space")
+                                                .flex_1()
+                                                .h(px(20.0))
+                                                .cursor_text()
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    |_, _window, cx| {
+                                                        cx.stop_propagation();
+                                                    },
+                                                )
+                                                .on_click(cx.listener(
+                                                    |this, _, window, cx| {
+                                                        this.filter_edit_modal.cursor_pos =
+                                                            this.filter_edit_modal
+                                                                .pattern
+                                                                .chars()
+                                                                .count();
+                                                        this.input_focus =
+                                                            InputFocusTarget::ModalPattern;
+                                                        window.focus(&this.focus_handle);
+                                                        cx.stop_propagation();
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        );
+
+                                        text_el
+                                    })
+                                    .children(if !modal_pattern.is_empty() {
+                                        Some(
+                                            div()
+                                                .id("btn-clear-modal-pattern")
+                                                .px(px(6.0))
+                                                .py(px(2.0))
+                                                .rounded_sm()
+                                                .cursor_pointer()
+                                                .text_size(px(11.0))
+                                                .text_color(theme.text_muted)
+                                                .hover(move |s| {
+                                                    s.text_color(theme.text_primary)
+                                                        .bg(theme.btn_hover)
+                                                })
+                                                .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                                    cx.stop_propagation();
+                                                })
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.filter_edit_modal.pattern.clear();
+                                                    this.filter_edit_modal.cursor_pos = 0;
+                                                    this.input_focus = InputFocusTarget::ModalPattern;
+                                                    window.focus(&this.focus_handle);
+                                                    cx.stop_propagation();
+                                                    cx.notify();
+                                                }))
+                                                .child("✕"),
+                                        )
+                                    } else {
+                                        None
                                     }),
                             ),
                     )
@@ -143,9 +308,15 @@ pub fn render_filter_edit_modal(
                                     .items_center()
                                     .gap_2()
                                     .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                        cx.stop_propagation();
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
                                         this.filter_edit_modal.is_exclude =
                                             !this.filter_edit_modal.is_exclude;
+                                        this.input_focus = InputFocusTarget::ModalPattern;
+                                        window.focus(&this.focus_handle);
+                                        cx.stop_propagation();
                                         cx.notify();
                                     }))
                                     .child(
@@ -176,9 +347,15 @@ pub fn render_filter_edit_modal(
                                     .items_center()
                                     .gap_2()
                                     .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                        cx.stop_propagation();
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
                                         this.filter_edit_modal.is_regex =
                                             !this.filter_edit_modal.is_regex;
+                                        this.input_focus = InputFocusTarget::ModalPattern;
+                                        window.focus(&this.focus_handle);
+                                        cx.stop_propagation();
                                         cx.notify();
                                     }))
                                     .child(
@@ -209,9 +386,15 @@ pub fn render_filter_edit_modal(
                                     .items_center()
                                     .gap_2()
                                     .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                        cx.stop_propagation();
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
                                         this.filter_edit_modal.is_case_sensitive =
                                             !this.filter_edit_modal.is_case_sensitive;
+                                        this.input_focus = InputFocusTarget::ModalPattern;
+                                        window.focus(&this.focus_handle);
+                                        cx.stop_propagation();
                                         cx.notify();
                                     }))
                                     .child(
@@ -237,6 +420,7 @@ pub fn render_filter_edit_modal(
                             ),
                     )
                     // Highlight Color Swatches with WCAG 2.1 Contrast Indicator
+                    // Live Preview Box + WCAG Contrast Badge
                     .child(
                         div()
                             .flex()
@@ -252,7 +436,7 @@ pub fn render_filter_edit_modal(
                                             .text_size(px(11.0))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.text_muted)
-                                            .child("Highlight Color:"),
+                                            .child("Live Style Preview:"),
                                     )
                                     .child(
                                         // Real-time WCAG 2.1 Contrast Badge
@@ -287,48 +471,185 @@ pub fn render_filter_edit_modal(
                             )
                             .child(
                                 div()
+                                    .id("modal-preview-box")
+                                    .w_full()
+                                    .px(px(10.0))
+                                    .py(px(8.0))
+                                    .rounded_md()
+                                    .bg(preview_bg)
+                                    .text_color(preview_fg)
+                                    .border_1()
+                                    .border_color(theme.border_subtle)
+                                    .font_family("monospace")
+                                    .text_size(px(11.5))
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .child(if modal_pattern.trim().is_empty() {
+                                        "2026-11-03 15:40:00.123 [Sample Log] Process started successfully".to_string()
+                                    } else {
+                                        format!("2026-11-03 15:40:00.123 [Sample Log] Found: {}", modal_pattern)
+                                    }),
+                            ),
+                    )
+                    // Row 1: Background Color Swatches
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.text_muted)
+                                    .child(format!("Background Color (배경색): {}", bg_name)),
+                            )
+                            .child(
+                                div()
                                     .flex()
                                     .items_center()
-                                    .gap_2p5()
+                                    .gap_2()
                                     .children(
                                         [
-                                            ("Red", 0xFFB6B6, 0x000000),
-                                            ("Yellow", 0xFFFF00, 0x000000),
-                                            ("Green", 0x90EE90, 0x000000),
-                                            ("Cyan", 0x00FFFF, 0x000000),
-                                            ("Blue", 0xB6D0FF, 0x000000),
-                                            ("Orange", 0xFFD580, 0x000000),
-                                            ("Purple", 0xE6E6FA, 0x000000),
-                                            ("White", 0xFFFFFF, 0x000000),
+                                            ("None", None),
+                                            ("Red", Some(0xFFB6B6)),
+                                            ("Yellow", Some(0xFFFF00)),
+                                            ("Green", Some(0x90EE90)),
+                                            ("Cyan", Some(0x00FFFF)),
+                                            ("Blue", Some(0xB6D0FF)),
+                                            ("Orange", Some(0xFFD580)),
+                                            ("Purple", Some(0xE6E6FA)),
+                                            ("Gray", Some(0xD3D3D3)),
+                                            ("White", Some(0xFFFFFF)),
                                         ]
                                         .into_iter()
-                                        .map(|(name, bg_val, _fg_val)| {
-                                            let is_curr = bg_name == name;
+                                        .map(|(name, bg_val)| {
+                                            let is_curr = bg_name.eq_ignore_ascii_case(name);
+                                            let bg_color = bg_val.map(rgb).unwrap_or(theme.bg_card);
                                             div()
                                                 .id(ElementId::NamedInteger(
-                                                    "palette-color".into(),
-                                                    bg_val as u64,
+                                                    "bg-palette-color".into(),
+                                                    bg_val.unwrap_or(0) as u64,
                                                 ))
-                                                .w(px(26.0))
-                                                .h(px(26.0))
+                                                .w(px(24.0))
+                                                .h(px(24.0))
                                                 .rounded_full()
-                                                .bg(rgb(bg_val))
+                                                .bg(bg_color)
                                                 .border_2()
                                                 .border_color(if is_curr {
                                                     theme.accent
                                                 } else {
                                                     theme.border
                                                 })
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
                                                 .cursor_pointer()
+                                                .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                                    cx.stop_propagation();
+                                                })
                                                 .on_click(cx.listener(
-                                                    move |this, _, _window, cx| {
+                                                    move |this, _, window, cx| {
                                                         this.filter_edit_modal.bg_color_name =
                                                             name.to_string();
-                                                        this.filter_edit_modal.fg_color_name =
-                                                            "Black".to_string();
+                                                        this.input_focus = InputFocusTarget::ModalPattern;
+                                                        window.focus(&this.focus_handle);
+                                                        cx.stop_propagation();
                                                         cx.notify();
                                                     },
                                                 ))
+                                                .child(if bg_val.is_none() {
+                                                    div().text_size(px(10.0)).text_color(theme.text_muted).child("⊘")
+                                                } else if is_curr {
+                                                    div().text_size(px(10.0)).text_color(rgb(0x000000)).child("✓")
+                                                } else {
+                                                    div().child("")
+                                                })
+                                        })
+                                        .collect::<Vec<_>>(),
+                                    ),
+                            ),
+                    )
+                    // Row 2: Text / Foreground Color Swatches
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.text_muted)
+                                    .child(format!("Text Color (글자색): {}", fg_name)),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .children(
+                                        [
+                                            ("Default", None),
+                                            ("Black", Some(0x000000)),
+                                            ("White", Some(0xFFFFFF)),
+                                            ("Red", Some(0xFF0000)),
+                                            ("DarkRed", Some(0x8B0000)),
+                                            ("Blue", Some(0x0000FF)),
+                                            ("Green", Some(0x008000)),
+                                            ("Gray", Some(0x808080)),
+                                            ("Orange", Some(0xFFA500)),
+                                            ("Purple", Some(0x800080)),
+                                        ]
+                                        .into_iter()
+                                        .map(|(name, fg_val)| {
+                                            let is_curr = fg_name.eq_ignore_ascii_case(name)
+                                                || (name == "Default" && (fg_name.eq_ignore_ascii_case("none") || fg_name.is_empty()));
+                                            div()
+                                                .id(ElementId::NamedInteger(
+                                                    "fg-palette-color".into(),
+                                                    fg_val.unwrap_or(0) as u64,
+                                                ))
+                                                .w(px(24.0))
+                                                .h(px(24.0))
+                                                .rounded_full()
+                                                .bg(theme.bg_card)
+                                                .border_2()
+                                                .border_color(if is_curr {
+                                                    theme.accent
+                                                } else {
+                                                    theme.border
+                                                })
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .cursor_pointer()
+                                                .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                                    cx.stop_propagation();
+                                                })
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.filter_edit_modal.fg_color_name =
+                                                            name.to_string();
+                                                        this.input_focus = InputFocusTarget::ModalPattern;
+                                                        window.focus(&this.focus_handle);
+                                                        cx.stop_propagation();
+                                                        cx.notify();
+                                                    },
+                                                ))
+                                                .child(if let Some(val) = fg_val {
+                                                    div()
+                                                        .text_size(px(12.0))
+                                                        .font_weight(FontWeight::BOLD)
+                                                        .text_color(rgb(val))
+                                                        .child("A")
+                                                } else {
+                                                    div()
+                                                        .text_size(px(9.0))
+                                                        .font_weight(FontWeight::BOLD)
+                                                        .text_color(theme.text_muted)
+                                                        .child("Def")
+                                                })
                                         })
                                         .collect::<Vec<_>>(),
                                     ),
@@ -354,16 +675,17 @@ pub fn render_filter_edit_modal(
                                     .gap_1p5()
                                     .children(
                                         [
-                                            ("Fatal", "Red"),
-                                            ("Exception", "Yellow"),
-                                            ("Error", "Red"),
-                                            ("Warning", "Yellow"),
-                                            ("ActivityTaskManager", "Cyan"),
-                                            ("AndroidRuntime", "Red"),
+                                            ("Fatal", "Red", "Black"),
+                                            ("Error (Text)", "None", "Red"),
+                                            ("Exception", "Yellow", "Black"),
+                                            ("Warning", "Orange", "Black"),
+                                            ("Success", "Green", "Black"),
+                                            ("ActivityTaskManager", "Cyan", "Black"),
+                                            ("System", "Blue", "DarkBlue"),
                                         ]
                                         .into_iter()
                                         .enumerate()
-                                        .map(|(p_idx, (pat, col))| {
+                                        .map(|(p_idx, (pat, bg, fg))| {
                                             div()
                                                 .id(ElementId::NamedInteger(
                                                     "quick-preset".into(),
@@ -379,12 +701,22 @@ pub fn render_filter_edit_modal(
                                                 .font_family("monospace")
                                                 .text_size(px(10.5))
                                                 .cursor_pointer()
+                                                .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                                    cx.stop_propagation();
+                                                })
                                                 .on_click(cx.listener(
-                                                    move |this, _, _window, cx| {
+                                                    move |this, _, window, cx| {
                                                         this.filter_edit_modal.pattern =
                                                             pat.to_string();
+                                                        this.filter_edit_modal.cursor_pos =
+                                                            pat.chars().count();
                                                         this.filter_edit_modal.bg_color_name =
-                                                            col.to_string();
+                                                            bg.to_string();
+                                                        this.filter_edit_modal.fg_color_name =
+                                                            fg.to_string();
+                                                        this.input_focus = InputFocusTarget::ModalPattern;
+                                                        window.focus(&this.focus_handle);
+                                                        cx.stop_propagation();
                                                         cx.notify();
                                                     },
                                                 ))
@@ -412,8 +744,12 @@ pub fn render_filter_edit_modal(
                                     .hover(move |s| s.bg(theme.btn_hover))
                                     .text_size(px(11.5))
                                     .cursor_pointer()
+                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                        cx.stop_propagation();
+                                    })
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.close_filter_modal(cx);
+                                        cx.stop_propagation();
                                     }))
                                     .child("Cancel (Esc)"),
                             )
@@ -428,8 +764,12 @@ pub fn render_filter_edit_modal(
                                     .text_size(px(11.5))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .cursor_pointer()
+                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                        cx.stop_propagation();
+                                    })
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.save_modal_filter(cx);
+                                        cx.stop_propagation();
                                     }))
                                     .child(if is_edit {
                                         "Update Rule (Enter)"

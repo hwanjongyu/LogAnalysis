@@ -75,6 +75,20 @@ pub fn render_toolbar(
                         )
                         .child(
                             div()
+                                .id("btn-toolbar-load-filters")
+                                .px(px(8.0))
+                                .py(px(4.0))
+                                .rounded_sm()
+                                .hover(move |s| s.bg(theme.btn_hover))
+                                .text_size(px(11.0))
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.prompt_load_filters(cx);
+                                }))
+                                .child("Load Profile"),
+                        )
+                        .child(
+                            div()
                                 .id("btn-toolbar-save-filters")
                                 .px(px(8.0))
                                 .py(px(4.0))

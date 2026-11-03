@@ -131,24 +131,23 @@ impl LogAnalysisWorkspace {
         }
     }
 
-    /// Prompts user to select a log file using native OS file dialog
+    /// Prompts user to select a log file using native OS file dialog with filters
     pub fn prompt_open_file(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("Select Log File".into()),
-        });
-
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut async_cx = cx.clone();
             async move {
-                if let Ok(Ok(Some(paths))) = rx.await {
-                    if let Some(path) = paths.into_iter().next() {
-                        let _ = this.update(&mut async_cx, |workspace, cx| {
-                            workspace.open_file(&path, cx);
-                        });
-                    }
+                let file = rfd::AsyncFileDialog::new()
+                    .set_title("Open Log File")
+                    .add_filter("Log Files (*.log, *.txt)", &["log", "txt"])
+                    .add_filter("All Files (*.*)", &["*"])
+                    .pick_file()
+                    .await;
+
+                if let Some(handle) = file {
+                    let path = handle.path().to_path_buf();
+                    let _ = this.update(&mut async_cx, |workspace, cx| {
+                        workspace.open_file(&path, cx);
+                    });
                 }
             }
         })
@@ -527,10 +526,13 @@ impl LogAnalysisWorkspace {
 
         // Support common text box shortcuts (Ctrl+V paste, Ctrl+Backspace delete word, Ctrl+U / Ctrl+A clear)
         if m.control && !m.alt && !m.platform {
-            if key == "backspace" {
+            if key == "backspace" || key == "delete" {
                 match self.input_focus {
                     InputFocusTarget::ModalPattern => {
-                        delete_previous_word(&mut self.filter_edit_modal.pattern);
+                        self.filter_edit_modal.cursor_pos = delete_previous_word_at(
+                            &mut self.filter_edit_modal.pattern,
+                            self.filter_edit_modal.cursor_pos,
+                        );
                         cx.notify();
                     }
                     InputFocusTarget::SearchBar => {
@@ -550,7 +552,11 @@ impl LogAnalysisWorkspace {
                         let clean = text.replace(['\r', '\n'], "");
                         match self.input_focus {
                             InputFocusTarget::ModalPattern => {
-                                self.filter_edit_modal.pattern.push_str(&clean);
+                                self.filter_edit_modal.cursor_pos = insert_at_char_index(
+                                    &mut self.filter_edit_modal.pattern,
+                                    self.filter_edit_modal.cursor_pos,
+                                    &clean,
+                                );
                                 cx.notify();
                             }
                             InputFocusTarget::SearchBar => {
@@ -570,6 +576,7 @@ impl LogAnalysisWorkspace {
                 match self.input_focus {
                     InputFocusTarget::ModalPattern => {
                         self.filter_edit_modal.pattern.clear();
+                        self.filter_edit_modal.cursor_pos = 0;
                         cx.notify();
                     }
                     InputFocusTarget::SearchBar => {
@@ -621,9 +628,58 @@ impl LogAnalysisWorkspace {
                 }
                 InputFocusTarget::None => {}
             },
+            "left" => {
+                if self.input_focus == InputFocusTarget::ModalPattern {
+                    self.filter_edit_modal.cursor_pos =
+                        self.filter_edit_modal.cursor_pos.saturating_sub(1);
+                    cx.notify();
+                }
+            }
+            "right" => {
+                if self.input_focus == InputFocusTarget::ModalPattern {
+                    let max = self.filter_edit_modal.pattern.chars().count();
+                    self.filter_edit_modal.cursor_pos =
+                        (self.filter_edit_modal.cursor_pos + 1).min(max);
+                    cx.notify();
+                }
+            }
+            "home" => {
+                if self.input_focus == InputFocusTarget::ModalPattern {
+                    self.filter_edit_modal.cursor_pos = 0;
+                    cx.notify();
+                }
+            }
+            "end" => {
+                if self.input_focus == InputFocusTarget::ModalPattern {
+                    self.filter_edit_modal.cursor_pos =
+                        self.filter_edit_modal.pattern.chars().count();
+                    cx.notify();
+                }
+            }
             "backspace" => match self.input_focus {
                 InputFocusTarget::ModalPattern => {
-                    self.filter_edit_modal.pattern.pop();
+                    self.filter_edit_modal.cursor_pos = remove_before_char_index(
+                        &mut self.filter_edit_modal.pattern,
+                        self.filter_edit_modal.cursor_pos,
+                    );
+                    cx.notify();
+                }
+                InputFocusTarget::SearchBar => {
+                    self.search_query.pop();
+                    cx.notify();
+                }
+                InputFocusTarget::FilterRuleSearch => {
+                    self.filter_search_query.pop();
+                    cx.notify();
+                }
+                InputFocusTarget::None => {}
+            },
+            "delete" => match self.input_focus {
+                InputFocusTarget::ModalPattern => {
+                    remove_at_char_index(
+                        &mut self.filter_edit_modal.pattern,
+                        self.filter_edit_modal.cursor_pos,
+                    );
                     cx.notify();
                 }
                 InputFocusTarget::SearchBar => {
@@ -638,7 +694,11 @@ impl LogAnalysisWorkspace {
             },
             "space" => match self.input_focus {
                 InputFocusTarget::ModalPattern => {
-                    self.filter_edit_modal.pattern.push(' ');
+                    self.filter_edit_modal.cursor_pos = insert_at_char_index(
+                        &mut self.filter_edit_modal.pattern,
+                        self.filter_edit_modal.cursor_pos,
+                        " ",
+                    );
                     cx.notify();
                 }
                 InputFocusTarget::SearchBar => {
@@ -656,7 +716,11 @@ impl LogAnalysisWorkspace {
                     if !ch.is_empty() && !ch.chars().any(|c| c.is_control()) {
                         match self.input_focus {
                             InputFocusTarget::ModalPattern => {
-                                self.filter_edit_modal.pattern.push_str(ch);
+                                self.filter_edit_modal.cursor_pos = insert_at_char_index(
+                                    &mut self.filter_edit_modal.pattern,
+                                    self.filter_edit_modal.cursor_pos,
+                                    ch,
+                                );
                                 cx.notify();
                             }
                             InputFocusTarget::SearchBar => {
@@ -701,7 +765,11 @@ impl LogAnalysisWorkspace {
                     };
                     match self.input_focus {
                         InputFocusTarget::ModalPattern => {
-                            self.filter_edit_modal.pattern.push_str(&c);
+                            self.filter_edit_modal.cursor_pos = insert_at_char_index(
+                                &mut self.filter_edit_modal.pattern,
+                                self.filter_edit_modal.cursor_pos,
+                                &c,
+                            );
                             cx.notify();
                         }
                         InputFocusTarget::SearchBar => {
@@ -799,6 +867,7 @@ impl LogAnalysisWorkspace {
             is_open: true,
             editing_index: None,
             pattern: String::new(),
+            cursor_pos: 0,
             is_regex: false,
             is_case_sensitive: false,
             is_exclude: false,
@@ -813,10 +882,13 @@ impl LogAnalysisWorkspace {
     pub fn open_edit_filter_modal(&mut self, rule_idx: usize, cx: &mut Context<Self>) {
         if let Some(tab) = self.filter_tabs.get(self.active_tab_index) {
             if let Some(rule) = tab.filters.get(rule_idx) {
+                let pattern = rule.text.clone();
+                let cursor_pos = pattern.chars().count();
                 self.filter_edit_modal = FilterEditState {
                     is_open: true,
                     editing_index: Some(rule_idx),
-                    pattern: rule.text.clone(),
+                    pattern,
+                    cursor_pos,
                     is_regex: rule.regex,
                     is_case_sensitive: rule.case_sensitive,
                     is_exclude: rule.exclude,
@@ -1020,7 +1092,7 @@ impl LogAnalysisWorkspace {
         cx.notify();
     }
 
-    /// Prompts user to save filter profiles to a JSON file atomically
+    /// Prompts user to save filter profiles to a JSON file atomically with filters
     pub fn prompt_save_filters(&mut self, cx: &mut Context<Self>) {
         let Ok(json_str) = self.export_filters_json() else {
             self.status_text = "Failed to serialize filters".into();
@@ -1028,13 +1100,19 @@ impl LogAnalysisWorkspace {
             return;
         };
 
-        let current_dir = std::env::current_dir().unwrap_or_default();
-        let rx = cx.prompt_for_new_path(&current_dir, Some("filters.json"));
-
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut async_cx = cx.clone();
             async move {
-                if let Ok(Ok(Some(path))) = rx.await {
+                let file = rfd::AsyncFileDialog::new()
+                    .set_title("Save Filter Profile")
+                    .set_file_name("filters.json")
+                    .add_filter("JSON Profile (*.json)", &["json"])
+                    .add_filter("All Files (*.*)", &["*"])
+                    .save_file()
+                    .await;
+
+                if let Some(handle) = file {
+                    let path = handle.path().to_path_buf();
                     let tmp_path = path.with_extension("tmp");
                     let write_res = std::fs::write(&tmp_path, json_str.as_bytes())
                         .and_then(|_| std::fs::rename(&tmp_path, &path));
@@ -1050,6 +1128,62 @@ impl LogAnalysisWorkspace {
                             }
                         }
                         cx.notify();
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Loads filter profiles from a specific file path on disk
+    pub fn load_filters_from_path(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                match self.import_filters_json(&content, cx) {
+                    Ok(_) => {
+                        let fname = path.file_name().unwrap_or_default().to_string_lossy();
+                        self.status_text = format!("✓ Loaded filter profile: {}", fname).into();
+                        crate::logging::log_event(
+                            "INFO",
+                            &format!("Loaded filter profile from {:?}", path),
+                        );
+                    }
+                    Err(e) => {
+                        self.status_text = format!("Failed to parse profile JSON: {}", e).into();
+                        crate::logging::log_event(
+                            "WARN",
+                            &format!("Failed to parse filter profile from {:?}: {}", path, e),
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                self.status_text = format!("Failed to read file: {}", e).into();
+                crate::logging::log_event(
+                    "WARN",
+                    &format!("Failed to read filter profile file {:?}: {}", path, e),
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    /// Prompts user to select and load a filter profile JSON file with JSON and All Files filters
+    pub fn prompt_load_filters(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut async_cx = cx.clone();
+            async move {
+                let file = rfd::AsyncFileDialog::new()
+                    .set_title("Load Filter Profile")
+                    .add_filter("JSON Profile (*.json)", &["json"])
+                    .add_filter("All Files (*.*)", &["*"])
+                    .pick_file()
+                    .await;
+
+                if let Some(handle) = file {
+                    let path = handle.path().to_path_buf();
+                    let _ = this.update(&mut async_cx, |workspace, cx| {
+                        workspace.load_filters_from_path(&path, cx);
                     });
                 }
             }
@@ -1251,3 +1385,4 @@ impl LogAnalysisWorkspace {
         cx.notify();
     }
 }
+
