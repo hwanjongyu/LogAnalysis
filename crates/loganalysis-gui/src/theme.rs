@@ -69,7 +69,7 @@ impl Theme {
             bg_badge: rgb(0xe2e8f0),
             row_hover: rgb(0xf1f5f9),
             border: rgb(0xe2e8f0),
-            border_subtle: rgb(0xedF2f7),
+            border_subtle: rgb(0xedf2f7),
             text_primary: rgb(0x0f172a),
             text_muted: rgb(0x64748b),
             text_gutter: rgb(0x94a3b8),

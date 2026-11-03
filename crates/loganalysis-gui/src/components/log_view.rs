@@ -1,0 +1,260 @@
+use gpui::*;
+use loganalysis_core::LogSource;
+
+use crate::components::find_bar::render_find_bar;
+use crate::types::InputFocusTarget;
+use crate::workspace::LogAnalysisWorkspace;
+
+pub fn render_log_viewport(
+    workspace: &LogAnalysisWorkspace,
+    cx: &mut Context<LogAnalysisWorkspace>,
+) -> impl IntoElement {
+    let theme = workspace.theme;
+    let row_count = workspace
+        .filter_result
+        .as_ref()
+        .map(|r| r.visible_indices.len())
+        .unwrap_or(0);
+    let font_size = workspace.font_size;
+    let row_height = font_size * 1.55;
+
+    let filter_res = workspace.filter_result.clone();
+    let source = workspace.log_source.clone();
+    let selected = workspace.selection.selected_row;
+    let has_log_source = workspace.log_source.is_some();
+    let weak_self = cx.weak_entity();
+
+    div()
+        .flex_1()
+        .h_full()
+        .flex()
+        .flex_col()
+        .bg(theme.bg_dark)
+        .overflow_hidden()
+        // Interactive Find Bar
+        .children(render_find_bar(workspace, cx))
+        // Virtualized Log Rows or Polished Empty State
+        .child(if has_log_source {
+            let mut list = uniform_list("log-view", row_count, move |range, _window, _cx| {
+                range
+                    .map(|idx| {
+                        let (real_idx, text) =
+                            if let (Some(res), Some(src)) = (&filter_res, &source) {
+                                let r_idx = res.visible_indices.get(idx).copied().unwrap_or(0);
+                                let t = src
+                                    .get_line(r_idx)
+                                    .unwrap_or_default()
+                                    .to_string();
+                                (r_idx, t)
+                            } else {
+                                (0, String::new())
+                            };
+
+                        let (has_custom_bg, bg_color, fg_color) = if let Some(res) = &filter_res {
+                            if let Some(style) = res.visible_styles.get(idx) {
+                                (
+                                    style.bg_hex.is_some(),
+                                    style.bg_hex.map(rgb).unwrap_or(theme.bg_dark),
+                                    style.fg_hex.map(rgb).unwrap_or(theme.text_primary),
+                                )
+                            } else {
+                                (false, theme.bg_dark, theme.text_primary)
+                            }
+                        } else {
+                            (false, theme.bg_dark, theme.text_primary)
+                        };
+
+                        let is_selected = selected == Some(idx);
+                        let final_bg = if is_selected {
+                            theme.selection_bg
+                        } else {
+                            bg_color
+                        };
+                        let final_fg = if is_selected && !has_custom_bg {
+                            rgb(0xffffff)
+                        } else {
+                            fg_color
+                        };
+                        let entity_handle = weak_self.clone();
+
+                        div()
+                            .id(ElementId::NamedInteger("log-row".into(), idx as u64))
+                            .h(row_height)
+                            .min_h(row_height)
+                            .max_h(row_height)
+                            .w_full()
+                            .bg(final_bg)
+                            .hover(move |s| {
+                                if !is_selected && !has_custom_bg {
+                                    s.bg(theme.row_hover)
+                                } else {
+                                    s
+                                }
+                            })
+                            .text_color(final_fg)
+                            .font_family("monospace")
+                            .text_size(font_size)
+                            .line_height(row_height)
+                            .flex()
+                            .items_center()
+                            .flex_shrink_0()
+                            .overflow_hidden()
+                            .cursor_pointer()
+                            .on_click(move |_, _window, cx| {
+                                let _ = entity_handle.update(cx, |this, cx| {
+                                    this.selection.select(idx, real_idx);
+                                    this.input_focus = InputFocusTarget::None;
+                                    cx.notify();
+                                });
+                            })
+                            // Line Number Gutter (Fixed 64px + Subtle Right Border)
+                            .child(
+                                div()
+                                    .w(px(64.0))
+                                    .h_full()
+                                    .flex_shrink_0()
+                                    .bg(if is_selected {
+                                        theme.accent_muted
+                                    } else {
+                                        theme.bg_gutter
+                                    })
+                                    .border_r_1()
+                                    .border_color(theme.border_subtle)
+                                    .text_color(if is_selected {
+                                        theme.accent
+                                    } else {
+                                        theme.text_gutter
+                                    })
+                                    .font_weight(if is_selected {
+                                        FontWeight::BOLD
+                                    } else {
+                                        FontWeight::NORMAL
+                                    })
+                                    .flex()
+                                    .items_center()
+                                    .justify_end()
+                                    .pr(px(8.0))
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .child(format!("{}", real_idx + 1)),
+                            )
+                            // Monospace Log Content
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .px(px(10.0))
+                                    .whitespace_nowrap()
+                                    .child(text),
+                            )
+                    })
+                    .collect::<Vec<_>>()
+            });
+
+            if workspace.full_line_display {
+                list =
+                    list.with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained);
+            }
+
+            list.track_scroll(workspace.scroll_handle.clone())
+                .flex_1()
+                .into_any_element()
+        } else {
+            // Modern Onboarding Empty State Card
+            div()
+                .flex_1()
+                .h_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .w(px(460.0))
+                        .p(px(28.0))
+                        .rounded_xl()
+                        .bg(theme.bg_panel)
+                        .border_1()
+                        .border_color(theme.border)
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap_4()
+                        .child(
+                            div()
+                                .text_size(px(18.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme.text_primary)
+                                .child("LogAnalysis Studio"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(theme.text_muted)
+                                .child(
+                                    "Drop any log or filter JSON file here, or start a live ADB logcat stream.",
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .pt(px(4.0))
+                                .child(
+                                    div()
+                                        .id("btn-empty-state-open")
+                                        .px(px(16.0))
+                                        .py(px(8.0))
+                                        .rounded_md()
+                                        .bg(theme.accent)
+                                        .text_color(rgb(0xffffff))
+                                        .text_size(px(12.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.prompt_open_file(cx);
+                                        }))
+                                        .child("📂 Open Log File (Ctrl+O)"),
+                                )
+                                .child(
+                                    div()
+                                        .id("btn-empty-state-adb")
+                                        .px(px(16.0))
+                                        .py(px(8.0))
+                                        .rounded_md()
+                                        .bg(theme.bg_card)
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .hover(move |s| s.bg(theme.btn_hover))
+                                        .text_size(px(12.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.start_adb_stream(cx);
+                                        }))
+                                        .child("⚡ Start ADB Stream"),
+                                ),
+                        )
+                        // Shortcut Cheat Sheet
+                        .child(
+                            div()
+                                .w_full()
+                                .mt(px(8.0))
+                                .pt(px(12.0))
+                                .border_t_1()
+                                .border_color(theme.border_subtle)
+                                .flex()
+                                .flex_col()
+                                .gap_1p5()
+                                .text_size(px(11.0))
+                                .font_family("monospace")
+                                .text_color(theme.text_muted)
+                                .child("Ctrl+F       Search in logs (F3 / Shift+F3)")
+                                .child("Ctrl+Shift+F Add new highlight/exclude rule")
+                                .child("Ctrl+H       Toggle Filtered Only view")
+                                .child("Ctrl+Shift+L Toggle Filter Panel (Left / Bottom)")
+                                .child("Ctrl+T / D   New / Delete filter tab"),
+                        ),
+                )
+                .into_any_element()
+        })
+}

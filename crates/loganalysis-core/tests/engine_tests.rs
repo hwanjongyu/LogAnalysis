@@ -117,11 +117,27 @@ fn test_serial_security_validation() {
 #[test]
 fn test_scan_adb_devices_timeout_behavior() {
     use std::time::Duration;
-    // scan_adb_devices must never hang indefinitely, even with tiny timeouts
-    let res = scan_adb_devices(Duration::from_millis(50));
-    // Either returns Ok(devices), Err("Failed to execute adb: ..."), or Err("timed out")
-    // The critical check is that it returns deterministically without deadlocking.
-    assert!(res.is_ok() || res.is_err());
+    // scan_adb_devices must never hang indefinitely, even with tiny timeouts.
+    // A 1-nanosecond timeout must deterministically yield Err(AdbError::Timeout)
+    // or Err(AdbError::ExecutionFailed) if adb is missing.
+    let res = scan_adb_devices(Duration::from_nanos(1));
+    match res {
+        Err(AdbError::Timeout(d)) => assert_eq!(d, Duration::from_nanos(1)),
+        Err(AdbError::ExecutionFailed(_)) => { /* adb binary not installed on host */ }
+        Err(other) => panic!("Expected Timeout or ExecutionFailed, got: {:?}", other),
+        Ok(_) => panic!("1-nanosecond timeout should never succeed!"),
+    }
+}
+
+#[test]
+fn test_active_log_source_dispatch() {
+    let mut stream = StreamLogBuffer::new(100, 10);
+    stream.append_chunk(vec!["hello stream".to_string(), "world stream".to_string()]);
+    let active = ActiveLogSource::Stream(stream);
+    assert_eq!(active.line_count(), 2);
+    assert_eq!(active.get_line(0).unwrap(), "hello stream");
+    assert_eq!(active.get_line(1).unwrap(), "world stream");
+    assert_eq!(active.get_measured_length(0), 12);
 }
 
 #[test]

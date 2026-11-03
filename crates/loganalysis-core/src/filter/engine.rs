@@ -137,7 +137,7 @@ pub fn execute_filtering(
 
     // Chunk size for parallel processing (8192 lines per chunk)
     const CHUNK_SIZE: usize = 8192;
-    let num_chunks = (line_count + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    let num_chunks = line_count.div_ceil(CHUNK_SIZE);
 
     let chunk_results: Option<Vec<_>> = (0..num_chunks)
         .into_par_iter()

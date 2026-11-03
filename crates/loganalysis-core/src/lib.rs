@@ -6,7 +6,9 @@ pub mod filter;
 pub mod search;
 
 pub use adb::{is_valid_device_serial, scan_adb_devices, start_logcat_stream, LogcatStreamHandle};
-pub use buffer::{file_buffer::FileLogBuffer, stream_buffer::StreamLogBuffer, LogSource};
+pub use buffer::{
+    file_buffer::FileLogBuffer, stream_buffer::StreamLogBuffer, ActiveLogSource, LogSource,
+};
 pub use constants::{
     parse_color_spec, ASYNC_SEARCH_THRESHOLD, COLOR_MAP, MAX_MONITOR_LINES, MONITOR_TRIM_BATCH,
     TEXT_COLOR_MAP,

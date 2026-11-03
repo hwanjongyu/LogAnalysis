@@ -3,6 +3,58 @@ pub mod stream_buffer;
 
 use std::borrow::Cow;
 
+pub use file_buffer::FileLogBuffer;
+pub use stream_buffer::StreamLogBuffer;
+
+/// Unified log source enum representing either a file-backed mmap buffer or a streaming ring buffer.
+pub enum ActiveLogSource {
+    File(FileLogBuffer),
+    Stream(StreamLogBuffer),
+}
+
+impl std::fmt::Debug for ActiveLogSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(_) => write!(f, "ActiveLogSource::File"),
+            Self::Stream(s) => write!(f, "ActiveLogSource::Stream({:?})", s),
+        }
+    }
+}
+
+impl LogSource for ActiveLogSource {
+    #[inline]
+    fn line_count(&self) -> usize {
+        match self {
+            Self::File(f) => f.line_count(),
+            Self::Stream(s) => s.line_count(),
+        }
+    }
+
+    #[inline]
+    fn get_raw_line(&self, idx: usize) -> Option<&[u8]> {
+        match self {
+            Self::File(f) => f.get_raw_line(idx),
+            Self::Stream(s) => s.get_raw_line(idx),
+        }
+    }
+
+    #[inline]
+    fn get_line(&self, idx: usize) -> Option<Cow<'_, str>> {
+        match self {
+            Self::File(f) => f.get_line(idx),
+            Self::Stream(s) => s.get_line(idx),
+        }
+    }
+
+    #[inline]
+    fn get_measured_length(&self, idx: usize) -> usize {
+        match self {
+            Self::File(f) => f.get_measured_length(idx),
+            Self::Stream(s) => s.get_measured_length(idx),
+        }
+    }
+}
+
 /// A common trait for log data sources (mmap file or streaming memory buffer)
 pub trait LogSource: Send + Sync {
     /// Total number of lines in this log source

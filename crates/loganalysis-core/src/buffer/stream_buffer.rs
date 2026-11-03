@@ -1,13 +1,24 @@
+use std::borrow::Cow;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use super::{trim_line_end, LogSource};
 use crate::constants::{MAX_MONITOR_LINES, MONITOR_TRIM_BATCH};
 
-/// High-performance rolling ring buffer for real-time ADB streaming backed by `VecDeque`.
-/// Avoids O(N) memory copying during buffer trim operations.
+/// Helper to strip trailing newline or carriage return from a string slice without copying.
+#[inline]
+pub fn trim_line_end_str(mut s: &str) -> &str {
+    while s.ends_with('\n') || s.ends_with('\r') {
+        s = &s[..s.len() - 1];
+    }
+    s
+}
+
+/// High-performance rolling ring buffer for real-time ADB streaming backed by `VecDeque<Arc<str>>`.
+/// Avoids O(N) memory copying during buffer trim operations and provides lightweight zero-copy cloning.
 #[derive(Clone, Debug)]
 pub struct StreamLogBuffer {
-    lines: VecDeque<String>,
+    lines: VecDeque<Arc<str>>,
     max_capacity: usize,
     trim_batch: usize,
     max_line_len: usize,
@@ -44,7 +55,7 @@ impl StreamLogBuffer {
             }
         }
 
-        self.lines.extend(chunk);
+        self.lines.extend(chunk.into_iter().map(Arc::from));
         true
     }
 
@@ -115,5 +126,10 @@ impl LogSource for StreamLogBuffer {
     #[inline]
     fn get_raw_line(&self, idx: usize) -> Option<&[u8]> {
         self.lines.get(idx).map(|s| trim_line_end(s.as_bytes()))
+    }
+
+    #[inline]
+    fn get_line(&self, idx: usize) -> Option<Cow<'_, str>> {
+        self.lines.get(idx).map(|s| Cow::Borrowed(trim_line_end_str(s.as_ref())))
     }
 }
