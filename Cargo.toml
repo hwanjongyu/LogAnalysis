@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "crates/loganalysis-core",
+    "crates/loganalysis-gui",
+]
+resolver = "2"
