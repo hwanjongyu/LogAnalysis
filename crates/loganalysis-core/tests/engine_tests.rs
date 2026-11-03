@@ -336,3 +336,37 @@ fn test_case_insensitive_simd_literal_matching() {
     assert!(pf.matches(line1));
     assert!(!pf.matches(line2));
 }
+
+#[test]
+fn test_cjk_measured_length_accuracy() {
+    let mut stream = StreamLogBuffer::new(10, 5);
+    // Korean log line: "안녕하세요 2026 로그" (13 chars, 25 UTF-8 bytes)
+    stream.append_chunk(vec!["안녕하세요 2026 로그".to_string()]);
+
+    let measured = stream.get_measured_length(0);
+    // Must be 13 (character count), NOT 25 (byte count)
+    assert_eq!(measured, 13);
+}
+
+#[test]
+fn test_strongly_typed_domain_errors() {
+    // 1. Invalid regex produces FilterError::InvalidRegex
+    let bad_rule = FilterRule {
+        text: "[unclosed_regex".to_string(),
+        regex: true,
+        active: true,
+        ..Default::default()
+    };
+    match PreparedFilter::new(bad_rule, 0, 0) {
+        Err(FilterError::InvalidRegex(_)) => (),
+        _ => panic!("Expected FilterError::InvalidRegex"),
+    }
+
+    // 2. Invalid device serial produces AdbError::InvalidSerial
+    let (tx, _rx) = crossbeam_channel::unbounded();
+    let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    match start_logcat_stream(Some("-d; injection"), tx, stop_flag) {
+        Err(AdbError::InvalidSerial(_)) => (),
+        _ => panic!("Expected AdbError::InvalidSerial"),
+    }
+}

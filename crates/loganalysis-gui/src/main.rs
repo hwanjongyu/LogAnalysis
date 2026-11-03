@@ -9,6 +9,7 @@ use crossbeam_channel::unbounded;
 use gpui::*;
 use loganalysis_core::*;
 
+use actions::*;
 use selection::SelectionModel;
 use theme::Theme;
 
@@ -36,6 +37,7 @@ impl LogSource for ActiveLogSource {
 }
 
 pub struct LogAnalysisWorkspace {
+    focus_handle: FocusHandle,
     log_source: Option<Arc<ActiveLogSource>>,
     filter_result: Option<Arc<FilterResult>>,
     scroll_handle: UniformListScrollHandle,
@@ -67,7 +69,7 @@ pub struct LogAnalysisWorkspace {
 }
 
 impl LogAnalysisWorkspace {
-    pub fn new(_cx: &mut Context<Self>) -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         let default_tab = FilterTabData {
             name: "Default".to_string(),
             enabled: true,
@@ -91,6 +93,7 @@ impl LogAnalysisWorkspace {
         };
 
         Self {
+            focus_handle: cx.focus_handle(),
             log_source: None,
             filter_result: None,
             scroll_handle: UniformListScrollHandle::new(),
@@ -116,6 +119,29 @@ impl LogAnalysisWorkspace {
             status_text: "Ready | Open a file or start ADB streaming".into(),
             active_file_name: None,
         }
+    }
+
+    /// Prompts user to select a log file using native OS file dialog
+    pub fn prompt_open_file(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Select Log File".into()),
+        });
+
+        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut async_cx = cx.clone();
+            async move {
+                if let Ok(Ok(Some(paths))) = rx.await {
+                    if let Some(path) = paths.into_iter().next() {
+                        let _ = this.update(&mut async_cx, |workspace, cx| {
+                            workspace.open_file(&path, cx);
+                        });
+                    }
+                }
+            }
+        }).detach();
     }
 
     /// Loads a log file using FileLogBuffer and executes filtering
@@ -357,7 +383,7 @@ impl LogAnalysisWorkspace {
 }
 
 impl Render for LogAnalysisWorkspace {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme;
         let row_count = self.filter_result.as_ref().map(|r| r.visible_indices.len()).unwrap_or(0);
         let font_size = self.font_size;
@@ -366,8 +392,31 @@ impl Render for LogAnalysisWorkspace {
         let filter_res = self.filter_result.clone();
         let source = self.log_source.clone();
         let selected = self.selection.selected_row;
+        let has_log_source = self.log_source.is_some();
 
         div()
+            .id("workspace-container")
+            .track_focus(&self.focus_handle)
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
+                if let Some(path) = paths.paths().first() {
+                    this.open_file(path, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenFile, _window, cx| {
+                this.prompt_open_file(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleFilteredOnly, _window, cx| {
+                this.toggle_filtered_only(cx);
+            }))
+            .on_action(cx.listener(|this, _: &Find, _window, cx| {
+                this.toggle_search_bar(cx);
+            }))
+            .on_action(cx.listener(|this, _: &FindNext, _window, cx| {
+                this.search(true, cx);
+            }))
+            .on_action(cx.listener(|this, _: &FindPrev, _window, cx| {
+                this.search(false, cx);
+            }))
             .flex()
             .flex_col()
             .size_full()
@@ -396,6 +445,23 @@ impl Render for LogAnalysisWorkspace {
                                     .text_size(px(14.0))
                                     .child("LogAnalysis"),
                             )
+                            // Open File Button in Toolbar
+                            .child(
+                                div()
+                                    .id("btn-toolbar-open")
+                                    .px(px(8.0))
+                                    .py(px(4.0))
+                                    .rounded_md()
+                                    .bg(theme.accent)
+                                    .text_color(rgb(0xffffff))
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.prompt_open_file(cx);
+                                    }))
+                                    .child("📂 Open File (Ctrl+O)"),
+                            )
                             .child(
                                 div()
                                     .text_size(px(12.0))
@@ -415,31 +481,50 @@ impl Render for LogAnalysisWorkspace {
                             // Find Button
                             .child(
                                 div()
+                                    .id("btn-toolbar-find")
                                     .px(px(8.0))
                                     .py(px(4.0))
                                     .rounded_md()
                                     .bg(if self.is_search_visible { theme.accent } else { theme.btn_hover })
                                     .text_size(px(11.0))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.toggle_search_bar(cx);
+                                    }))
                                     .child("Find (Ctrl+F)"),
                             )
                             // Show Only Filtered Button
                             .child(
                                 div()
+                                    .id("btn-toolbar-filter-only")
                                     .px(px(8.0))
                                     .py(px(4.0))
                                     .rounded_md()
                                     .bg(if self.show_only_filtered { theme.accent } else { theme.btn_hover })
                                     .text_size(px(11.0))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.toggle_filtered_only(cx);
+                                    }))
                                     .child(if self.show_only_filtered { "Filtered Only (ON)" } else { "Filtered Only (OFF)" }),
                             )
                             // ADB Stream Button
                             .child(
                                 div()
+                                    .id("btn-toolbar-adb")
                                     .px(px(8.0))
                                     .py(px(4.0))
                                     .rounded_md()
                                     .bg(if self.is_streaming { theme.error_red } else { theme.success_green })
                                     .text_size(px(11.0))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        if this.is_streaming {
+                                            this.stop_adb_stream(cx);
+                                        } else {
+                                            this.start_adb_stream(cx);
+                                        }
+                                    }))
                                     .child(if self.is_streaming { "Stop ADB" } else { "Start ADB" }),
                             ),
                     ),
@@ -558,7 +643,7 @@ impl Render for LogAnalysisWorkspace {
                             } else {
                                 None
                             })
-                            .child(
+                            .child(if has_log_source {
                                 uniform_list("log-view", row_count, move |range, _window, _cx| {
                                     range.map(|idx| {
                                         let (real_idx, text) = if let (Some(res), Some(src)) = (&filter_res, &source) {
@@ -587,23 +672,31 @@ impl Render for LogAnalysisWorkspace {
 
                                         div()
                                             .h(row_height)
+                                            .min_h(row_height)
+                                            .max_h(row_height)
                                             .w_full()
                                             .bg(final_bg)
                                             .text_color(fg_color)
                                             .text_size(font_size)
+                                            .line_height(row_height)
                                             .flex()
                                             .items_center()
+                                            .flex_shrink_0()
+                                            .overflow_hidden()
                                             // Line number gutter
                                             .child(
                                                 div()
                                                     .w(px(54.0))
                                                     .h_full()
+                                                    .flex_shrink_0()
                                                     .bg(theme.bg_gutter)
                                                     .text_color(theme.text_gutter)
                                                     .flex()
                                                     .items_center()
                                                     .justify_end()
                                                     .pr(px(6.0))
+                                                    .whitespace_nowrap()
+                                                    .overflow_hidden()
                                                     .child(format!("{}", real_idx + 1)),
                                             )
                                             // Log Line Text
@@ -611,13 +704,55 @@ impl Render for LogAnalysisWorkspace {
                                                 div()
                                                     .flex_1()
                                                     .px(px(8.0))
+                                                    .whitespace_nowrap()
+                                                    .overflow_hidden()
                                                     .child(text),
                                             )
                                     }).collect::<Vec<_>>()
                                 })
                                 .track_scroll(self.scroll_handle.clone())
-                                .flex_1(),
-                            ),
+                                .flex_1()
+                                .into_any_element()
+                            } else {
+                                // Empty state when no file is open
+                                div()
+                                    .flex_1()
+                                    .h_full()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap_4()
+                                    .child(
+                                        div()
+                                            .text_size(px(16.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(theme.text_primary)
+                                            .child("📂 No log file opened"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("btn-empty-state-open")
+                                            .px(px(16.0))
+                                            .py(px(8.0))
+                                            .rounded_md()
+                                            .bg(theme.accent)
+                                            .text_color(rgb(0xffffff))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, _window, cx| {
+                                                this.prompt_open_file(cx);
+                                            }))
+                                            .child("Open Log File (Ctrl+O)"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(theme.text_muted)
+                                            .child("Or launch: loganalysis <path_to_log_file>"),
+                                    )
+                                    .into_any_element()
+                            }),
                     ),
             )
             // Bottom Status Bar
@@ -649,7 +784,18 @@ impl Render for LogAnalysisWorkspace {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    let cli_path = std::env::args().nth(1).map(std::path::PathBuf::from);
+
+    Application::new().run(move |cx: &mut App| {
+        // Register Global Key Bindings
+        cx.bind_keys([
+            KeyBinding::new("ctrl-o", OpenFile, None),
+            KeyBinding::new("ctrl-h", ToggleFilteredOnly, None),
+            KeyBinding::new("ctrl-f", Find, None),
+            KeyBinding::new("f3", FindNext, None),
+            KeyBinding::new("shift-f3", FindPrev, None),
+        ]);
+
         let bounds = Bounds::centered(None, size(px(1200.0), px(850.0)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -661,8 +807,15 @@ fn main() {
             ..Default::default()
         };
 
-        if let Err(e) = cx.open_window(options, |_window, cx| {
-            cx.new(LogAnalysisWorkspace::new)
+        let initial_path = cli_path.clone();
+        if let Err(e) = cx.open_window(options, move |_window, cx| {
+            let entity = cx.new(LogAnalysisWorkspace::new);
+            if let Some(path) = initial_path {
+                entity.update(cx, |workspace, cx| {
+                    workspace.open_file(&path, cx);
+                });
+            }
+            entity
         }) {
             eprintln!("Failed to open LogAnalysis window: {:?}", e);
         }

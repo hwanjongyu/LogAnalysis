@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Sender;
 
 use super::device::is_valid_device_serial;
+use crate::error::AdbError;
 
 /// RAII handle to a running adb logcat background stream.
 /// Automatically terminates the child process and joins the thread on drop or stop.
@@ -54,12 +55,12 @@ pub fn start_logcat_stream(
     device_serial: Option<&str>,
     chunk_tx: Sender<Vec<String>>,
     stop_flag: Arc<AtomicBool>,
-) -> Result<LogcatStreamHandle, String> {
+) -> Result<LogcatStreamHandle, AdbError> {
     let mut cmd = Command::new("adb");
     if let Some(serial) = device_serial {
         let s = serial.trim();
         if !is_valid_device_serial(s) {
-            return Err("Invalid characters or leading dash in device serial".to_string());
+            return Err(AdbError::InvalidSerial(s.to_string()));
         }
         cmd.args(["-s", s]);
     }
@@ -67,8 +68,8 @@ pub fn start_logcat_stream(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
 
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn adb logcat: {}", e))?;
-    let stdout = child.stdout.take().ok_or("Failed to capture stdout of adb")?;
+    let mut child = cmd.spawn().map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
+    let stdout = child.stdout.take().ok_or(AdbError::IoCaptureFailed)?;
 
     let child_arc = Arc::new(Mutex::new(Some(child)));
     let child_clone = Arc::clone(&child_arc);

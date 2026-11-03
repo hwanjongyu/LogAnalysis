@@ -1,6 +1,7 @@
 pub mod adb;
 pub mod buffer;
 pub mod constants;
+pub mod error;
 pub mod filter;
 pub mod search;
 
@@ -10,6 +11,7 @@ pub use constants::{
     parse_color_spec, ASYNC_SEARCH_THRESHOLD, COLOR_MAP, MAX_MONITOR_LINES, MONITOR_TRIM_BATCH,
     TEXT_COLOR_MAP,
 };
+pub use error::{AdbError, FilterError, SearchError};
 pub use filter::{
     contrast_ratio, evaluate_and_style_line, evaluate_contrast, execute_filtering,
     find_nearest_anchor_row, parse_filters_json, CompiledMatcher, ContrastLevel,

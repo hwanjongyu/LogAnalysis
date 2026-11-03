@@ -17,7 +17,6 @@ smallvec = "1.13"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 crossbeam-channel = "0.5"
 thiserror = "2.0"
-tokio = { version = "1.40", features = ["process", "sync", "rt", "io-util", "time"], optional = true }
 
 [dev-dependencies]
 tempfile = "3.13"

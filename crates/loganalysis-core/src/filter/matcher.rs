@@ -1,4 +1,5 @@
 use super::model::FilterRule;
+use crate::error::FilterError;
 
 pub enum CompiledMatcher {
     /// Case-sensitive literal search using SIMD memmem
@@ -12,7 +13,7 @@ pub enum CompiledMatcher {
 }
 
 impl CompiledMatcher {
-    pub fn new(text: &str, case_sensitive: bool, is_regex: bool) -> Result<Self, String> {
+    pub fn new(text: &str, case_sensitive: bool, is_regex: bool) -> Result<Self, FilterError> {
         if is_regex {
             // First try standard regex::bytes::Regex
             let mut builder = regex::bytes::RegexBuilder::new(text);
@@ -28,7 +29,7 @@ impl CompiledMatcher {
                     };
                     match fancy_regex::Regex::new(&pattern) {
                         Ok(fancy_re) => Ok(Self::FancyRegex(fancy_re)),
-                        Err(_) => Err(std_err.to_string()),
+                        Err(_) => Err(FilterError::InvalidRegex(std_err.to_string())),
                     }
                 }
             }
@@ -88,7 +89,7 @@ pub struct PreparedFilter {
 }
 
 impl PreparedFilter {
-    pub fn new(rule: FilterRule, flat_index: usize, tab_index: usize) -> Result<Self, String> {
+    pub fn new(rule: FilterRule, flat_index: usize, tab_index: usize) -> Result<Self, FilterError> {
         let matcher = if !rule.active || rule.text.is_empty() {
             None
         } else {

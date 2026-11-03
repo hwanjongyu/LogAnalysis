@@ -3,6 +3,8 @@ use std::thread;
 use std::time::Duration;
 use crossbeam_channel::bounded;
 
+use crate::error::AdbError;
+
 /// Validates whether an ADB device serial string is safe against command-line argument injection.
 pub fn is_valid_device_serial(serial: &str) -> bool {
     let s = serial.trim();
@@ -13,23 +15,23 @@ pub fn is_valid_device_serial(serial: &str) -> bool {
 }
 
 /// Scans connected ADB devices via `adb devices` with an enforced timeout.
-pub fn scan_adb_devices(timeout: Duration) -> Result<Vec<String>, String> {
+pub fn scan_adb_devices(timeout: Duration) -> Result<Vec<String>, AdbError> {
     let (tx, rx) = bounded(1);
     thread::spawn(move || {
         let res = Command::new("adb")
             .arg("devices")
             .output()
-            .map_err(|e| format!("Failed to execute adb: {}", e));
+            .map_err(|e| AdbError::ExecutionFailed(e.to_string()));
         let _ = tx.send(res);
     });
 
     let output = match rx.recv_timeout(timeout) {
         Ok(res) => res?,
-        Err(_) => return Err(format!("adb devices timed out after {:?}", timeout)),
+        Err(_) => return Err(AdbError::Timeout(timeout)),
     };
 
     if !output.status.success() {
-        return Err(format!("adb devices exited with code {:?}", output.status.code()));
+        return Err(AdbError::NonZeroExit(output.status.code()));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
