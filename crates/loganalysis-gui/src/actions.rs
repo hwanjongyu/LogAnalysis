@@ -22,5 +22,9 @@ actions!(
         TogglePauseStream,
         AddIncludeFromSelection,
         AddExcludeFromSelection,
+        AddFilterTab,
+        DeleteFilterTab,
+        RenameFilterTab,
+        ToggleTheme,
     ]
 );

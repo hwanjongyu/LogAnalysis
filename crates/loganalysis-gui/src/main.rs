@@ -80,6 +80,7 @@ pub struct LogAnalysisWorkspace {
     font_size: Pixels,
     status_text: SharedString,
     active_file_name: Option<SharedString>,
+    is_dark_theme: bool,
 }
 
 impl LogAnalysisWorkspace {
@@ -134,6 +135,7 @@ impl LogAnalysisWorkspace {
             font_size: px(12.0),
             status_text: "Ready | Open a file or start ADB streaming".into(),
             active_file_name: None,
+            is_dark_theme: true,
         }
     }
 
@@ -613,6 +615,81 @@ impl LogAnalysisWorkspace {
             cx.notify();
         }
     }
+
+    /// Adds a new filter tab (Ctrl+T)
+    pub fn add_filter_tab(&mut self, cx: &mut Context<Self>) {
+        let new_tab_name = format!("Tab {}", self.filter_tabs.len() + 1);
+        self.filter_tabs.push(FilterTabData {
+            name: new_tab_name.clone(),
+            enabled: true,
+            filters: Vec::new(),
+            ..Default::default()
+        });
+        self.active_tab_index = self.filter_tabs.len() - 1;
+        self.reapply_filters(cx);
+        self.status_text = format!("Added new filter tab: {}", new_tab_name).into();
+        cx.notify();
+    }
+
+    /// Deletes the current filter tab (Ctrl+D)
+    pub fn delete_current_tab(&mut self, cx: &mut Context<Self>) {
+        if self.filter_tabs.len() <= 1 {
+            self.status_text = "Cannot delete the last remaining filter tab".into();
+            cx.notify();
+            return;
+        }
+
+        let removed = self.filter_tabs.remove(self.active_tab_index);
+        if self.active_tab_index >= self.filter_tabs.len() {
+            self.active_tab_index = self.filter_tabs.len() - 1;
+        }
+        self.reapply_filters(cx);
+        self.status_text = format!("Deleted filter tab: {}", removed.name).into();
+        cx.notify();
+    }
+
+    /// Renames the current filter tab (Ctrl+R)
+    pub fn rename_current_tab(&mut self, cx: &mut Context<Self>) {
+        if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
+            let next_name = format!("{}_renamed", tab.name);
+            tab.name = next_name.clone();
+            self.status_text = format!("Renamed tab to: {}", next_name).into();
+            cx.notify();
+        }
+    }
+
+    /// Toggles active state of a whole tab
+    pub fn toggle_tab_enabled(&mut self, tab_idx: usize, cx: &mut Context<Self>) {
+        if let Some(tab) = self.filter_tabs.get_mut(tab_idx) {
+            tab.enabled = !tab.enabled;
+            self.reapply_filters(cx);
+            cx.notify();
+        }
+    }
+
+    /// Switches active filter tab
+    pub fn select_tab(&mut self, tab_idx: usize, cx: &mut Context<Self>) {
+        if tab_idx < self.filter_tabs.len() {
+            self.active_tab_index = tab_idx;
+            cx.notify();
+        }
+    }
+
+    /// Toggles light / dark theme
+    pub fn toggle_theme(&mut self, cx: &mut Context<Self>) {
+        self.is_dark_theme = !self.is_dark_theme;
+        self.theme = if self.is_dark_theme {
+            Theme::dark()
+        } else {
+            Theme::light()
+        };
+        self.status_text = if self.is_dark_theme {
+            "Switched to Dark Theme".into()
+        } else {
+            "Switched to Light Theme".into()
+        };
+        cx.notify();
+    }
 }
 
 impl Render for LogAnalysisWorkspace {
@@ -665,6 +742,18 @@ impl Render for LogAnalysisWorkspace {
             }))
             .on_action(cx.listener(|this, _: &ClearLogs, _window, cx| {
                 this.clear_logs(cx);
+            }))
+            .on_action(cx.listener(|this, _: &AddFilterTab, _window, cx| {
+                this.add_filter_tab(cx);
+            }))
+            .on_action(cx.listener(|this, _: &DeleteFilterTab, _window, cx| {
+                this.delete_current_tab(cx);
+            }))
+            .on_action(cx.listener(|this, _: &RenameFilterTab, _window, cx| {
+                this.rename_current_tab(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleTheme, _window, cx| {
+                this.toggle_theme(cx);
             }))
             .on_action(cx.listener(|this, _: &ZoomIn, _window, cx| {
                 this.zoom(1.0, cx);
@@ -832,6 +921,21 @@ impl Render for LogAnalysisWorkspace {
                                     }))
                                     .child(if self.show_only_filtered { "Filtered Only (ON)" } else { "Filtered Only (OFF)" }),
                             )
+                            // Theme Toggle Button
+                            .child(
+                                div()
+                                    .id("btn-toolbar-theme-toggle")
+                                    .px(px(8.0))
+                                    .py(px(4.0))
+                                    .rounded_md()
+                                    .bg(theme.btn_hover)
+                                    .text_size(px(11.0))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.toggle_theme(cx);
+                                    }))
+                                    .child(if self.is_dark_theme { "☀️ Light" } else { "🌙 Dark" }),
+                            )
                             // ADB Stream Button
                             .child(
                                 div()
@@ -862,16 +966,92 @@ impl Render for LogAnalysisWorkspace {
                     // Filter Sidebar (Left Panel)
                     .child(
                         div()
-                            .w(px(260.0))
+                            .w(px(280.0))
                             .h_full()
                             .bg(theme.bg_panel)
                             .border_r_1()
                             .border_color(theme.border)
                             .flex()
                             .flex_col()
+                            // Tabs Header Bar
                             .child(
                                 div()
                                     .h(px(32.0))
+                                    .w_full()
+                                    .bg(theme.bg_header)
+                                    .border_b_1()
+                                    .border_color(theme.border)
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .px(px(6.0))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_1()
+                                            .children(
+                                                self.filter_tabs.iter().enumerate().map(|(t_idx, tab)| {
+                                                    let is_active_tab = t_idx == self.active_tab_index;
+                                                    div()
+                                                        .id(ElementId::NamedInteger("tab-header-btn".into(), t_idx as u64))
+                                                        .px(px(6.0))
+                                                        .py(px(2.0))
+                                                        .rounded_sm()
+                                                        .bg(if is_active_tab { theme.accent } else { theme.bg_panel })
+                                                        .text_color(if is_active_tab { rgb(0xffffff) } else { theme.text_muted })
+                                                        .text_size(px(10.0))
+                                                        .font_weight(if is_active_tab { FontWeight::BOLD } else { FontWeight::NORMAL })
+                                                        .cursor_pointer()
+                                                        .on_click(cx.listener(move |this, _, _window, cx| {
+                                                            this.select_tab(t_idx, cx);
+                                                        }))
+                                                        .child(tab.name.clone())
+                                                }).collect::<Vec<_>>()
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_1()
+                                            // Add Tab Button
+                                            .child(
+                                                div()
+                                                    .id("btn-add-tab")
+                                                    .px(px(4.0))
+                                                    .py(px(1.0))
+                                                    .rounded_sm()
+                                                    .bg(theme.btn_hover)
+                                                    .text_size(px(10.0))
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                                        this.add_filter_tab(cx);
+                                                    }))
+                                                    .child("+ Tab"),
+                                            )
+                                            // Delete Tab Button
+                                            .child(
+                                                div()
+                                                    .id("btn-del-tab")
+                                                    .px(px(4.0))
+                                                    .py(px(1.0))
+                                                    .rounded_sm()
+                                                    .bg(theme.btn_hover)
+                                                    .text_size(px(10.0))
+                                                    .text_color(theme.error_red)
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                                        this.delete_current_tab(cx);
+                                                    }))
+                                                    .child("✕"),
+                                            ),
+                                    ),
+                            )
+                            // Filter Rules Header Bar
+                            .child(
+                                div()
+                                    .h(px(28.0))
                                     .w_full()
                                     .bg(theme.bg_header)
                                     .border_b_1()
@@ -883,8 +1063,8 @@ impl Render for LogAnalysisWorkspace {
                                     .child(
                                         div()
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .text_size(px(12.0))
-                                            .child("Filter Rules"),
+                                            .text_size(px(11.0))
+                                            .child("Rules in Active Tab"),
                                     )
                                     .child(
                                         div()
@@ -1507,6 +1687,9 @@ fn main() {
             KeyBinding::new("ctrl-+", ZoomIn, None),
             KeyBinding::new("ctrl--", ZoomOut, None),
             KeyBinding::new("space", TogglePauseStream, None),
+            KeyBinding::new("ctrl-t", AddFilterTab, None),
+            KeyBinding::new("ctrl-d", DeleteFilterTab, None),
+            KeyBinding::new("ctrl-r", RenameFilterTab, None),
         ]);
 
         let bounds = Bounds::centered(None, size(px(1200.0), px(850.0)), cx);

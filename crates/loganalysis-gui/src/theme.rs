@@ -39,3 +39,28 @@ impl Default for Theme {
         }
     }
 }
+
+impl Theme {
+    pub fn dark() -> Self {
+        Self::default()
+    }
+
+    pub fn light() -> Self {
+        Self {
+            bg_dark: rgb(0xffffff),
+            bg_header: rgb(0xf3f4f6),
+            bg_panel: rgb(0xf9fafb),
+            bg_gutter: rgb(0xe5e7eb),
+            border: rgb(0xd1d5db),
+            text_primary: rgb(0x111827),
+            text_muted: rgb(0x6b7280),
+            text_gutter: rgb(0x9ca3af),
+            selection_bg: rgb(0xdbeafe),
+            highlight_search: rgb(0xfef08a),
+            btn_hover: rgb(0xe5e7eb),
+            accent: rgb(0x2563eb),
+            error_red: rgb(0xdc2626),
+            success_green: rgb(0x16a34a),
+        }
+    }
+}
