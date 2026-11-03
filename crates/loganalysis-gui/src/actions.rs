@@ -13,5 +13,14 @@ actions!(
         StopAdb,
         RefreshAdbDevices,
         AddFilter,
+        CopySelection,
+        SaveFilters,
+        SaveFiltersAs,
+        ClearLogs,
+        ZoomIn,
+        ZoomOut,
+        TogglePauseStream,
+        AddIncludeFromSelection,
+        AddExcludeFromSelection,
     ]
 );
