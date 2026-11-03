@@ -28,5 +28,6 @@ actions!(
         ToggleTheme,
         ToggleFullLineDisplay,
         ToggleAutoScroll,
+        ToggleFilterPanelPosition,
     ]
 );
