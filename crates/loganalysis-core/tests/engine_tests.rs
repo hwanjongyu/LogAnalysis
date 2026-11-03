@@ -41,8 +41,9 @@ fn test_exclude_filter_priority() {
     let p2 = PreparedFilter::new(f2, 1, 0).unwrap();
     let filters = vec![p1, p2];
 
-    let (visible, _style) = evaluate_and_style_line(raw_line, &filters, true, None);
+    let (visible, _style, is_matched) = evaluate_and_style_line(raw_line, &filters, true, None);
     assert!(!visible, "Line must be hidden because exclude filter matches last");
+    assert!(is_matched, "Rule matched even though it was excluded");
 }
 
 #[test]
@@ -69,8 +70,9 @@ fn test_independent_reverse_style_inheritance() {
     let p2 = PreparedFilter::new(f2, 1, 0).unwrap();
     let filters = vec![p1, p2];
 
-    let (visible, style) = evaluate_and_style_line(raw_line, &filters, true, None);
+    let (visible, style, is_matched) = evaluate_and_style_line(raw_line, &filters, true, None);
     assert!(visible);
+    assert!(is_matched);
     assert_eq!(style.bg_hex, parse_color_spec("Yellow", true));
     assert_eq!(style.fg_hex, parse_color_spec("Red", false));
 }
@@ -292,4 +294,45 @@ fn test_logcat_stream_handle_raii_and_lifecycle() {
     if let Ok(handle) = start_logcat_stream(Some("emulator-5554"), tx, stop_flag) {
         handle.stop();
     }
+}
+
+#[test]
+fn test_stream_buffer_recalculates_max_len_on_drain() {
+    let mut buffer = StreamLogBuffer::new(5, 3);
+    // Line 0 is super long (100 chars), lines 1..8 are short (10 chars)
+    let giant_line = "A".repeat(100);
+    let mut chunk = vec![giant_line];
+    for i in 1..8 {
+        chunk.push(format!("short line {}", i));
+    }
+    buffer.append_chunk(chunk);
+    assert_eq!(buffer.max_line_len(), 100);
+
+    // Trim occurs (excess = 8 - 5 = 3 >= trim_batch of 3)
+    // Draining lines 0..3 removes the giant line at index 0!
+    let trimmed = buffer.trim_if_needed();
+    assert_eq!(trimmed, Some(3));
+    assert_eq!(buffer.line_count(), 5);
+
+    // Max length must resynchronize to the remaining short lines (~12 chars), NOT stay 100!
+    assert!(buffer.max_line_len() < 20);
+    assert!(buffer.longest_line_text().starts_with("short line"));
+}
+
+#[test]
+fn test_case_insensitive_simd_literal_matching() {
+    let filter = FilterRule {
+        text: "error: connection reset".to_string(),
+        case_sensitive: false,
+        regex: false,
+        active: true,
+        ..Default::default()
+    };
+    let pf = PreparedFilter::new(filter, 0, 0).expect("must compile");
+
+    let line1 = b"2026-11-03 ERROR: Connection Reset by peer";
+    let line2 = b"2026-11-03 INFO: Normal connection alive";
+
+    assert!(pf.matches(line1));
+    assert!(!pf.matches(line2));
 }

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use rayon::prelude::*;
 use smallvec::SmallVec;
@@ -24,13 +24,14 @@ pub struct FilterResult {
 }
 
 /// Evaluates a single line against prepared filters according to LogAnalysis specifications.
+/// Returns `(is_visible, style, is_matched)`.
 #[inline]
 pub fn evaluate_and_style_line(
     raw_line: &[u8],
     prepared_filters: &[PreparedFilter],
     show_only_filtered: bool,
-    filter_counts: Option<&[AtomicUsize]>,
-) -> (bool, ResolvedStyle) {
+    mut filter_counts: Option<&mut [usize]>,
+) -> (bool, ResolvedStyle, bool) {
     // 1. Edge Case: If there are no active filters, display all lines with default styling
     if prepared_filters.is_empty() {
         return (
@@ -39,14 +40,17 @@ pub fn evaluate_and_style_line(
                 bg_hex: None,
                 fg_hex: Some(0x808080),
             },
+            false,
         );
     }
 
     let mut matched_indices = SmallVec::<[usize; 8]>::new();
     for (idx, pf) in prepared_filters.iter().enumerate() {
         if pf.matches(raw_line) {
-            if let Some(counts) = filter_counts {
-                counts[pf.flat_index].fetch_add(1, Ordering::Relaxed);
+            if let Some(counts) = filter_counts.as_deref_mut() {
+                if pf.flat_index < counts.len() {
+                    counts[pf.flat_index] += 1; // Pure local non-atomic addition, zero false sharing
+                }
             }
             matched_indices.push(idx);
         }
@@ -61,22 +65,23 @@ pub fn evaluate_and_style_line(
                 bg_hex: None,
                 fg_hex: Some(0x808080),
             },
+            false,
         );
     }
 
     // 3. Exclude rule wins if the last matching filter is an exclude rule
     let last_matched_idx = *matched_indices.last().unwrap();
     if prepared_filters[last_matched_idx].rule.exclude {
-        return (false, ResolvedStyle::default());
+        return (false, ResolvedStyle::default(), true);
     }
 
-    // 4. Independent reverse BG and FG inheritance
+    // 4. Independent reverse BG and FG inheritance (using pre-cached hex colors)
     let mut bg_hex = None;
     let mut fg_hex = None;
 
     for &idx in matched_indices.iter().rev() {
-        let rule = &prepared_filters[idx].rule;
-        if rule.exclude {
+        let pf = &prepared_filters[idx];
+        if pf.rule.exclude {
             // Any exclude rule encountered backwards resets styles and stops
             bg_hex = None;
             fg_hex = None;
@@ -84,10 +89,10 @@ pub fn evaluate_and_style_line(
         }
 
         if bg_hex.is_none() {
-            bg_hex = rule.resolved_bg_hex();
+            bg_hex = pf.resolved_bg_hex;
         }
         if fg_hex.is_none() {
-            fg_hex = rule.resolved_fg_hex();
+            fg_hex = pf.resolved_fg_hex;
         }
 
         if bg_hex.is_some() && fg_hex.is_some() {
@@ -95,7 +100,7 @@ pub fn evaluate_and_style_line(
         }
     }
 
-    (true, ResolvedStyle { bg_hex, fg_hex })
+    (true, ResolvedStyle { bg_hex, fg_hex }, true)
 }
 
 /// Executes parallel filtering across a log source using Rayon.
@@ -119,8 +124,6 @@ pub fn execute_filtering(
         }
     }
 
-    let filter_counts: Vec<AtomicUsize> = (0..filter_count).map(|_| AtomicUsize::new(0)).collect();
-
     if line_count == 0 {
         return Some(FilterResult {
             visible_indices: Vec::new(),
@@ -132,7 +135,7 @@ pub fn execute_filtering(
         });
     }
 
-    // Chunk size for parallel processing (e.g. 8192 lines per chunk)
+    // Chunk size for parallel processing (8192 lines per chunk)
     const CHUNK_SIZE: usize = 8192;
     let num_chunks = (line_count + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
@@ -153,14 +156,15 @@ pub fn execute_filtering(
             let mut chunk_matched_count = 0;
             let mut local_max_len = 0;
             let mut local_longest_idx = None;
+            let mut local_counts = vec![0usize; filter_count];
 
             for line_idx in start..end {
                 let raw_line = source.get_raw_line(line_idx).unwrap_or(b"");
-                let (is_visible, style) = evaluate_and_style_line(
+                let (is_visible, style, is_matched) = evaluate_and_style_line(
                     raw_line,
                     &prepared,
                     show_only_filtered,
-                    Some(&filter_counts),
+                    Some(&mut local_counts),
                 );
 
                 if is_visible {
@@ -174,12 +178,9 @@ pub fn execute_filtering(
                     }
                 }
 
-                // If non-empty matches and not excluded, increment matched count
-                if !prepared.is_empty() {
-                    let is_matched = prepared.iter().any(|p| p.matches(raw_line));
-                    if is_matched && is_visible {
-                        chunk_matched_count += 1;
-                    }
+                // Match counting in a single pass without re-evaluating regexes
+                if is_matched && is_visible {
+                    chunk_matched_count += 1;
                 }
             }
 
@@ -189,6 +190,7 @@ pub fn execute_filtering(
                 chunk_matched_count,
                 local_max_len,
                 local_longest_idx,
+                local_counts,
             ))
         })
         .collect();
@@ -199,14 +201,18 @@ pub fn execute_filtering(
     let total_visible: usize = chunks.iter().map(|c| c.0.len()).sum();
     let mut combined_indices = Vec::with_capacity(total_visible);
     let mut combined_styles = Vec::with_capacity(total_visible);
+    let mut combined_counts = vec![0usize; filter_count];
     let mut total_matched_lines = 0;
     let mut max_len = 0;
     let mut longest_idx = None;
 
-    for (indices, styles, matched_count, local_max, local_idx) in chunks {
+    for (indices, styles, matched_count, local_max, local_idx, local_counts) in chunks {
         combined_indices.extend(indices);
         combined_styles.extend(styles);
         total_matched_lines += matched_count;
+        for (i, &cnt) in local_counts.iter().enumerate() {
+            combined_counts[i] += cnt;
+        }
         if local_max > max_len {
             max_len = local_max;
             longest_idx = local_idx;
@@ -217,15 +223,10 @@ pub fn execute_filtering(
         .and_then(|idx| source.get_line(idx).map(|s| s.into_owned()))
         .unwrap_or_default();
 
-    let final_counts: Vec<usize> = filter_counts
-        .into_iter()
-        .map(|c| c.into_inner())
-        .collect();
-
     Some(FilterResult {
         visible_indices: combined_indices,
         visible_styles: combined_styles,
-        filter_counts: final_counts,
+        filter_counts: combined_counts,
         total_matched_lines,
         widest_visible_text,
         widest_visible_length: max_len,

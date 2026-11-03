@@ -3,9 +3,9 @@ use super::model::FilterRule;
 pub enum CompiledMatcher {
     /// Case-sensitive literal search using SIMD memmem
     LiteralCaseSensitive(memchr::memmem::Finder<'static>),
-    /// Case-insensitive ASCII substring search
+    /// Case-insensitive ASCII substring search fallback
     LiteralAsciiInsensitive(Vec<u8>),
-    /// Standard regex matching raw bytes directly
+    /// Standard regex matching raw bytes directly (SIMD Teddy / Aho-Corasick)
     StandardRegex(regex::bytes::Regex),
     /// Fancy regex fallback for lookaround / backreferences
     FancyRegex(fancy_regex::Regex),
@@ -36,9 +36,17 @@ impl CompiledMatcher {
             let finder = memchr::memmem::Finder::new(text.as_bytes()).into_owned();
             Ok(Self::LiteralCaseSensitive(finder))
         } else {
-            // Lowercase ASCII bytes for fast matching
-            let lower_bytes: Vec<u8> = text.bytes().map(|b| b.to_ascii_lowercase()).collect();
-            Ok(Self::LiteralAsciiInsensitive(lower_bytes))
+            // Compile case-insensitive literal using SIMD-accelerated regex bytes builder
+            let escaped = regex::escape(text);
+            let mut builder = regex::bytes::RegexBuilder::new(&escaped);
+            builder.case_insensitive(true);
+            match builder.build() {
+                Ok(re) => Ok(Self::StandardRegex(re)),
+                Err(_) => {
+                    let lower_bytes: Vec<u8> = text.bytes().map(|b| b.to_ascii_lowercase()).collect();
+                    Ok(Self::LiteralAsciiInsensitive(lower_bytes))
+                }
+            }
         }
     }
 
@@ -53,16 +61,18 @@ impl CompiledMatcher {
                 if raw_line.len() < needle.len() {
                     return false;
                 }
-                // Case-insensitive window search without heap allocation
                 raw_line.windows(needle.len()).any(|window| {
                     window.iter().zip(needle.iter()).all(|(&a, &b)| a.to_ascii_lowercase() == b)
                 })
             }
             Self::StandardRegex(re) => re.is_match(raw_line),
             Self::FancyRegex(re) => {
-                // Fancy regex requires a str representation
-                let s = String::from_utf8_lossy(raw_line);
-                re.is_match(&s).unwrap_or(false)
+                if let Ok(s) = std::str::from_utf8(raw_line) {
+                    re.is_match(s).unwrap_or(false)
+                } else {
+                    let s = String::from_utf8_lossy(raw_line);
+                    re.is_match(&s).unwrap_or(false)
+                }
             }
         }
     }
@@ -73,6 +83,8 @@ pub struct PreparedFilter {
     pub flat_index: usize,
     pub tab_index: usize,
     pub matcher: Option<CompiledMatcher>,
+    pub resolved_bg_hex: Option<u32>,
+    pub resolved_fg_hex: Option<u32>,
 }
 
 impl PreparedFilter {
@@ -83,11 +95,16 @@ impl PreparedFilter {
             Some(CompiledMatcher::new(&rule.text, rule.case_sensitive, rule.regex)?)
         };
 
+        let resolved_bg_hex = rule.resolved_bg_hex();
+        let resolved_fg_hex = rule.resolved_fg_hex();
+
         Ok(Self {
             rule,
             flat_index,
             tab_index,
             matcher,
+            resolved_bg_hex,
+            resolved_fg_hex,
         })
     }
 
