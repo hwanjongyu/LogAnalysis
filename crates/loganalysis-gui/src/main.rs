@@ -62,6 +62,7 @@ pub struct LogAnalysisWorkspace {
     show_only_filtered: bool,
     cancel_generation: Arc<AtomicU64>,
     filter_edit_modal: FilterEditState,
+    filter_search_query: String,
 
     // Search state
     search_query: String,
@@ -75,12 +76,14 @@ pub struct LogAnalysisWorkspace {
     adb_stream_handle: Option<LogcatStreamHandle>,
     is_streaming: bool,
     is_stream_paused: bool,
+    auto_scroll: bool,
 
     // Display & Status
     font_size: Pixels,
     status_text: SharedString,
     active_file_name: Option<SharedString>,
     is_dark_theme: bool,
+    full_line_display: bool,
 }
 
 impl LogAnalysisWorkspace {
@@ -120,6 +123,7 @@ impl LogAnalysisWorkspace {
             show_only_filtered: false,
             cancel_generation: Arc::new(AtomicU64::new(0)),
             filter_edit_modal: FilterEditState::default(),
+            filter_search_query: String::new(),
 
             search_query: String::new(),
             is_search_visible: false,
@@ -131,11 +135,13 @@ impl LogAnalysisWorkspace {
             adb_stream_handle: None,
             is_streaming: false,
             is_stream_paused: false,
+            auto_scroll: true,
 
             font_size: px(12.0),
             status_text: "Ready | Open a file or start ADB streaming".into(),
             active_file_name: None,
             is_dark_theme: true,
+            full_line_display: false,
         }
     }
 
@@ -286,13 +292,25 @@ impl LogAnalysisWorkspace {
                     async move {
                         while let Ok(chunk) = rx.recv() {
                             let should_continue = this.update(&mut async_cx, |workspace, cx| {
-                                if let Some(src) = &workspace.log_source {
-                                    if let ActiveLogSource::Stream(ref stream) = **src {
-                                        let mut new_stream = stream.clone();
-                                        new_stream.append_chunk(chunk);
-                                        new_stream.trim_if_needed();
-                                        workspace.log_source = Some(Arc::new(ActiveLogSource::Stream(new_stream)));
-                                        workspace.reapply_filters(cx);
+                                if !workspace.is_stream_paused {
+                                    if let Some(src) = &workspace.log_source {
+                                        if let ActiveLogSource::Stream(ref stream) = **src {
+                                            let mut new_stream = stream.clone();
+                                            new_stream.append_chunk(chunk);
+                                            new_stream.trim_if_needed();
+                                            workspace.log_source = Some(Arc::new(ActiveLogSource::Stream(new_stream)));
+                                            workspace.reapply_filters(cx);
+
+                                            // Smart Auto-Scroll to bottom if enabled
+                                            if workspace.auto_scroll {
+                                                if let Some(res) = &workspace.filter_result {
+                                                    let count = res.visible_indices.len();
+                                                    if count > 0 {
+                                                        workspace.scroll_handle.scroll_to_item(count - 1, ScrollStrategy::Bottom);
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                                 cx.notify();
@@ -690,6 +708,28 @@ impl LogAnalysisWorkspace {
         };
         cx.notify();
     }
+
+    /// Toggles full line display mode (horizontal scroll / truncate)
+    pub fn toggle_full_line_display(&mut self, cx: &mut Context<Self>) {
+        self.full_line_display = !self.full_line_display;
+        self.status_text = if self.full_line_display {
+            "Full Line Display: ON (Horizontal scroll enabled)".into()
+        } else {
+            "Full Line Display: OFF (Truncated)".into()
+        };
+        cx.notify();
+    }
+
+    /// Toggles smart auto-scroll for streaming
+    pub fn toggle_auto_scroll(&mut self, cx: &mut Context<Self>) {
+        self.auto_scroll = !self.auto_scroll;
+        self.status_text = if self.auto_scroll {
+            "Auto-scroll: ON".into()
+        } else {
+            "Auto-scroll: OFF".into()
+        };
+        cx.notify();
+    }
 }
 
 impl Render for LogAnalysisWorkspace {
@@ -754,6 +794,12 @@ impl Render for LogAnalysisWorkspace {
             }))
             .on_action(cx.listener(|this, _: &ToggleTheme, _window, cx| {
                 this.toggle_theme(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleFullLineDisplay, _window, cx| {
+                this.toggle_full_line_display(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleAutoScroll, _window, cx| {
+                this.toggle_auto_scroll(cx);
             }))
             .on_action(cx.listener(|this, _: &ZoomIn, _window, cx| {
                 this.zoom(1.0, cx);
@@ -921,6 +967,36 @@ impl Render for LogAnalysisWorkspace {
                                     }))
                                     .child(if self.show_only_filtered { "Filtered Only (ON)" } else { "Filtered Only (OFF)" }),
                             )
+                            // Full Line Display Toggle Button
+                            .child(
+                                div()
+                                    .id("btn-toolbar-full-line")
+                                    .px(px(8.0))
+                                    .py(px(4.0))
+                                    .rounded_md()
+                                    .bg(if self.full_line_display { theme.accent } else { theme.btn_hover })
+                                    .text_size(px(11.0))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.toggle_full_line_display(cx);
+                                    }))
+                                    .child(if self.full_line_display { "Full Lines (ON)" } else { "Full Lines (OFF)" }),
+                            )
+                            // Auto Scroll Toggle Button
+                            .child(
+                                div()
+                                    .id("btn-toolbar-auto-scroll")
+                                    .px(px(8.0))
+                                    .py(px(4.0))
+                                    .rounded_md()
+                                    .bg(if self.auto_scroll { theme.accent } else { theme.btn_hover })
+                                    .text_size(px(11.0))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.toggle_auto_scroll(cx);
+                                    }))
+                                    .child(if self.auto_scroll { "Auto-Scroll (ON)" } else { "Auto-Scroll (OFF)" }),
+                            )
                             // Theme Toggle Button
                             .child(
                                 div()
@@ -1082,6 +1158,45 @@ impl Render for LogAnalysisWorkspace {
                                             .child("+ Add"),
                                     ),
                             )
+                            // Filter Rules In-Tab Search Input
+                            .child(
+                                div()
+                                    .h(px(26.0))
+                                    .w_full()
+                                    .bg(theme.bg_dark)
+                                    .border_b_1()
+                                    .border_color(theme.border)
+                                    .px(px(6.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(10.0))
+                                            .text_color(theme.text_muted)
+                                            .child(if self.filter_search_query.is_empty() {
+                                                "🔍 Filter rules... (click to clear)"
+                                            } else {
+                                                "🔍 Filtering rules active"
+                                            }),
+                                    )
+                                    .children(if !self.filter_search_query.is_empty() {
+                                        Some(
+                                            div()
+                                                .id("btn-clear-filter-search")
+                                                .cursor_pointer()
+                                                .text_size(px(10.0))
+                                                .text_color(theme.error_red)
+                                                .on_click(cx.listener(|this, _, _window, cx| {
+                                                    this.filter_search_query.clear();
+                                                    cx.notify();
+                                                }))
+                                                .child("Clear"),
+                                        )
+                                    } else {
+                                        None
+                                    }),
+                            )
                             // Filter Rules List
                             .child(
                                 div()
@@ -1095,7 +1210,14 @@ impl Render for LogAnalysisWorkspace {
                                     .children(
                                         self.filter_tabs.get(self.active_tab_index).map(|tab| {
                                             let counts = self.filter_result.as_ref().map(|r| r.filter_counts.clone()).unwrap_or_default();
-                                            tab.filters.iter().enumerate().map(|(r_idx, rule)| {
+                                            let search_q = self.filter_search_query.to_lowercase();
+                                            tab.filters.iter().enumerate().filter(|(_, r)| {
+                                                if search_q.is_empty() {
+                                                    true
+                                                } else {
+                                                    r.text.to_lowercase().contains(&search_q)
+                                                }
+                                            }).map(|(r_idx, rule)| {
                                                 let count = counts.get(r_idx).copied().unwrap_or(0);
                                                 let is_active = rule.active;
                                                 let is_exclude = rule.exclude;
@@ -1224,7 +1346,7 @@ impl Render for LogAnalysisWorkspace {
                                 None
                             })
                             .child(if has_log_source {
-                                uniform_list("log-view", row_count, move |range, _window, _cx| {
+                                let mut list = uniform_list("log-view", row_count, move |range, _window, _cx| {
                                     range.map(|idx| {
                                         let (real_idx, text) = if let (Some(res), Some(src)) = (&filter_res, &source) {
                                             let r_idx = res.visible_indices.get(idx).copied().unwrap_or(0);
@@ -1294,14 +1416,18 @@ impl Render for LogAnalysisWorkspace {
                                                     .flex_1()
                                                     .px(px(8.0))
                                                     .whitespace_nowrap()
-                                                    .overflow_hidden()
                                                     .child(text),
                                             )
                                     }).collect::<Vec<_>>()
-                                })
-                                .track_scroll(self.scroll_handle.clone())
-                                .flex_1()
-                                .into_any_element()
+                                });
+
+                                if self.full_line_display {
+                                    list = list.with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained);
+                                }
+
+                                list.track_scroll(self.scroll_handle.clone())
+                                    .flex_1()
+                                    .into_any_element()
                             } else {
                                 // Empty state when no file is open
                                 div()

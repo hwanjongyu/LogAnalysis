@@ -26,5 +26,7 @@ actions!(
         DeleteFilterTab,
         RenameFilterTab,
         ToggleTheme,
+        ToggleFullLineDisplay,
+        ToggleAutoScroll,
     ]
 );
