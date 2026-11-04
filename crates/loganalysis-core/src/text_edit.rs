@@ -49,26 +49,29 @@ pub fn remove_at_char_index(s: &mut String, idx: usize) {
 
 /// Deletes the previous word before the character cursor index and returns the new cursor index.
 pub fn delete_previous_word_at(s: &mut String, idx: usize) -> usize {
-    let mut cur = idx;
+    let chars: Vec<char> = s.chars().collect();
+    if idx == 0 || chars.is_empty() {
+        return 0;
+    }
+    let cur = idx.min(chars.len());
+    let mut target = cur;
+
     // Step 1: skip trailing whitespace before cursor
-    while cur > 0 {
-        let chars: Vec<char> = s.chars().collect();
-        if cur <= chars.len() && chars[cur - 1].is_whitespace() {
-            cur = remove_before_char_index(s, cur);
-        } else {
-            break;
-        }
+    while target > 0 && chars[target - 1].is_whitespace() {
+        target -= 1;
     }
-    // Step 2: remove non-whitespace characters before cursor
-    while cur > 0 {
-        let chars: Vec<char> = s.chars().collect();
-        if cur <= chars.len() && !chars[cur - 1].is_whitespace() {
-            cur = remove_before_char_index(s, cur);
-        } else {
-            break;
-        }
+    // Step 2: remove word characters before cursor
+    while target > 0 && !chars[target - 1].is_whitespace() {
+        target -= 1;
     }
-    cur
+
+    if target < cur {
+        let start_byte = chars[..target].iter().map(|c| c.len_utf8()).sum::<usize>();
+        let end_byte = start_byte + chars[target..cur].iter().map(|c| c.len_utf8()).sum::<usize>();
+        s.drain(start_byte..end_byte);
+    }
+
+    target
 }
 
 #[cfg(test)]
@@ -129,5 +132,19 @@ mod tests {
         let cur2 = delete_previous_word_at(&mut s, 6);
         assert_eq!(s, "");
         assert_eq!(cur2, 0);
+
+        // Word with trailing whitespace
+        let mut s3 = "hello   world   ".to_string();
+        let len3 = s3.chars().count();
+        let cur3 = delete_previous_word_at(&mut s3, len3);
+        assert_eq!(s3, "hello   ");
+        assert_eq!(cur3, 8);
+
+        // Unicode / CJK word deletion
+        let mut s4 = "로그 분석기".to_string();
+        let len4 = s4.chars().count();
+        let cur4 = delete_previous_word_at(&mut s4, len4);
+        assert_eq!(s4, "로그 ");
+        assert_eq!(cur4, 3);
     }
 }

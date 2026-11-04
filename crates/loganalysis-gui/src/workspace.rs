@@ -31,6 +31,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) is_search_visible: bool,
     pub(crate) is_search_regex: bool,
     pub(crate) is_search_case_sensitive: bool,
+    pub(crate) cached_search_matcher: Option<Arc<loganalysis_core::CompiledMatcher>>,
 
     // ADB state
     pub(crate) adb_devices: Vec<String>,
@@ -40,6 +41,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) is_stream_paused: bool,
     pub(crate) auto_scroll: bool,
     pub(crate) paused_stream_buffer: Vec<Vec<String>>,
+    pub(crate) paused_stream_line_count: usize,
 
     // Display & Status
     pub(crate) font_size: Pixels,
@@ -112,6 +114,7 @@ impl LogAnalysisWorkspace {
             is_search_visible: false,
             is_search_regex: false,
             is_search_case_sensitive: false,
+            cached_search_matcher: None,
 
             adb_devices: Vec::new(),
             selected_device: None,
@@ -120,6 +123,7 @@ impl LogAnalysisWorkspace {
             is_stream_paused: false,
             auto_scroll: true,
             paused_stream_buffer: Vec::new(),
+            paused_stream_line_count: 0,
 
             font_size: px(12.0),
             status_text: "Ready | Open a file or start ADB streaming".into(),
@@ -154,28 +158,50 @@ impl LogAnalysisWorkspace {
         .detach();
     }
 
-    /// Loads a log file using FileLogBuffer and executes filtering
+    /// Loads a log file using FileLogBuffer asynchronously on the background executor and executes filtering
     pub fn open_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
-        match FileLogBuffer::open(path) {
-            Ok(buf) => {
-                let arc_buf = Arc::new(ActiveLogSource::File(buf));
-                self.log_source = Some(arc_buf.clone());
-                self.active_file_name = Some(
-                    path.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string()
-                        .into(),
-                );
-                self.status_text =
-                    format!("Loaded {} lines from {:?}", arc_buf.line_count(), path).into();
-                self.reapply_filters(cx);
+        let path_buf = path.to_path_buf();
+        let file_name: SharedString = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+            .into();
+
+        self.status_text = format!("Opening log file {:?}...", file_name).into();
+        self.selection.clear();
+        cx.notify();
+
+        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
+            let mut async_cx = cx.clone();
+            let path_for_bg = path_buf.clone();
+
+            async move {
+                let open_result = bg_executor
+                    .spawn(async move { FileLogBuffer::open(&path_for_bg) })
+                    .await;
+
+                let _ = this.update(&mut async_cx, |workspace, cx| {
+                    match open_result {
+                        Ok(buf) => {
+                            let arc_buf = Arc::new(ActiveLogSource::File(buf));
+                            workspace.log_source = Some(arc_buf.clone());
+                            workspace.active_file_name = Some(file_name);
+                            workspace.status_text =
+                                format!("Loaded {} lines from {:?}", arc_buf.line_count(), path_buf)
+                                    .into();
+                            workspace.reapply_filters(cx);
+                        }
+                        Err(e) => {
+                            workspace.status_text = format!("Failed to open file: {}", e).into();
+                            cx.notify();
+                        }
+                    }
+                });
             }
-            Err(e) => {
-                self.status_text = format!("Failed to open file: {}", e).into();
-                cx.notify();
-            }
-        }
+        })
+        .detach();
     }
 
     /// Re-evaluates active filters in the background using Rayon
@@ -324,63 +350,99 @@ impl LogAnalysisWorkspace {
                 self.log_source = Some(Arc::new(ActiveLogSource::Stream(stream_buf)));
                 self.status_text = "Streaming adb logcat...".into();
 
-                // Non-blocking async loop using try_recv and async timer to avoid starving GPUI executor
+                // Non-blocking async loop with batching, throttling & bounded buffers to avoid starving GPUI executor
                 cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                     let mut async_cx = cx.clone();
                     let timer_executor = cx.background_executor().clone();
                     async move {
-                        loop {
-                            match rx.try_recv() {
-                                Ok(chunk) => {
-                                    let should_continue = this
-                                        .update(&mut async_cx, |workspace, cx| {
-                                            if workspace.is_stream_paused {
-                                                // Buffer chunks while paused so logs are not lost
-                                                workspace.paused_stream_buffer.push(chunk);
-                                            } else if let Some(src) = &workspace.log_source {
-                                                if let ActiveLogSource::Stream(ref stream) = **src {
-                                                    // Zero-copy Arc<str> pointer cloning (sub-millisecond)
-                                                    let mut new_stream = stream.clone();
-                                                    new_stream.append_chunk(chunk);
-                                                    new_stream.trim_if_needed();
-                                                    workspace.log_source =
-                                                        Some(Arc::new(ActiveLogSource::Stream(new_stream)));
-                                                    workspace.reapply_filters(cx);
+                        let mut last_reapply = std::time::Instant::now();
+                        let mut pending_filter_reapply = false;
 
-                                                    // Smart Auto-Scroll to bottom if enabled
-                                                    if workspace.auto_scroll {
-                                                        if let Some(res) = &workspace.filter_result {
-                                                            let count = res.visible_indices.len();
-                                                            if count > 0 {
-                                                                workspace.scroll_handle.scroll_to_item(
-                                                                    count - 1,
-                                                                    ScrollStrategy::Bottom,
-                                                                );
-                                                            }
+                        loop {
+                            let mut batch = Vec::new();
+                            // Drain all available chunks in the channel into a single batch
+                            while let Ok(chunk) = rx.try_recv() {
+                                batch.extend(chunk);
+                                if batch.len() >= 5000 {
+                                    break;
+                                }
+                            }
+
+                            if !batch.is_empty() {
+                                let should_continue = this
+                                    .update(&mut async_cx, |workspace, cx| {
+                                        if workspace.is_stream_paused {
+                                            // Buffer chunks with bounded capacity to prevent OOM
+                                            let chunk_len = batch.len();
+                                            workspace.paused_stream_line_count += chunk_len;
+                                            workspace.paused_stream_buffer.push(batch);
+
+                                            while workspace.paused_stream_line_count > loganalysis_core::MAX_MONITOR_LINES {
+                                                if let Some(front) = workspace.paused_stream_buffer.first() {
+                                                    workspace.paused_stream_line_count =
+                                                        workspace.paused_stream_line_count.saturating_sub(front.len());
+                                                    workspace.paused_stream_buffer.remove(0);
+                                                } else {
+                                                    break;
+                                                }
+                                            }
+                                        } else if let Some(src) = &workspace.log_source {
+                                            if let ActiveLogSource::Stream(ref stream) = **src {
+                                                let mut new_stream = stream.clone();
+                                                new_stream.append_chunk(batch);
+                                                new_stream.trim_if_needed();
+                                                workspace.log_source =
+                                                    Some(Arc::new(ActiveLogSource::Stream(new_stream)));
+
+                                                // Throttle filter reapplication to at most once per 60ms
+                                                if last_reapply.elapsed() >= Duration::from_millis(60) {
+                                                    workspace.reapply_filters(cx);
+                                                    last_reapply = std::time::Instant::now();
+                                                    pending_filter_reapply = false;
+                                                } else {
+                                                    pending_filter_reapply = true;
+                                                }
+
+                                                // Smart Auto-Scroll to bottom if enabled
+                                                if workspace.auto_scroll {
+                                                    if let Some(res) = &workspace.filter_result {
+                                                        let count = res.visible_indices.len();
+                                                        if count > 0 {
+                                                            workspace.scroll_handle.scroll_to_item(
+                                                                count - 1,
+                                                                ScrollStrategy::Bottom,
+                                                            );
                                                         }
                                                     }
                                                 }
                                             }
-                                            cx.notify();
-                                            workspace.is_streaming
-                                        })
-                                        .unwrap_or(false);
+                                        }
+                                        cx.notify();
+                                        workspace.is_streaming
+                                    })
+                                    .unwrap_or(false);
 
-                                    if !should_continue {
-                                        break;
-                                    }
+                                if !should_continue {
+                                    break;
                                 }
-                                Err(crossbeam_channel::TryRecvError::Empty) => {
-                                    // Yield execution cooperatively to GPUI async executor
-                                    timer_executor.timer(Duration::from_millis(16)).await;
-                                    let still_streaming = this
-                                        .update(&mut async_cx, |workspace, _| workspace.is_streaming)
-                                        .unwrap_or(false);
-                                    if !still_streaming {
-                                        break;
-                                    }
+                            } else {
+                                // Flush any pending throttled filter reapply when channel is empty
+                                if pending_filter_reapply && last_reapply.elapsed() >= Duration::from_millis(60) {
+                                    let _ = this.update(&mut async_cx, |workspace, cx| {
+                                        if !workspace.is_stream_paused {
+                                            workspace.reapply_filters(cx);
+                                        }
+                                    });
+                                    last_reapply = std::time::Instant::now();
+                                    pending_filter_reapply = false;
                                 }
-                                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+
+                                // Yield execution cooperatively to GPUI async executor
+                                timer_executor.timer(Duration::from_millis(16)).await;
+                                let still_streaming = this
+                                    .update(&mut async_cx, |workspace, _| workspace.is_streaming)
+                                    .unwrap_or(false);
+                                if !still_streaming {
                                     break;
                                 }
                             }
@@ -504,6 +566,35 @@ impl LogAnalysisWorkspace {
         serde_json::to_string_pretty(&self.filter_tabs).map_err(|e| e.to_string())
     }
 
+    /// Updates the pre-compiled search matcher cached outside the render loop
+    pub fn update_cached_search_matcher(&mut self) {
+        self.cached_search_matcher = if self.is_search_visible && !self.search_query.trim().is_empty() {
+            loganalysis_core::CompiledMatcher::new(
+                &self.search_query,
+                self.is_search_case_sensitive,
+                self.is_search_regex,
+            )
+            .ok()
+            .map(Arc::new)
+        } else {
+            None
+        };
+    }
+
+    /// Toggles regex mode for the find bar
+    pub fn toggle_search_regex(&mut self, cx: &mut Context<Self>) {
+        self.is_search_regex = !self.is_search_regex;
+        self.update_cached_search_matcher();
+        cx.notify();
+    }
+
+    /// Toggles case-sensitivity for the find bar
+    pub fn toggle_search_case_sensitive(&mut self, cx: &mut Context<Self>) {
+        self.is_search_case_sensitive = !self.is_search_case_sensitive;
+        self.update_cached_search_matcher();
+        cx.notify();
+    }
+
     /// Toggles the floating find bar
     pub fn toggle_search_bar(&mut self, cx: &mut Context<Self>) {
         self.is_search_visible = !self.is_search_visible;
@@ -512,6 +603,7 @@ impl LogAnalysisWorkspace {
         } else if self.input_focus == InputFocusTarget::SearchBar {
             self.input_focus = InputFocusTarget::None;
         }
+        self.update_cached_search_matcher();
         cx.notify();
     }
 
@@ -537,6 +629,7 @@ impl LogAnalysisWorkspace {
                     }
                     InputFocusTarget::SearchBar => {
                         delete_previous_word(&mut self.search_query);
+                        self.update_cached_search_matcher();
                         cx.notify();
                     }
                     InputFocusTarget::FilterRuleSearch => {
@@ -561,6 +654,7 @@ impl LogAnalysisWorkspace {
                             }
                             InputFocusTarget::SearchBar => {
                                 self.search_query.push_str(&clean);
+                                self.update_cached_search_matcher();
                                 cx.notify();
                             }
                             InputFocusTarget::FilterRuleSearch => {
@@ -581,6 +675,7 @@ impl LogAnalysisWorkspace {
                     }
                     InputFocusTarget::SearchBar => {
                         self.search_query.clear();
+                        self.update_cached_search_matcher();
                         cx.notify();
                     }
                     InputFocusTarget::FilterRuleSearch => {
@@ -606,6 +701,7 @@ impl LogAnalysisWorkspace {
                 InputFocusTarget::SearchBar => {
                     self.is_search_visible = false;
                     self.input_focus = InputFocusTarget::None;
+                    self.update_cached_search_matcher();
                     cx.notify();
                 }
                 InputFocusTarget::FilterRuleSearch => {
@@ -666,6 +762,7 @@ impl LogAnalysisWorkspace {
                 }
                 InputFocusTarget::SearchBar => {
                     self.search_query.pop();
+                    self.update_cached_search_matcher();
                     cx.notify();
                 }
                 InputFocusTarget::FilterRuleSearch => {
@@ -684,6 +781,7 @@ impl LogAnalysisWorkspace {
                 }
                 InputFocusTarget::SearchBar => {
                     self.search_query.pop();
+                    self.update_cached_search_matcher();
                     cx.notify();
                 }
                 InputFocusTarget::FilterRuleSearch => {
@@ -703,6 +801,7 @@ impl LogAnalysisWorkspace {
                 }
                 InputFocusTarget::SearchBar => {
                     self.search_query.push(' ');
+                    self.update_cached_search_matcher();
                     cx.notify();
                 }
                 InputFocusTarget::FilterRuleSearch => {
@@ -774,6 +873,7 @@ impl LogAnalysisWorkspace {
                         }
                         InputFocusTarget::SearchBar => {
                             self.search_query.push_str(&c);
+                            self.update_cached_search_matcher();
                             cx.notify();
                         }
                         InputFocusTarget::FilterRuleSearch => {
@@ -1254,6 +1354,7 @@ impl LogAnalysisWorkspace {
             if !self.is_stream_paused {
                 // Flush buffered chunks
                 let buffered = std::mem::take(&mut self.paused_stream_buffer);
+                self.paused_stream_line_count = 0;
                 if !buffered.is_empty() {
                     if let Some(src) = &self.log_source {
                         if let ActiveLogSource::Stream(ref stream) = **src {

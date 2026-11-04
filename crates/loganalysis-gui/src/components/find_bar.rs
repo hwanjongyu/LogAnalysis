@@ -101,8 +101,7 @@ pub fn render_find_bar(
                             .font_family("monospace")
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, _window, cx| {
-                                this.is_search_regex = !this.is_search_regex;
-                                cx.notify();
+                                this.toggle_search_regex(cx);
                             }))
                             .child(".* Regex"),
                     )
@@ -126,8 +125,7 @@ pub fn render_find_bar(
                             .font_family("monospace")
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, _window, cx| {
-                                this.is_search_case_sensitive = !this.is_search_case_sensitive;
-                                cx.notify();
+                                this.toggle_search_case_sensitive(cx);
                             }))
                             .child("Aa Case"),
                     ),

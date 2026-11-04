@@ -23,16 +23,7 @@ pub fn render_log_viewport(
     let has_log_source = workspace.log_source.is_some();
     let weak_self = cx.weak_entity();
 
-    let search_matcher = if workspace.is_search_visible && !workspace.search_query.trim().is_empty() {
-        loganalysis_core::CompiledMatcher::new(
-            &workspace.search_query,
-            workspace.is_search_case_sensitive,
-            workspace.is_search_regex,
-        ).ok()
-    } else {
-        None
-    };
-    let search_matcher = std::sync::Arc::new(search_matcher);
+    let search_matcher = workspace.cached_search_matcher.clone();
 
     let highlight_fg = if workspace.is_dark_theme {
         rgb(0xffffff)
@@ -75,16 +66,16 @@ pub fn render_log_viewport(
             let mut list = uniform_list("log-view", row_count, move |range, _window, _cx| {
                 range
                     .map(|idx| {
-                        let (real_idx, text) =
+                        let (real_idx, text): (usize, SharedString) =
                             if let (Some(res), Some(src)) = (&filter_res, &source) {
                                 let r_idx = res.visible_indices.get(idx).copied().unwrap_or(0);
-                                let t = src
+                                let t: SharedString = src
                                     .get_line(r_idx)
-                                    .unwrap_or_default()
-                                    .to_string();
+                                    .map(|s| s.into_owned().into())
+                                    .unwrap_or_default();
                                 (r_idx, t)
                             } else {
-                                (0, String::new())
+                                (0, SharedString::default())
                             };
 
                         let (has_custom_bg, bg_color, fg_color) = if let Some(res) = &filter_res {
@@ -179,7 +170,7 @@ pub fn render_log_viewport(
                                     .flex_1()
                                     .px(px(10.0))
                                     .whitespace_nowrap()
-                                    .child(if let Some(ref matcher) = *search_matcher {
+                                    .child(if let Some(ref matcher) = search_matcher {
                                         let ranges = matcher.find_match_ranges(&text, 32);
                                         if !ranges.is_empty() {
                                             let highlights = ranges.into_iter().map(|r| (r, highlight_style));
