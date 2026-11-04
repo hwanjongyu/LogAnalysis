@@ -2,7 +2,7 @@ use std::ops::Range;
 use gpui::{
     actions, div, fill, hsla, point, prelude::*, px, relative, rgba, size,
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId,
-    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
+    ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
     GlobalElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
     SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
@@ -24,8 +24,17 @@ actions!(
         Paste,
         Cut,
         Copy,
+        Submit,
+        Cancel,
     ]
 );
+
+/// Events emitted by TextInput upon key submission or cancellation
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextInputEvent {
+    Submit,
+    Cancel,
+}
 
 /// Registers OS-standard keybindings scoped to the `TextInput` key context
 pub fn register_keybindings(cx: &mut App) {
@@ -46,8 +55,12 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("cmd-v", Paste, Some("TextInput")),
         KeyBinding::new("ctrl-x", Cut, Some("TextInput")),
         KeyBinding::new("cmd-x", Cut, Some("TextInput")),
+        KeyBinding::new("enter", Submit, Some("TextInput")),
+        KeyBinding::new("escape", Cancel, Some("TextInput")),
     ]);
 }
+
+impl EventEmitter<TextInputEvent> for TextInput {}
 
 /// A native-grade GPUI text input component supporting full OS IME (Hangul/CJK),
 /// selection, clipboard, and horizontal scrolling.
@@ -299,19 +312,16 @@ impl TextInput {
         } else {
             self.move_to(index, cx);
         }
-        cx.stop_propagation();
     }
 
-    fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, _cx: &mut Context<Self>) {
         self.is_selecting = false;
-        cx.stop_propagation();
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if self.is_selecting {
             let index = self.index_for_mouse_position(event.position);
             self.select_to(index, cx);
-            cx.stop_propagation();
         }
     }
 
@@ -710,10 +720,34 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(|this, _: &Submit, _window, cx| {
+                this.marked_range = None;
+                cx.emit(TextInputEvent::Submit);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &Cancel, _window, cx| {
+                this.marked_range = None;
+                cx.emit(TextInputEvent::Cancel);
+                cx.stop_propagation();
+            }))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .child(TextElement { input: cx.entity() })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_text_input_events_variants() {
+        let submit = TextInputEvent::Submit;
+        let cancel = TextInputEvent::Cancel;
+        assert_ne!(submit, cancel);
+        assert_eq!(submit, TextInputEvent::Submit);
+        assert_eq!(cancel, TextInputEvent::Cancel);
     }
 }

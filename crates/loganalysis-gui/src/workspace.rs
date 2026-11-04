@@ -5,7 +5,7 @@ use crossbeam_channel::unbounded;
 use gpui::*;
 use loganalysis_core::*;
 
-use crate::components::text_input::TextInput;
+use crate::components::text_input::{TextInput, TextInputEvent};
 use crate::selection::SelectionModel;
 use crate::theme::Theme;
 use crate::types::{FilterEditState, FilterPanelPosition, InputFocusTarget};
@@ -97,6 +97,19 @@ impl LogAnalysisWorkspace {
         };
 
         let modal_pattern_input = cx.new(|cx| TextInput::new("Type filter pattern...", cx));
+
+        cx.subscribe(
+            &modal_pattern_input,
+            |this, _input, event: &TextInputEvent, cx| match event {
+                TextInputEvent::Submit => {
+                    this.save_modal_filter(cx);
+                }
+                TextInputEvent::Cancel => {
+                    this.close_filter_modal(cx);
+                }
+            },
+        )
+        .detach();
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -614,22 +627,24 @@ impl LogAnalysisWorkspace {
 
     /// Handles keyboard input for active inline text boxes
     pub fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.as_str();
+
+        // If the filter modal is open, always handle Escape (cancel) and Enter (save) immediately
+        if self.filter_edit_modal.is_open {
+            if key == "escape" {
+                self.close_filter_modal(cx);
+                return;
+            } else if key == "enter" {
+                self.save_modal_filter(cx);
+                return;
+            }
+        }
+
         if self.input_focus == InputFocusTarget::None {
             return;
         }
 
-        let key = event.keystroke.key.as_str();
         let m = &event.keystroke.modifiers;
-
-        // ModalPattern is fully handled by native TextInput; only intercept Enter (save) and Escape (close)
-        if self.input_focus == InputFocusTarget::ModalPattern {
-            if key == "escape" {
-                self.close_filter_modal(cx);
-            } else if key == "enter" {
-                self.save_modal_filter(cx);
-            }
-            return;
-        }
 
         // Support common text box shortcuts (Ctrl+V paste, Ctrl+Backspace delete word, Ctrl+U / Ctrl+A clear)
         if m.control && !m.alt && !m.platform {
@@ -962,6 +977,7 @@ impl LogAnalysisWorkspace {
             }
             self.filter_edit_modal.is_open = false;
             self.input_focus = InputFocusTarget::None;
+            cx.notify();
             self.reapply_filters(cx);
         }
     }

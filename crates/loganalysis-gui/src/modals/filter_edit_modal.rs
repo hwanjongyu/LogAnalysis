@@ -47,17 +47,6 @@ pub fn render_filter_edit_modal(
             .flex()
             .items_center()
             .justify_center()
-            .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                cx.stop_propagation();
-            })
-            .on_mouse_down(MouseButton::Right, |_, _window, cx| {
-                cx.stop_propagation();
-            })
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.input_focus = InputFocusTarget::ModalPattern;
-                window.focus(&this.modal_pattern_input.read(cx).focus_handle);
-                cx.stop_propagation();
-            }))
             .child(
                 div()
                     .id("modal-card-filter-edit")
@@ -72,16 +61,15 @@ pub fn render_filter_edit_modal(
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                        cx.stop_propagation();
-                    })
-                    .on_mouse_down(MouseButton::Right, |_, _window, cx| {
-                        cx.stop_propagation();
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.input_focus = InputFocusTarget::ModalPattern;
-                        window.focus(&this.modal_pattern_input.read(cx).focus_handle);
-                        cx.stop_propagation();
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                        let key = event.keystroke.key.as_str();
+                        if key == "escape" {
+                            this.close_filter_modal(cx);
+                            cx.stop_propagation();
+                        } else if key == "enter" {
+                            this.save_modal_filter(cx);
+                            cx.stop_propagation();
+                        }
                     }))
                     // Modal Header
                     .child(
@@ -105,9 +93,6 @@ pub fn render_filter_edit_modal(
                                     .cursor_pointer()
                                     .text_size(px(14.0))
                                     .text_color(theme.text_muted)
-                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                                        cx.stop_propagation();
-                                    })
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.close_filter_modal(cx);
                                         cx.stop_propagation();
@@ -149,9 +134,6 @@ pub fn render_filter_edit_modal(
                                     .items_center()
                                     .justify_between()
                                     .cursor_text()
-                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                                        cx.stop_propagation();
-                                    })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.input_focus = InputFocusTarget::ModalPattern;
                                         window.focus(&this.modal_pattern_input.read(cx).focus_handle);
@@ -178,9 +160,6 @@ pub fn render_filter_edit_modal(
                                                 .hover(move |s| {
                                                     s.text_color(theme.text_primary)
                                                         .bg(theme.btn_hover)
-                                                })
-                                                .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                                                    cx.stop_propagation();
                                                 })
                                                 .on_click(cx.listener(|this, _, window, cx| {
                                                     this.modal_pattern_input.update(cx, |input, cx| {
@@ -211,9 +190,6 @@ pub fn render_filter_edit_modal(
                                     .items_center()
                                     .gap_2()
                                     .cursor_pointer()
-                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                                        cx.stop_propagation();
-                                    })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.filter_edit_modal.is_exclude =
                                             !this.filter_edit_modal.is_exclude;
@@ -250,9 +226,6 @@ pub fn render_filter_edit_modal(
                                     .items_center()
                                     .gap_2()
                                     .cursor_pointer()
-                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                                        cx.stop_propagation();
-                                    })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.filter_edit_modal.is_regex =
                                             !this.filter_edit_modal.is_regex;
@@ -289,9 +262,6 @@ pub fn render_filter_edit_modal(
                                     .items_center()
                                     .gap_2()
                                     .cursor_pointer()
-                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                                        cx.stop_propagation();
-                                    })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.filter_edit_modal.is_case_sensitive =
                                             !this.filter_edit_modal.is_case_sensitive;
@@ -448,9 +418,6 @@ pub fn render_filter_edit_modal(
                                                 .items_center()
                                                 .justify_center()
                                                 .cursor_pointer()
-                                                .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                                                    cx.stop_propagation();
-                                                })
                                                 .on_click(cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.filter_edit_modal.bg_color_name =
@@ -527,9 +494,6 @@ pub fn render_filter_edit_modal(
                                                 .items_center()
                                                 .justify_center()
                                                 .cursor_pointer()
-                                                .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                                                    cx.stop_propagation();
-                                                })
                                                 .on_click(cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.filter_edit_modal.fg_color_name =
@@ -604,9 +568,6 @@ pub fn render_filter_edit_modal(
                                                 .font_family("monospace")
                                                 .text_size(px(10.5))
                                                 .cursor_pointer()
-                                                .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                                                    cx.stop_propagation();
-                                                })
                                                 .on_click(cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.modal_pattern_input.update(cx, |input, cx| {
@@ -646,9 +607,6 @@ pub fn render_filter_edit_modal(
                                     .hover(move |s| s.bg(theme.btn_hover))
                                     .text_size(px(11.5))
                                     .cursor_pointer()
-                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                                        cx.stop_propagation();
-                                    })
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.close_filter_modal(cx);
                                         cx.stop_propagation();
@@ -666,9 +624,6 @@ pub fn render_filter_edit_modal(
                                     .text_size(px(11.5))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .cursor_pointer()
-                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                                        cx.stop_propagation();
-                                    })
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.save_modal_filter(cx);
                                         cx.stop_propagation();
