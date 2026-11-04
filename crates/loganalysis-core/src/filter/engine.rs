@@ -18,9 +18,17 @@ pub struct FilterResult {
     pub visible_indices: Vec<usize>,
     pub visible_styles: Vec<ResolvedStyle>,
     pub filter_counts: Vec<usize>,
+    pub rule_counts: std::collections::HashMap<uuid::Uuid, usize>,
     pub total_matched_lines: usize,
     pub widest_visible_text: String,
     pub widest_visible_length: usize,
+}
+
+impl FilterResult {
+    /// Returns the deterministic hit count for a specific rule by UUID, returning 0 if not matched or inactive.
+    pub fn count_for_rule(&self, rule_id: &uuid::Uuid) -> usize {
+        self.rule_counts.get(rule_id).copied().unwrap_or(0)
+    }
 }
 
 /// Evaluates a single line against prepared filters according to LogAnalysis specifications.
@@ -125,10 +133,15 @@ pub fn execute_filtering(
     }
 
     if line_count == 0 {
+        let mut rule_counts = std::collections::HashMap::with_capacity(filters.len());
+        for rule in filters {
+            rule_counts.insert(rule.id, 0);
+        }
         return Some(FilterResult {
             visible_indices: Vec::new(),
             visible_styles: Vec::new(),
             filter_counts: vec![0; filter_count],
+            rule_counts,
             total_matched_lines: 0,
             widest_visible_text: String::new(),
             widest_visible_length: 0,
@@ -230,10 +243,16 @@ pub fn execute_filtering(
         (String::new(), 0)
     };
 
+    let mut rule_counts = std::collections::HashMap::with_capacity(filters.len());
+    for (rule, &cnt) in filters.iter().zip(combined_counts.iter()) {
+        rule_counts.insert(rule.id, cnt);
+    }
+
     Some(FilterResult {
         visible_indices: combined_indices,
         visible_styles: combined_styles,
         filter_counts: combined_counts,
+        rule_counts,
         total_matched_lines,
         widest_visible_text,
         widest_visible_length,

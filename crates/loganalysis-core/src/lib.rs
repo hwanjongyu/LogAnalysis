@@ -18,6 +18,7 @@ pub use constants::{
     TEXT_COLOR_MAP,
 };
 pub use error::{AdbError, FilterError, SearchError};
+pub use uuid;
 pub use filter::{
     contrast_ratio, evaluate_and_style_line, evaluate_contrast, execute_filtering,
     find_nearest_anchor_row, parse_filters_json, CompiledMatcher, ContrastLevel,

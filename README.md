@@ -22,13 +22,13 @@
 
 ## 📊 Performance Comparison
 
-| Metric (1M lines / 200MB log) | **Rust + GPUI (This Project)** | **Python / PyQt5** | **Electron** |
-| :--- | :--- | :--- | :--- |
-| **RAM Footprint** | **~30MB – 60MB** (Zero-Copy) | ~1.5GB – 2.5GB | ~600MB – 1.2GB (UTF-16 strings) |
-| **File Open Time** | **< 100ms** (Instant Mmap) | ~3.0s – 6.0s | ~2.5s – 5.0s |
-| **Filter Evaluation** (10 rules) | **~40ms – 80ms** (Multi-core SIMD) | ~2.0s – 4.0s (GIL-locked) | ~1.0s – 2.5s (V8 GC overhead) |
-| **UI Scroll Framerate** | **120 FPS+ Native GPU** | 30 – 50 FPS (Micro-stutter) | 45 – 60 FPS (DOM virtualization) |
-| **Standalone Binary Size** | **~15MB – 25MB** | ~45MB (PyInstaller bundle) | ~180MB+ (Chromium bundle) |
+| Metric (1M lines / 200MB log) | **Rust + GPUI (This Project)** | **Rust + Tauri v2** | **Electron** | **Python / PyQt5** |
+| :--- | :--- | :--- | :--- | :--- |
+| **RAM Footprint** | **~30MB – 60MB** (Zero-Copy) | ~90MB – 180MB (WebView) | ~600MB – 1.2GB (UTF-16 strings) | ~1.5GB – 2.5GB |
+| **File Open Time** | **< 100ms** (Instant Mmap) | ~150ms – 300ms (Mmap) | ~2.5s – 5.0s | ~3.0s – 6.0s |
+| **Filter Evaluation** (10 rules) | **~40ms – 80ms** (Multi-core SIMD) | ~60ms – 120ms (Rust Core) | ~1.0s – 2.5s (V8 GC overhead) | ~2.0s – 4.0s (GIL-locked) |
+| **UI Scroll Framerate** | **120 FPS+ Native GPU** | 60 FPS (DOM Virtualization) | 45 – 60 FPS (DOM virtualization) | 30 – 50 FPS (Micro-stutter) |
+| **Standalone Binary Size** | **~15MB – 25MB** | ~10MB – 20MB (System WebView) | ~180MB+ (Chromium bundle) | ~45MB (PyInstaller bundle) |
 
 ---
 

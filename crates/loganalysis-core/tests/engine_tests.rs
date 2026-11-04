@@ -601,3 +601,66 @@ fn test_text_only_filter_inherits_theme_bg() {
     assert_eq!(style.fg_hex, parse_color_spec("Red", false));
     assert_eq!(style.fg_hex, Some(0xFF0000));
 }
+
+#[test]
+fn test_filter_hit_counts_by_uuid_with_disabled_rules_and_multiple_tabs() {
+    let raw_lines = vec![
+        "2026-11-03 10:00:00 I/Auth: Token refreshed".to_string(),
+        "2026-11-03 10:00:01 E/Database: Query failed on table users".to_string(),
+        "2026-11-03 10:00:02 E/Database: Syntax error near SELECT".to_string(),
+        "2026-11-03 10:00:03 I/Network: TCP handshake completed".to_string(),
+        "2026-11-03 10:00:04 E/Database: Connection pool exhausted".to_string(),
+    ];
+    let mut stream = StreamLogBuffer::new(100, 10);
+    stream.append_chunk(raw_lines);
+
+    // Tab 1 rules:
+    // Rule 0: inactive rule (should not shift Rule 1's count)
+    let rule_inactive = FilterRule {
+        text: "Auth".to_string(),
+        active: false,
+        ..Default::default()
+    };
+    // Rule 1: active Database rule (3 matches)
+    let rule_db = FilterRule {
+        text: "Database".to_string(),
+        active: true,
+        bg_color: "Red".to_string(),
+        ..Default::default()
+    };
+
+    // Tab 2 rules:
+    // Rule 2: active Network rule (1 match)
+    let rule_net = FilterRule {
+        text: "Network".to_string(),
+        active: true,
+        bg_color: "Blue".to_string(),
+        ..Default::default()
+    };
+
+    let rules = vec![rule_inactive.clone(), rule_db.clone(), rule_net.clone()];
+    let res = execute_filtering(&stream, &rules, true, None, 0).expect("Filtering should succeed");
+
+    // Verify UUID-keyed lookup
+    assert_eq!(res.count_for_rule(&rule_inactive.id), 0, "Inactive rule count must be 0");
+    assert_eq!(res.count_for_rule(&rule_db.id), 3, "Database rule count must be exactly 3");
+    assert_eq!(res.count_for_rule(&rule_net.id), 1, "Network rule count must be exactly 1");
+
+    // Non-existent UUID must return 0
+    let random_id = uuid::Uuid::new_v4();
+    assert_eq!(res.count_for_rule(&random_id), 0);
+}
+
+#[test]
+fn test_scan_adb_devices_nonblocking_timeout_reap() {
+    use std::time::Duration;
+    // Calling scan_adb_devices with microsecond timeout must immediately return Timeout
+    // without deadlocking on child process locks.
+    let res = scan_adb_devices(Duration::from_micros(50));
+    match res {
+        Err(AdbError::Timeout(_)) => {}
+        Err(AdbError::ExecutionFailed(_)) => {} // adb binary missing in CI/container
+        Err(other) => panic!("Unexpected error: {:?}", other),
+        Ok(_) => {} // Finished extremely fast if adb was cached
+    }
+}

@@ -22,7 +22,7 @@ pub fn scan_adb_devices(timeout: Duration) -> Result<Vec<String>, AdbError> {
     let mut cmd = Command::new(adb_path);
     cmd.arg("devices");
     cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
+    cmd.stderr(Stdio::null());
 
     let mut child = cmd.spawn().map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
     let mut stdout_pipe = child.stdout.take().ok_or(AdbError::IoCaptureFailed)?;
@@ -34,14 +34,32 @@ pub fn scan_adb_devices(timeout: Duration) -> Result<Vec<String>, AdbError> {
         let mut stdout_str = String::new();
         let read_res = stdout_pipe.read_to_string(&mut stdout_str);
 
-        let status_res = if let Ok(mut lock) = child_clone.lock() {
-            if let Some(ref mut c) = *lock {
-                c.wait().map_err(|e| AdbError::ExecutionFailed(e.to_string()))
-            } else {
-                return;
+        // Poll try_wait with short sleep without holding the mutex across blocking calls
+        let status_res = loop {
+            let mut lock = match child_clone.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            match lock.as_mut() {
+                Some(c) => match c.try_wait() {
+                    Ok(Some(status)) => {
+                        let _ = lock.take();
+                        break Ok(status);
+                    }
+                    Ok(None) => {
+                        drop(lock);
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => {
+                        let _ = lock.take();
+                        break Err(AdbError::ExecutionFailed(e.to_string()));
+                    }
+                },
+                None => {
+                    // Process already taken or killed by timeout handler
+                    return;
+                }
             }
-        } else {
-            return;
         };
 
         match (read_res, status_res) {
@@ -60,12 +78,14 @@ pub fn scan_adb_devices(timeout: Duration) -> Result<Vec<String>, AdbError> {
     let (status, stdout) = match rx.recv_timeout(timeout) {
         Ok(res) => res?,
         Err(_) => {
-            // Reap the child process on timeout to prevent zombie process and thread leaks
-            if let Ok(mut lock) = child_arc.lock() {
-                if let Some(mut c) = lock.take() {
-                    let _ = c.kill();
-                    let _ = c.wait();
-                }
+            // Reap child process on timeout without deadlock risk
+            let mut lock = match child_arc.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if let Some(mut c) = lock.take() {
+                let _ = c.kill();
+                let _ = c.wait();
             }
             return Err(AdbError::Timeout(timeout));
         }

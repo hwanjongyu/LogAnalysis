@@ -324,11 +324,6 @@ pub fn render_filter_dock(
                         .map(|tab| {
                             let is_filtering_rules = !workspace.filter_search_query.trim().is_empty();
                             let total_rules = tab.filters.len();
-                            let counts = workspace
-                                .filter_result
-                                .as_ref()
-                                .map(|r| r.filter_counts.clone())
-                                .unwrap_or_default();
                             let search_q = workspace.filter_search_query.to_lowercase();
                             tab.filters
                                 .iter()
@@ -341,7 +336,11 @@ pub fn render_filter_dock(
                                     }
                                 })
                                 .map(|(r_idx, rule)| {
-                                    let count = counts.get(r_idx).copied().unwrap_or(0);
+                                    let count = workspace
+                                        .filter_result
+                                        .as_ref()
+                                        .map(|r| r.count_for_rule(&rule.id))
+                                        .unwrap_or(0);
                                     let is_active = rule.active;
                                     let is_exclude = rule.exclude;
                                     let is_regex = rule.regex;

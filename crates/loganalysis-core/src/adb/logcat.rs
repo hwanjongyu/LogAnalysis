@@ -21,11 +21,10 @@ impl LogcatStreamHandle {
     /// Signals the background thread and terminates the child process to unblock I/O.
     pub fn stop(&self) {
         self.stop_flag.store(true, Ordering::SeqCst);
-        if let Ok(mut lock) = self.child.lock() {
-            if let Some(mut child) = lock.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+        let mut lock = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(mut child) = lock.take() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 
@@ -119,11 +118,10 @@ pub fn start_logcat_stream(
         }
 
         // Clean up child process if still alive
-        if let Ok(mut lock) = child_clone.lock() {
-            if let Some(mut child) = lock.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+        let mut lock = child_clone.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(mut child) = lock.take() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     });
 

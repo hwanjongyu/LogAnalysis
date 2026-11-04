@@ -93,13 +93,20 @@ fn append_to_file(path: &Path, content: &str) {
     }
 }
 
+/// Safely writes bytes to stderr, silently ignoring BrokenPipe (os error 32) or other I/O errors.
+pub fn safe_write_stderr(bytes: &[u8]) {
+    let mut stderr = std::io::stderr();
+    let _ = stderr.write_all(bytes);
+    let _ = stderr.flush();
+}
+
 /// Appends a structured log event to the persistent `loganalysis.log` files
 pub fn log_event(level: &str, message: &str) {
     let _lock = LOG_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let timestamp = now_timestamp();
     let formatted = format!("[{timestamp}] [{level}] {message}\n");
 
-    eprint!("{formatted}");
+    safe_write_stderr(formatted.as_bytes());
 
     for path in resolve_log_paths("loganalysis.log") {
         append_to_file(&path, &formatted);
@@ -158,20 +165,22 @@ pub fn init_crash_handler() {
             append_to_file(&path, &error_line);
         }
 
-        eprintln!(
+        let crash_paths_str = crash_paths
+            .iter()
+            .map(|p| format!("  - {}", p.display()))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let notice = format!(
             "\n🚨 [LogAnalysis Fatal Crash]\n\
              Time:     {timestamp}\n\
              Thread:   {thread_name}\n\
              Location: {location}\n\
              Panic:    {payload}\n\n\
              Crash report and backtrace successfully written to:\n\
-             {}",
-            crash_paths
-                .iter()
-                .map(|p| format!("  - {}", p.display()))
-                .collect::<Vec<_>>()
-                .join("\n")
+             {crash_paths_str}\n"
         );
+        safe_write_stderr(notice.as_bytes());
 
         default_hook(panic_info);
     }));
@@ -200,6 +209,14 @@ mod tests {
         let paths = resolve_log_paths("test.log");
         assert!(!paths.is_empty(), "Log paths should have at least cwd or home path");
         assert!(paths[0].ends_with("test.log"));
+    }
+
+    #[test]
+    fn test_safe_write_stderr_resilience() {
+        // Must never panic regardless of bytes or stdio state
+        safe_write_stderr(b"Test safe stderr write\n");
+        safe_write_stderr(&[]);
+        log_event("TEST", "Unit test message via safe_write_stderr");
     }
 }
 

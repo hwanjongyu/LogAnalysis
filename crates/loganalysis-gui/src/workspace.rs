@@ -948,14 +948,14 @@ impl LogAnalysisWorkspace {
             if let (Some(src), Some(tab)) = (&self.log_source, self.filter_tabs.get(self.active_tab_index)) {
                 if let Some(line) = src.get_line(source_idx) {
                     let mut matched_info = None;
-                    for (r_idx, rule) in tab.filters.iter().enumerate() {
+                    for rule in &tab.filters {
                         if !rule.active {
                             continue;
                         }
                         if let Ok(matcher) = loganalysis_core::CompiledMatcher::new(&rule.text, rule.case_sensitive, rule.regex) {
                             if matcher.matches(line.as_bytes()) {
                                 let count = self.filter_result.as_ref()
-                                    .and_then(|r| r.filter_counts.get(r_idx).copied())
+                                    .map(|r| r.count_for_rule(&rule.id))
                                     .unwrap_or(0);
                                 matched_info = Some((rule.text.clone(), rule.bg_color.clone(), count));
                                 break;

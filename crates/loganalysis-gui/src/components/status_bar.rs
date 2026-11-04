@@ -21,7 +21,7 @@ pub fn render_status_bar(
     let total_matched: usize = workspace
         .filter_result
         .as_ref()
-        .map(|r| r.filter_counts.iter().sum())
+        .map(|r| r.total_matched_lines)
         .unwrap_or(0);
     let font_size = workspace.font_size;
     let font_size_f32: f32 = font_size.into();
