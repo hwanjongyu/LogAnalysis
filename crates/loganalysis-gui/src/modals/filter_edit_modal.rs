@@ -64,7 +64,7 @@ pub fn render_filter_edit_modal(
                 div()
                     .id("modal-card-filter-edit")
                     .occlude()
-                    .w(px(500.0))
+                    .w(px(520.0))
                     .bg(theme.bg_panel)
                     .border_1()
                     .border_color(theme.accent)
@@ -120,6 +120,7 @@ pub fn render_filter_edit_modal(
                     // Interactive Pattern Input Field
                     .child(
                         div()
+                            .w_full()
                             .flex()
                             .flex_col()
                             .gap_1()
@@ -133,6 +134,7 @@ pub fn render_filter_edit_modal(
                             .child(
                                 div()
                                     .id("input-modal-pattern")
+                                    .w_full()
                                     .px(px(10.0))
                                     .py(px(8.0))
                                     .bg(theme.bg_dark)
@@ -160,6 +162,7 @@ pub fn render_filter_edit_modal(
                                     }))
                                     .child(if modal_pattern.is_empty() {
                                         div()
+                                            .id("modal-pattern-placeholder")
                                             .flex_1()
                                             .cursor_text()
                                             .text_color(theme.text_muted)
@@ -169,17 +172,21 @@ pub fn render_filter_edit_modal(
                                                 "Click to type pattern...".to_string()
                                             })
                                     } else {
-                                        let mut text_el = div()
-                                            .flex_1()
+                                        let scroll_offset_px =
+                                            workspace.filter_edit_modal.scroll_offset as f32;
+
+                                        let mut inner_strip = div()
+                                            .id("modal-pattern-strip")
                                             .flex()
                                             .items_center()
-                                            .overflow_hidden()
-                                            .cursor_text();
+                                            .ml(px(-scroll_offset_px));
 
                                         for (idx, &ch) in chars.iter().enumerate() {
                                             if is_modal_focused && idx == safe_cursor {
-                                                text_el = text_el.child(
+                                                inner_strip = inner_strip.child(
                                                     div()
+                                                        .id("modal-pattern-cursor")
+                                                        .flex_shrink_0()
                                                         .w(px(2.0))
                                                         .h(px(16.0))
                                                         .bg(theme.accent)
@@ -187,18 +194,28 @@ pub fn render_filter_edit_modal(
                                                 );
                                             }
 
+                                            let is_cjk = !ch.is_ascii();
+                                            let char_w = if is_cjk { px(15.0) } else { px(7.5) };
+
                                             let disp = if ch == ' ' {
                                                 "\u{00A0}".to_string()
                                             } else {
                                                 ch.to_string()
                                             };
 
-                                            text_el = text_el.child(
+                                            inner_strip = inner_strip.child(
                                                 div()
                                                     .id(ElementId::NamedInteger(
                                                         "modal-char".into(),
                                                         idx as u64,
                                                     ))
+                                                    .flex_shrink_0()
+                                                    .w(char_w)
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .font_family("monospace")
+                                                    .text_size(px(12.5))
                                                     .text_color(theme.text_primary)
                                                     .cursor_text()
                                                     .on_mouse_down(
@@ -209,8 +226,8 @@ pub fn render_filter_edit_modal(
                                                     )
                                                     .on_click(cx.listener(
                                                         move |this, _, window, cx| {
-                                                            this.filter_edit_modal.cursor_pos =
-                                                                 idx;
+                                                            this.filter_edit_modal.cursor_pos = idx;
+                                                            this.ensure_modal_cursor_visible();
                                                             this.input_focus =
                                                                 InputFocusTarget::ModalPattern;
                                                             window.focus(&this.focus_handle);
@@ -223,8 +240,10 @@ pub fn render_filter_edit_modal(
                                         }
 
                                         if is_modal_focused && safe_cursor == chars.len() {
-                                            text_el = text_el.child(
+                                            inner_strip = inner_strip.child(
                                                 div()
+                                                    .id("modal-pattern-cursor-end")
+                                                    .flex_shrink_0()
                                                     .w(px(2.0))
                                                     .h(px(16.0))
                                                     .bg(theme.accent)
@@ -232,10 +251,11 @@ pub fn render_filter_edit_modal(
                                             );
                                         }
 
-                                        text_el = text_el.child(
+                                        inner_strip = inner_strip.child(
                                             div()
                                                 .id("modal-pattern-trailing-space")
                                                 .flex_1()
+                                                .min_w(px(50.0))
                                                 .h(px(20.0))
                                                 .cursor_text()
                                                 .on_mouse_down(
@@ -245,12 +265,10 @@ pub fn render_filter_edit_modal(
                                                     },
                                                 )
                                                 .on_click(cx.listener(
-                                                    |this, _, window, cx| {
+                                                    move |this, _, window, cx| {
                                                         this.filter_edit_modal.cursor_pos =
-                                                            this.filter_edit_modal
-                                                                .pattern
-                                                                .chars()
-                                                                .count();
+                                                            this.filter_edit_modal.pattern.chars().count();
+                                                        this.ensure_modal_cursor_visible();
                                                         this.input_focus =
                                                             InputFocusTarget::ModalPattern;
                                                         window.focus(&this.focus_handle);
@@ -260,12 +278,20 @@ pub fn render_filter_edit_modal(
                                                 )),
                                         );
 
-                                        text_el
+                                        div()
+                                            .id("modal-pattern-viewport")
+                                            .flex_1()
+                                            .flex()
+                                            .items_center()
+                                            .overflow_hidden()
+                                            .cursor_text()
+                                            .child(inner_strip)
                                     })
                                     .children(if !modal_pattern.is_empty() {
                                         Some(
                                             div()
                                                 .id("btn-clear-modal-pattern")
+                                                .flex_shrink_0()
                                                 .px(px(6.0))
                                                 .py(px(2.0))
                                                 .rounded_sm()
@@ -282,6 +308,7 @@ pub fn render_filter_edit_modal(
                                                 .on_click(cx.listener(|this, _, window, cx| {
                                                     this.filter_edit_modal.pattern.clear();
                                                     this.filter_edit_modal.cursor_pos = 0;
+                                                    this.filter_edit_modal.scroll_offset = 0;
                                                     this.input_focus = InputFocusTarget::ModalPattern;
                                                     window.focus(&this.focus_handle);
                                                     cx.stop_propagation();
@@ -714,6 +741,7 @@ pub fn render_filter_edit_modal(
                                                             bg.to_string();
                                                         this.filter_edit_modal.fg_color_name =
                                                             fg.to_string();
+                                                        this.ensure_modal_cursor_visible();
                                                         this.input_focus = InputFocusTarget::ModalPattern;
                                                         window.focus(&this.focus_handle);
                                                         cx.stop_propagation();
