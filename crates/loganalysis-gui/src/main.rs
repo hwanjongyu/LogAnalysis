@@ -23,7 +23,12 @@ pub use workspace::LogAnalysisWorkspace;
 
 impl Render for LogAnalysisWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.focus_handle.is_focused(window) {
+        let modal_pattern_focused = self.modal_pattern_input.read(cx).focus_handle.is_focused(window);
+        if self.filter_edit_modal.is_open {
+            if self.input_focus == InputFocusTarget::ModalPattern && !modal_pattern_focused {
+                window.focus(&self.modal_pattern_input.read(cx).focus_handle);
+            }
+        } else if !self.focus_handle.is_focused(window) {
             window.focus(&self.focus_handle);
         }
 
@@ -83,8 +88,9 @@ impl Render for LogAnalysisWorkspace {
             .on_action(cx.listener(|this, _: &CopySelection, _window, cx| {
                 this.copy_selection(cx);
             }))
-            .on_action(cx.listener(|this, _: &AddFilter, _window, cx| {
+            .on_action(cx.listener(|this, _: &AddFilter, window, cx| {
                 this.open_add_filter_modal(cx);
+                window.focus(&this.modal_pattern_input.read(cx).focus_handle);
             }))
             .on_action(cx.listener(|this, _: &SaveFilters, _window, cx| {
                 this.prompt_save_filters(cx);
@@ -260,6 +266,9 @@ fn main() {
             KeyBinding::new("ctrl-r", RenameFilterTab, None),
             KeyBinding::new("ctrl-shift-l", ToggleFilterPanelPosition, None),
         ]);
+
+        // Register Scoped TextInput Key Bindings (Cut, Copy, Paste, Arrows, Selection, etc.)
+        components::text_input::register_keybindings(cx);
 
         let window_decorations = if std::env::var("LOGANALYSIS_FORCE_CSD").is_ok() {
             Some(WindowDecorations::Client)

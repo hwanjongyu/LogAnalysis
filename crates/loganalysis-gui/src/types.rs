@@ -21,9 +21,6 @@ pub enum InputFocusTarget {
 pub struct FilterEditState {
     pub is_open: bool,
     pub editing_index: Option<usize>, // None = Add new, Some = Edit existing
-    pub pattern: String,
-    pub cursor_pos: usize,
-    pub scroll_offset: usize,
     pub is_regex: bool,
     pub is_case_sensitive: bool,
     pub is_exclude: bool,

@@ -8,6 +8,7 @@ description = "GPU-accelerated desktop GUI for LogAnalysis using GPUI"
 [dependencies]
 loganalysis-core = { path = "../loganalysis-core" }
 gpui = "0.2.2"
+unicode-segmentation = "1.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 crossbeam-channel = "0.5"

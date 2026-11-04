@@ -5,6 +5,7 @@ use crossbeam_channel::unbounded;
 use gpui::*;
 use loganalysis_core::*;
 
+use crate::components::text_input::TextInput;
 use crate::selection::SelectionModel;
 use crate::theme::Theme;
 use crate::types::{FilterEditState, FilterPanelPosition, InputFocusTarget};
@@ -24,6 +25,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) show_only_filtered: bool,
     pub(crate) cancel_generation: Arc<AtomicU64>,
     pub(crate) filter_edit_modal: FilterEditState,
+    pub(crate) modal_pattern_input: Entity<TextInput>,
     pub(crate) filter_search_query: String,
 
     // Search state
@@ -94,6 +96,8 @@ impl LogAnalysisWorkspace {
             ..Default::default()
         };
 
+        let modal_pattern_input = cx.new(|cx| TextInput::new("Type filter pattern...", cx));
+
         Self {
             focus_handle: cx.focus_handle(),
             log_source: None,
@@ -108,6 +112,7 @@ impl LogAnalysisWorkspace {
             show_only_filtered: false,
             cancel_generation: Arc::new(AtomicU64::new(0)),
             filter_edit_modal: FilterEditState::default(),
+            modal_pattern_input,
             filter_search_query: String::new(),
 
             search_query: String::new(),
@@ -616,18 +621,20 @@ impl LogAnalysisWorkspace {
         let key = event.keystroke.key.as_str();
         let m = &event.keystroke.modifiers;
 
+        // ModalPattern is fully handled by native TextInput; only intercept Enter (save) and Escape (close)
+        if self.input_focus == InputFocusTarget::ModalPattern {
+            if key == "escape" {
+                self.close_filter_modal(cx);
+            } else if key == "enter" {
+                self.save_modal_filter(cx);
+            }
+            return;
+        }
+
         // Support common text box shortcuts (Ctrl+V paste, Ctrl+Backspace delete word, Ctrl+U / Ctrl+A clear)
         if m.control && !m.alt && !m.platform {
             if key == "backspace" || key == "delete" {
                 match self.input_focus {
-                    InputFocusTarget::ModalPattern => {
-                        self.filter_edit_modal.cursor_pos = delete_previous_word_at(
-                            &mut self.filter_edit_modal.pattern,
-                            self.filter_edit_modal.cursor_pos,
-                        );
-                        self.ensure_modal_cursor_visible();
-                        cx.notify();
-                    }
                     InputFocusTarget::SearchBar => {
                         delete_previous_word(&mut self.search_query);
                         self.update_cached_search_matcher();
@@ -637,7 +644,7 @@ impl LogAnalysisWorkspace {
                         delete_previous_word(&mut self.filter_search_query);
                         cx.notify();
                     }
-                    InputFocusTarget::None => {}
+                    _ => {}
                 }
                 return;
             } else if key == "v" || key == "V" {
@@ -645,15 +652,6 @@ impl LogAnalysisWorkspace {
                     if let Some(text) = clipboard.text() {
                         let clean = text.replace(['\r', '\n'], "");
                         match self.input_focus {
-                            InputFocusTarget::ModalPattern => {
-                                self.filter_edit_modal.cursor_pos = insert_at_char_index(
-                                    &mut self.filter_edit_modal.pattern,
-                                    self.filter_edit_modal.cursor_pos,
-                                    &clean,
-                                );
-                                self.ensure_modal_cursor_visible();
-                                cx.notify();
-                            }
                             InputFocusTarget::SearchBar => {
                                 self.search_query.push_str(&clean);
                                 self.update_cached_search_matcher();
@@ -663,19 +661,13 @@ impl LogAnalysisWorkspace {
                                 self.filter_search_query.push_str(&clean);
                                 cx.notify();
                             }
-                            InputFocusTarget::None => {}
+                            _ => {}
                         }
                     }
                 }
                 return;
             } else if key == "u" || key == "U" || key == "a" || key == "A" {
                 match self.input_focus {
-                    InputFocusTarget::ModalPattern => {
-                        self.filter_edit_modal.pattern.clear();
-                        self.filter_edit_modal.cursor_pos = 0;
-                        self.filter_edit_modal.scroll_offset = 0;
-                        cx.notify();
-                    }
                     InputFocusTarget::SearchBar => {
                         self.search_query.clear();
                         self.update_cached_search_matcher();
@@ -685,7 +677,7 @@ impl LogAnalysisWorkspace {
                         self.filter_search_query.clear();
                         cx.notify();
                     }
-                    InputFocusTarget::None => {}
+                    _ => {}
                 }
                 return;
             }
@@ -698,9 +690,6 @@ impl LogAnalysisWorkspace {
 
         match key {
             "escape" => match self.input_focus {
-                InputFocusTarget::ModalPattern => {
-                    self.close_filter_modal(cx);
-                }
                 InputFocusTarget::SearchBar => {
                     self.is_search_visible = false;
                     self.input_focus = InputFocusTarget::None;
@@ -712,12 +701,9 @@ impl LogAnalysisWorkspace {
                     self.input_focus = InputFocusTarget::None;
                     cx.notify();
                 }
-                InputFocusTarget::None => {}
+                _ => {}
             },
             "enter" => match self.input_focus {
-                InputFocusTarget::ModalPattern => {
-                    self.save_modal_filter(cx);
-                }
                 InputFocusTarget::SearchBar => {
                     self.search(true, cx);
                 }
@@ -725,49 +711,9 @@ impl LogAnalysisWorkspace {
                     self.input_focus = InputFocusTarget::None;
                     cx.notify();
                 }
-                InputFocusTarget::None => {}
+                _ => {}
             },
-            "left" => {
-                if self.input_focus == InputFocusTarget::ModalPattern {
-                    self.filter_edit_modal.cursor_pos =
-                        self.filter_edit_modal.cursor_pos.saturating_sub(1);
-                    self.ensure_modal_cursor_visible();
-                    cx.notify();
-                }
-            }
-            "right" => {
-                if self.input_focus == InputFocusTarget::ModalPattern {
-                    let max = self.filter_edit_modal.pattern.chars().count();
-                    self.filter_edit_modal.cursor_pos =
-                        (self.filter_edit_modal.cursor_pos + 1).min(max);
-                    self.ensure_modal_cursor_visible();
-                    cx.notify();
-                }
-            }
-            "home" => {
-                if self.input_focus == InputFocusTarget::ModalPattern {
-                    self.filter_edit_modal.cursor_pos = 0;
-                    self.ensure_modal_cursor_visible();
-                    cx.notify();
-                }
-            }
-            "end" => {
-                if self.input_focus == InputFocusTarget::ModalPattern {
-                    self.filter_edit_modal.cursor_pos =
-                        self.filter_edit_modal.pattern.chars().count();
-                    self.ensure_modal_cursor_visible();
-                    cx.notify();
-                }
-            }
             "backspace" => match self.input_focus {
-                InputFocusTarget::ModalPattern => {
-                    self.filter_edit_modal.cursor_pos = remove_before_char_index(
-                        &mut self.filter_edit_modal.pattern,
-                        self.filter_edit_modal.cursor_pos,
-                    );
-                    self.ensure_modal_cursor_visible();
-                    cx.notify();
-                }
                 InputFocusTarget::SearchBar => {
                     self.search_query.pop();
                     self.update_cached_search_matcher();
@@ -777,17 +723,9 @@ impl LogAnalysisWorkspace {
                     self.filter_search_query.pop();
                     cx.notify();
                 }
-                InputFocusTarget::None => {}
+                _ => {}
             },
             "delete" => match self.input_focus {
-                InputFocusTarget::ModalPattern => {
-                    remove_at_char_index(
-                        &mut self.filter_edit_modal.pattern,
-                        self.filter_edit_modal.cursor_pos,
-                    );
-                    self.ensure_modal_cursor_visible();
-                    cx.notify();
-                }
                 InputFocusTarget::SearchBar => {
                     self.search_query.pop();
                     self.update_cached_search_matcher();
@@ -797,18 +735,9 @@ impl LogAnalysisWorkspace {
                     self.filter_search_query.pop();
                     cx.notify();
                 }
-                InputFocusTarget::None => {}
+                _ => {}
             },
             "space" => match self.input_focus {
-                InputFocusTarget::ModalPattern => {
-                    self.filter_edit_modal.cursor_pos = insert_at_char_index(
-                        &mut self.filter_edit_modal.pattern,
-                        self.filter_edit_modal.cursor_pos,
-                        " ",
-                    );
-                    self.ensure_modal_cursor_visible();
-                    cx.notify();
-                }
                 InputFocusTarget::SearchBar => {
                     self.search_query.push(' ');
                     self.update_cached_search_matcher();
@@ -818,20 +747,12 @@ impl LogAnalysisWorkspace {
                     self.filter_search_query.push(' ');
                     cx.notify();
                 }
-                InputFocusTarget::None => {}
+                _ => {}
             },
             _ => {
                 if let Some(ch) = &event.keystroke.key_char {
                     if !ch.is_empty() && !ch.chars().any(|c| c.is_control()) {
                         match self.input_focus {
-                            InputFocusTarget::ModalPattern => {
-                                self.filter_edit_modal.cursor_pos = insert_at_char_index(
-                                    &mut self.filter_edit_modal.pattern,
-                                    self.filter_edit_modal.cursor_pos,
-                                    ch,
-                                );
-                                cx.notify();
-                            }
                             InputFocusTarget::SearchBar => {
                                 self.search_query.push_str(ch);
                                 cx.notify();
@@ -840,7 +761,7 @@ impl LogAnalysisWorkspace {
                                 self.filter_search_query.push_str(ch);
                                 cx.notify();
                             }
-                            InputFocusTarget::None => {}
+                            _ => {}
                         }
                     }
                 } else if key.len() == 1 {
@@ -873,15 +794,6 @@ impl LogAnalysisWorkspace {
                         key.to_string()
                     };
                     match self.input_focus {
-                        InputFocusTarget::ModalPattern => {
-                            self.filter_edit_modal.cursor_pos = insert_at_char_index(
-                                &mut self.filter_edit_modal.pattern,
-                                self.filter_edit_modal.cursor_pos,
-                                &c,
-                            );
-                            self.ensure_modal_cursor_visible();
-                            cx.notify();
-                        }
                         InputFocusTarget::SearchBar => {
                             self.search_query.push_str(&c);
                             self.update_cached_search_matcher();
@@ -891,7 +803,7 @@ impl LogAnalysisWorkspace {
                             self.filter_search_query.push_str(&c);
                             cx.notify();
                         }
-                        InputFocusTarget::None => {}
+                        _ => {}
                     }
                 }
             }
@@ -972,47 +884,14 @@ impl LogAnalysisWorkspace {
         }
     }
 
-    /// Ensures the modal cursor is visible within the text box window using exact pixel measurement
-    pub fn ensure_modal_cursor_visible(&mut self) {
-        let safe_cursor = self.filter_edit_modal.cursor_pos;
-        let mut cursor_x: f32 = 0.0;
-        let mut total_x: f32 = 0.0;
-
-        for (i, ch) in self.filter_edit_modal.pattern.chars().enumerate() {
-            let w = if ch.is_ascii() { 7.5 } else { 15.0 };
-            if i < safe_cursor {
-                cursor_x += w;
-            }
-            total_x += w;
-        }
-
-        // Available viewport width: 520px card - 40px card padding - 20px input padding - 25px clear btn = 435px
-        let viewport_w = 430.0;
-        let margin = 35.0; // hysteresis boundary
-        let mut scroll_x = self.filter_edit_modal.scroll_offset as f32;
-
-        if cursor_x < scroll_x + margin {
-            scroll_x = (cursor_x - margin).max(0.0);
-        } else if cursor_x > scroll_x + viewport_w - margin {
-            scroll_x = cursor_x - viewport_w + margin;
-        }
-
-        let max_scroll = (total_x - viewport_w + margin).max(0.0);
-        if scroll_x > max_scroll {
-            scroll_x = max_scroll;
-        }
-
-        self.filter_edit_modal.scroll_offset = scroll_x.max(0.0) as usize;
-    }
-
     /// Opens modal to add new filter rule
     pub fn open_add_filter_modal(&mut self, cx: &mut Context<Self>) {
+        self.modal_pattern_input.update(cx, |input, cx| {
+            input.clear(cx);
+        });
         self.filter_edit_modal = FilterEditState {
             is_open: true,
             editing_index: None,
-            pattern: String::new(),
-            cursor_pos: 0,
-            scroll_offset: 0,
             is_regex: false,
             is_case_sensitive: false,
             is_exclude: false,
@@ -1028,20 +907,18 @@ impl LogAnalysisWorkspace {
         if let Some(tab) = self.filter_tabs.get(self.active_tab_index) {
             if let Some(rule) = tab.filters.get(rule_idx) {
                 let pattern = rule.text.clone();
-                let cursor_pos = pattern.chars().count();
+                self.modal_pattern_input.update(cx, |input, cx| {
+                    input.set_text(&pattern, cx);
+                });
                 self.filter_edit_modal = FilterEditState {
                     is_open: true,
                     editing_index: Some(rule_idx),
-                    pattern,
-                    cursor_pos,
-                    scroll_offset: 0,
                     is_regex: rule.regex,
                     is_case_sensitive: rule.case_sensitive,
                     is_exclude: rule.exclude,
                     bg_color_name: rule.bg_color.clone(),
                     fg_color_name: rule.text_color.clone(),
                 };
-                self.ensure_modal_cursor_visible();
                 self.input_focus = InputFocusTarget::ModalPattern;
                 cx.notify();
             }
@@ -1057,7 +934,7 @@ impl LogAnalysisWorkspace {
 
     /// Saves filter from modal into tab
     pub fn save_modal_filter(&mut self, cx: &mut Context<Self>) {
-        let pattern = self.filter_edit_modal.pattern.trim().to_string();
+        let pattern = self.modal_pattern_input.read(cx).text().trim().to_string();
         if pattern.is_empty() {
             self.status_text = "Filter pattern cannot be empty".into();
             cx.notify();

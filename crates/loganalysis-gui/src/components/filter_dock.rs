@@ -230,7 +230,7 @@ pub fn render_filter_dock(
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_add_filter_modal(cx);
-                            window.focus(&this.focus_handle);
+                            window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                         }))
                         .child("+ New Rule"),
                 ),
@@ -581,7 +581,7 @@ pub fn render_filter_dock(
                                                                 this.open_edit_filter_modal(
                                                                     r_idx, cx,
                                                                 );
-                                                                window.focus(&this.focus_handle);
+                                                                window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                                                             },
                                                         ))
                                                         .child("✎"),

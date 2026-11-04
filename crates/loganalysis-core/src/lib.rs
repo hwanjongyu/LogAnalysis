@@ -4,7 +4,6 @@ pub mod constants;
 pub mod error;
 pub mod filter;
 pub mod search;
-pub mod text_edit;
 
 pub use adb::{
     is_valid_device_serial, resolve_adb_path, scan_adb_devices, start_logcat_stream,
@@ -25,6 +24,3 @@ pub use filter::{
     FilterResult, FilterRule, FilterTabData, PreparedFilter, ResolvedStyle,
 };
 pub use search::{search_in_log, SearchQuery, SearchResult};
-pub use text_edit::{
-    delete_previous_word_at, insert_at_char_index, remove_at_char_index, remove_before_char_index,
-};

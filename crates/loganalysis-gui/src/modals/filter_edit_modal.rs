@@ -14,10 +14,7 @@ pub fn render_filter_edit_modal(
 
     let theme = workspace.theme;
     let is_edit = workspace.filter_edit_modal.editing_index.is_some();
-    let modal_pattern = workspace.filter_edit_modal.pattern.clone();
-    let cursor_pos = workspace.filter_edit_modal.cursor_pos;
-    let chars: Vec<char> = modal_pattern.chars().collect();
-    let safe_cursor = cursor_pos.min(chars.len());
+    let modal_pattern = workspace.modal_pattern_input.read(cx).text();
     let is_reg = workspace.filter_edit_modal.is_regex;
     let is_cs = workspace.filter_edit_modal.is_case_sensitive;
     let is_ex = workspace.filter_edit_modal.is_exclude;
@@ -57,7 +54,8 @@ pub fn render_filter_edit_modal(
                 cx.stop_propagation();
             })
             .on_click(cx.listener(|this, _, window, cx| {
-                window.focus(&this.focus_handle);
+                this.input_focus = InputFocusTarget::ModalPattern;
+                window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                 cx.stop_propagation();
             }))
             .child(
@@ -82,7 +80,7 @@ pub fn render_filter_edit_modal(
                     })
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.input_focus = InputFocusTarget::ModalPattern;
-                        window.focus(&this.focus_handle);
+                        window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                         cx.stop_propagation();
                     }))
                     // Modal Header
@@ -150,148 +148,27 @@ pub fn render_filter_edit_modal(
                                     .flex()
                                     .items_center()
                                     .justify_between()
-                                    .cursor_pointer()
+                                    .cursor_text()
                                     .on_mouse_down(MouseButton::Left, |_, _window, cx| {
                                         cx.stop_propagation();
                                     })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.input_focus = InputFocusTarget::ModalPattern;
-                                        window.focus(&this.focus_handle);
+                                        window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                                         cx.stop_propagation();
-                                        cx.notify();
                                     }))
-                                    .child(if modal_pattern.is_empty() {
+                                    .child(
                                         div()
-                                            .id("modal-pattern-placeholder")
                                             .flex_1()
-                                            .cursor_text()
-                                            .text_color(theme.text_muted)
-                                            .child(if is_modal_focused {
-                                                "| Type pattern here...".to_string()
-                                            } else {
-                                                "Click to type pattern...".to_string()
-                                            })
-                                    } else {
-                                        let scroll_offset_px =
-                                            workspace.filter_edit_modal.scroll_offset as f32;
-
-                                        let mut inner_strip = div()
-                                            .id("modal-pattern-strip")
-                                            .flex()
-                                            .items_center()
-                                            .ml(px(-scroll_offset_px));
-
-                                        for (idx, &ch) in chars.iter().enumerate() {
-                                            if is_modal_focused && idx == safe_cursor {
-                                                inner_strip = inner_strip.child(
-                                                    div()
-                                                        .id("modal-pattern-cursor")
-                                                        .flex_shrink_0()
-                                                        .w(px(2.0))
-                                                        .h(px(16.0))
-                                                        .bg(theme.accent)
-                                                        .rounded_xs(),
-                                                );
-                                            }
-
-                                            let is_cjk = !ch.is_ascii();
-                                            let char_w = if is_cjk { px(15.0) } else { px(7.5) };
-
-                                            let disp = if ch == ' ' {
-                                                "\u{00A0}".to_string()
-                                            } else {
-                                                ch.to_string()
-                                            };
-
-                                            inner_strip = inner_strip.child(
-                                                div()
-                                                    .id(ElementId::NamedInteger(
-                                                        "modal-char".into(),
-                                                        idx as u64,
-                                                    ))
-                                                    .flex_shrink_0()
-                                                    .w(char_w)
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .font_family("monospace")
-                                                    .text_size(px(12.5))
-                                                    .text_color(theme.text_primary)
-                                                    .cursor_text()
-                                                    .on_mouse_down(
-                                                        MouseButton::Left,
-                                                        |_, _window, cx| {
-                                                            cx.stop_propagation();
-                                                        },
-                                                    )
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.filter_edit_modal.cursor_pos = idx;
-                                                            this.ensure_modal_cursor_visible();
-                                                            this.input_focus =
-                                                                InputFocusTarget::ModalPattern;
-                                                            window.focus(&this.focus_handle);
-                                                            cx.stop_propagation();
-                                                            cx.notify();
-                                                        },
-                                                    ))
-                                                    .child(disp),
-                                            );
-                                        }
-
-                                        if is_modal_focused && safe_cursor == chars.len() {
-                                            inner_strip = inner_strip.child(
-                                                div()
-                                                    .id("modal-pattern-cursor-end")
-                                                    .flex_shrink_0()
-                                                    .w(px(2.0))
-                                                    .h(px(16.0))
-                                                    .bg(theme.accent)
-                                                    .rounded_xs(),
-                                            );
-                                        }
-
-                                        inner_strip = inner_strip.child(
-                                            div()
-                                                .id("modal-pattern-trailing-space")
-                                                .flex_1()
-                                                .min_w(px(50.0))
-                                                .h(px(20.0))
-                                                .cursor_text()
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    |_, _window, cx| {
-                                                        cx.stop_propagation();
-                                                    },
-                                                )
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.filter_edit_modal.cursor_pos =
-                                                            this.filter_edit_modal.pattern.chars().count();
-                                                        this.ensure_modal_cursor_visible();
-                                                        this.input_focus =
-                                                            InputFocusTarget::ModalPattern;
-                                                        window.focus(&this.focus_handle);
-                                                        cx.stop_propagation();
-                                                        cx.notify();
-                                                    },
-                                                )),
-                                        );
-
-                                        div()
-                                            .id("modal-pattern-viewport")
-                                            .flex_1()
-                                            .flex()
-                                            .items_center()
                                             .overflow_hidden()
-                                            .cursor_text()
-                                            .child(inner_strip)
-                                    })
+                                            .child(workspace.modal_pattern_input.clone()),
+                                    )
                                     .children(if !modal_pattern.is_empty() {
                                         Some(
                                             div()
                                                 .id("btn-clear-modal-pattern")
                                                 .flex_shrink_0()
+                                                .ml(px(8.0))
                                                 .px(px(6.0))
                                                 .py(px(2.0))
                                                 .rounded_sm()
@@ -306,11 +183,10 @@ pub fn render_filter_edit_modal(
                                                     cx.stop_propagation();
                                                 })
                                                 .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.filter_edit_modal.pattern.clear();
-                                                    this.filter_edit_modal.cursor_pos = 0;
-                                                    this.filter_edit_modal.scroll_offset = 0;
-                                                    this.input_focus = InputFocusTarget::ModalPattern;
-                                                    window.focus(&this.focus_handle);
+                                                    this.modal_pattern_input.update(cx, |input, cx| {
+                                                        input.clear(cx);
+                                                    });
+                                                    window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                                                     cx.stop_propagation();
                                                     cx.notify();
                                                 }))
@@ -342,7 +218,7 @@ pub fn render_filter_edit_modal(
                                         this.filter_edit_modal.is_exclude =
                                             !this.filter_edit_modal.is_exclude;
                                         this.input_focus = InputFocusTarget::ModalPattern;
-                                        window.focus(&this.focus_handle);
+                                        window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                                         cx.stop_propagation();
                                         cx.notify();
                                     }))
@@ -381,7 +257,7 @@ pub fn render_filter_edit_modal(
                                         this.filter_edit_modal.is_regex =
                                             !this.filter_edit_modal.is_regex;
                                         this.input_focus = InputFocusTarget::ModalPattern;
-                                        window.focus(&this.focus_handle);
+                                        window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                                         cx.stop_propagation();
                                         cx.notify();
                                     }))
@@ -420,7 +296,7 @@ pub fn render_filter_edit_modal(
                                         this.filter_edit_modal.is_case_sensitive =
                                             !this.filter_edit_modal.is_case_sensitive;
                                         this.input_focus = InputFocusTarget::ModalPattern;
-                                        window.focus(&this.focus_handle);
+                                        window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                                         cx.stop_propagation();
                                         cx.notify();
                                     }))
@@ -580,7 +456,7 @@ pub fn render_filter_edit_modal(
                                                         this.filter_edit_modal.bg_color_name =
                                                             name.to_string();
                                                         this.input_focus = InputFocusTarget::ModalPattern;
-                                                        window.focus(&this.focus_handle);
+                                                        window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                                                         cx.stop_propagation();
                                                         cx.notify();
                                                     },
@@ -659,7 +535,7 @@ pub fn render_filter_edit_modal(
                                                         this.filter_edit_modal.fg_color_name =
                                                             name.to_string();
                                                         this.input_focus = InputFocusTarget::ModalPattern;
-                                                        window.focus(&this.focus_handle);
+                                                        window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                                                         cx.stop_propagation();
                                                         cx.notify();
                                                     },
@@ -733,17 +609,15 @@ pub fn render_filter_edit_modal(
                                                 })
                                                 .on_click(cx.listener(
                                                     move |this, _, window, cx| {
-                                                        this.filter_edit_modal.pattern =
-                                                            pat.to_string();
-                                                        this.filter_edit_modal.cursor_pos =
-                                                            pat.chars().count();
+                                                        this.modal_pattern_input.update(cx, |input, cx| {
+                                                            input.set_text(pat, cx);
+                                                        });
                                                         this.filter_edit_modal.bg_color_name =
                                                             bg.to_string();
                                                         this.filter_edit_modal.fg_color_name =
                                                             fg.to_string();
-                                                        this.ensure_modal_cursor_visible();
                                                         this.input_focus = InputFocusTarget::ModalPattern;
-                                                        window.focus(&this.focus_handle);
+                                                        window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                                                         cx.stop_propagation();
                                                         cx.notify();
                                                     },
