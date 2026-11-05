@@ -12,7 +12,6 @@ pub enum InputFocusTarget {
     #[default]
     None,
     SearchBar,
-    FilterRuleSearch,
     ModalPattern,
 }
 

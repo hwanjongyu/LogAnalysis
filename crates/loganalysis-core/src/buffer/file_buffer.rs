@@ -1,9 +1,13 @@
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use memmap2::Mmap;
 
 use super::{trim_line_end, trim_trailing_whitespace, LogSource};
+
+const LINE_CACHE_SIZE: usize = 1024;
+type LineCache = RwLock<Box<[Option<(usize, Arc<str>)>; LINE_CACHE_SIZE]>>;
 
 enum Storage {
     Mmap(Mmap),
@@ -28,6 +32,7 @@ pub struct FileLogBuffer {
     line_offsets: Vec<usize>,
     max_line_len: usize,
     longest_line_idx: Option<usize>,
+    line_cache: LineCache,
 }
 
 impl FileLogBuffer {
@@ -38,6 +43,11 @@ impl FileLogBuffer {
         let metadata = file.metadata()?;
         let file_len = metadata.len() as usize;
 
+        let empty_cache = vec![None; LINE_CACHE_SIZE]
+            .into_boxed_slice()
+            .try_into()
+            .unwrap();
+
         if file_len == 0 {
             return Ok(Self {
                 path: path_buf,
@@ -45,6 +55,7 @@ impl FileLogBuffer {
                 line_offsets: vec![0],
                 max_line_len: 0,
                 longest_line_idx: None,
+                line_cache: RwLock::new(empty_cache),
             });
         }
 
@@ -113,6 +124,7 @@ impl FileLogBuffer {
             line_offsets,
             max_line_len,
             longest_line_idx,
+            line_cache: RwLock::new(empty_cache),
         })
     }
 
@@ -152,5 +164,31 @@ impl LogSource for FileLogBuffer {
         } else {
             None
         }
+    }
+
+    #[inline]
+    fn get_line_arc(&self, idx: usize) -> Option<Arc<str>> {
+        if idx >= self.line_count() {
+            return None;
+        }
+
+        let slot = idx & (LINE_CACHE_SIZE - 1);
+
+        if let Ok(guard) = self.line_cache.read() {
+            if let Some((cached_idx, ref arc)) = guard[slot] {
+                if cached_idx == idx {
+                    return Some(Arc::clone(arc));
+                }
+            }
+        }
+
+        let line_cow = self.get_line(idx)?;
+        let arc: Arc<str> = Arc::from(line_cow.as_ref());
+
+        if let Ok(mut guard) = self.line_cache.write() {
+            guard[slot] = Some((idx, Arc::clone(&arc)));
+        }
+
+        Some(arc)
     }
 }

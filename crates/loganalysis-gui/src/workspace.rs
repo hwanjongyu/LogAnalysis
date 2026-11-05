@@ -28,6 +28,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) filter_edit_modal: FilterEditState,
     pub(crate) modal_pattern_input: Entity<TextInput>,
     pub(crate) filter_search_query: String,
+    pub(crate) filter_rule_input: Entity<TextInput>,
 
     // Search state
     pub(crate) search_query: String,
@@ -56,23 +57,6 @@ pub struct LogAnalysisWorkspace {
     pub(crate) full_line_display: bool,
     pub(crate) filter_panel_position: FilterPanelPosition,
     pub(crate) is_dragging_scrollbar: bool,
-}
-
-fn delete_previous_word(s: &mut String) {
-    while let Some(c) = s.chars().last() {
-        if c.is_whitespace() {
-            s.pop();
-        } else {
-            break;
-        }
-    }
-    while let Some(c) = s.chars().last() {
-        if !c.is_whitespace() {
-            s.pop();
-        } else {
-            break;
-        }
-    }
 }
 
 impl LogAnalysisWorkspace {
@@ -140,6 +124,29 @@ impl LogAnalysisWorkspace {
         )
         .detach();
 
+        let filter_rule_input = cx.new(|cx| TextInput::new("Filter rules in tab...", cx));
+
+        cx.subscribe(
+            &filter_rule_input,
+            |this, input, event: &TextInputEvent, cx| match event {
+                TextInputEvent::Submit => {
+                    this.input_focus = InputFocusTarget::None;
+                    cx.notify();
+                }
+                TextInputEvent::Cancel => {
+                    input.update(cx, |inp, cx| inp.set_text("", cx));
+                    this.filter_search_query.clear();
+                    this.input_focus = InputFocusTarget::None;
+                    cx.notify();
+                }
+                TextInputEvent::Change => {
+                    this.filter_search_query = input.read(cx).text().to_string();
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+
         Self {
             focus_handle: cx.focus_handle(),
             log_source: None,
@@ -156,6 +163,7 @@ impl LogAnalysisWorkspace {
             filter_edit_modal: FilterEditState::default(),
             modal_pattern_input,
             filter_search_query: String::new(),
+            filter_rule_input,
 
             search_query: String::new(),
             is_search_visible: false,
@@ -779,121 +787,6 @@ impl LogAnalysisWorkspace {
         // If the filter modal is open, handle Escape fallback when focus is on non-input elements
         if self.filter_edit_modal.is_open && key == "escape" {
             self.close_filter_modal(cx);
-            return;
-        }
-
-        if self.input_focus == InputFocusTarget::None {
-            return;
-        }
-
-        let m = &event.keystroke.modifiers;
-
-        // Support common text box shortcuts (Ctrl+V paste, Ctrl+Backspace delete word, Ctrl+U / Ctrl+A clear)
-        if m.control && !m.alt && !m.platform {
-            if key == "backspace" || key == "delete" {
-                if self.input_focus == InputFocusTarget::FilterRuleSearch {
-                    delete_previous_word(&mut self.filter_search_query);
-                    cx.notify();
-                }
-                return;
-            } else if key == "v" || key == "V" {
-                if let Some(clipboard) = cx.read_from_clipboard() {
-                    if let Some(text) = clipboard.text() {
-                        let clean = text.replace(['\r', '\n'], "");
-                        if self.input_focus == InputFocusTarget::FilterRuleSearch {
-                            self.filter_search_query.push_str(&clean);
-                            cx.notify();
-                        }
-                    }
-                }
-                return;
-            } else if key == "u" || key == "U" || key == "a" || key == "A" {
-                if self.input_focus == InputFocusTarget::FilterRuleSearch {
-                    self.filter_search_query.clear();
-                    cx.notify();
-                }
-                return;
-            }
-        }
-
-        // Ignore other shortcut combinations (Ctrl/Alt/Platform) except Shift
-        if m.control || m.alt || m.platform {
-            return;
-        }
-
-        match key {
-            "escape" => {
-                if self.input_focus == InputFocusTarget::FilterRuleSearch {
-                    self.filter_search_query.clear();
-                    self.input_focus = InputFocusTarget::None;
-                    cx.notify();
-                }
-            }
-            "enter" => {
-                if self.input_focus == InputFocusTarget::FilterRuleSearch {
-                    self.input_focus = InputFocusTarget::None;
-                    cx.notify();
-                }
-            }
-            "backspace" => {
-                if self.input_focus == InputFocusTarget::FilterRuleSearch {
-                    self.filter_search_query.pop();
-                    cx.notify();
-                }
-            }
-            "delete" => {
-                if self.input_focus == InputFocusTarget::FilterRuleSearch {
-                    self.filter_search_query.pop();
-                    cx.notify();
-                }
-            }
-            "space" => {
-                if self.input_focus == InputFocusTarget::FilterRuleSearch {
-                    self.filter_search_query.push(' ');
-                    cx.notify();
-                }
-            }
-            _ => {
-                if let Some(ch) = &event.keystroke.key_char {
-                    if !ch.is_empty() && !ch.chars().any(|c| c.is_control())
-                        && self.input_focus == InputFocusTarget::FilterRuleSearch
-                    {
-                        self.filter_search_query.push_str(ch);
-                        cx.notify();
-                    }
-                } else if key.len() == 1 && self.input_focus == InputFocusTarget::FilterRuleSearch {
-                    let c = if m.shift {
-                        match key {
-                            "1" => "!".to_string(),
-                            "2" => "@".to_string(),
-                            "3" => "#".to_string(),
-                            "4" => "$".to_string(),
-                            "5" => "%".to_string(),
-                            "6" => "^".to_string(),
-                            "7" => "&".to_string(),
-                            "8" => "*".to_string(),
-                            "9" => "(".to_string(),
-                            "0" => ")".to_string(),
-                            "-" => "_".to_string(),
-                            "=" => "+".to_string(),
-                            "[" => "{".to_string(),
-                            "]" => "}".to_string(),
-                            "\\" => "|".to_string(),
-                            ";" => ":".to_string(),
-                            "'" => "\"".to_string(),
-                            "," => "<".to_string(),
-                            "." => ">".to_string(),
-                            "/" => "?".to_string(),
-                            "`" => "~".to_string(),
-                            _ => key.to_uppercase(),
-                        }
-                    } else {
-                        key.to_string()
-                    };
-                    self.filter_search_query.push_str(&c);
-                    cx.notify();
-                }
-            }
         }
     }
 

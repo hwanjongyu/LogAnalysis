@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::types::{FilterPanelPosition, InputFocusTarget};
+use crate::types::FilterPanelPosition;
 use crate::workspace::LogAnalysisWorkspace;
 
 pub fn render_filter_dock(
@@ -10,7 +10,6 @@ pub fn render_filter_dock(
 ) -> impl IntoElement {
     let theme = workspace.theme;
     let is_bottom_dock = workspace.filter_panel_position == FilterPanelPosition::Bottom;
-    let input_focus = workspace.input_focus;
 
     div()
         .id("filter-panel-container")
@@ -150,50 +149,14 @@ pub fn render_filter_dock(
                                     .id("input-filter-rule-search-inline")
                                     .h(px(24.0))
                                     .w(px(220.0))
-                                    .px(px(8.0))
-                                    .rounded_md()
-                                    .bg(theme.bg_dark)
-                                    .border_1()
-                                    .border_color(
-                                        if input_focus == InputFocusTarget::FilterRuleSearch {
-                                            theme.accent
-                                        } else {
-                                            theme.border_subtle
-                                        },
-                                    )
                                     .flex()
                                     .items_center()
-                                    .justify_between()
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.input_focus = InputFocusTarget::FilterRuleSearch;
-                                        window.focus(&this.focus_handle);
-                                        cx.notify();
-                                    }))
+                                    .gap_1()
                                     .child(
                                         div()
-                                            .text_size(px(10.5))
-                                            .text_color(
-                                                if workspace.filter_search_query.is_empty() {
-                                                    theme.text_muted
-                                                } else {
-                                                    theme.text_primary
-                                                },
-                                            )
-                                            .child(if workspace.filter_search_query.is_empty() {
-                                                if input_focus == InputFocusTarget::FilterRuleSearch
-                                                {
-                                                    "🔍 | Type to filter...".to_string()
-                                                } else {
-                                                    "🔍 Filter rules...".to_string()
-                                                }
-                                            } else if input_focus
-                                                == InputFocusTarget::FilterRuleSearch
-                                            {
-                                                format!("🔍 {}|", workspace.filter_search_query)
-                                            } else {
-                                                format!("🔍 {}", workspace.filter_search_query)
-                                            }),
+                                            .flex_1()
+                                            .h_full()
+                                            .child(workspace.filter_rule_input.clone()),
                                     )
                                     .children(if !workspace.filter_search_query.is_empty() {
                                         Some(
@@ -204,6 +167,8 @@ pub fn render_filter_dock(
                                                 .text_size(px(10.0))
                                                 .text_color(theme.text_muted)
                                                 .on_click(cx.listener(|this, _, _window, cx| {
+                                                    this.filter_rule_input
+                                                        .update(cx, |inp, cx| inp.set_text("", cx));
                                                     this.filter_search_query.clear();
                                                     cx.notify();
                                                 }))
@@ -247,43 +212,14 @@ pub fn render_filter_dock(
                             .id("input-filter-rule-search")
                             .h(px(28.0))
                             .w_full()
-                            .px(px(8.0))
-                            .rounded_md()
-                            .bg(theme.bg_dark)
-                            .border_1()
-                            .border_color(if input_focus == InputFocusTarget::FilterRuleSearch {
-                                theme.accent
-                            } else {
-                                theme.border_subtle
-                            })
                             .flex()
                             .items_center()
-                            .justify_between()
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.input_focus = InputFocusTarget::FilterRuleSearch;
-                                window.focus(&this.focus_handle);
-                                cx.notify();
-                            }))
+                            .gap_1()
                             .child(
                                 div()
-                                    .text_size(px(11.0))
-                                    .text_color(if workspace.filter_search_query.is_empty() {
-                                        theme.text_muted
-                                    } else {
-                                        theme.text_primary
-                                    })
-                                    .child(if workspace.filter_search_query.is_empty() {
-                                        if input_focus == InputFocusTarget::FilterRuleSearch {
-                                            "🔍 | Type to filter rules...".to_string()
-                                        } else {
-                                            "🔍 Filter rules in tab...".to_string()
-                                        }
-                                    } else if input_focus == InputFocusTarget::FilterRuleSearch {
-                                        format!("🔍 {}|", workspace.filter_search_query)
-                                    } else {
-                                        format!("🔍 {}", workspace.filter_search_query)
-                                    }),
+                                    .flex_1()
+                                    .h_full()
+                                    .child(workspace.filter_rule_input.clone()),
                             )
                             .children(if !workspace.filter_search_query.is_empty() {
                                 Some(
@@ -294,6 +230,8 @@ pub fn render_filter_dock(
                                         .text_size(px(10.0))
                                         .text_color(theme.text_muted)
                                         .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.filter_rule_input
+                                                .update(cx, |inp, cx| inp.set_text("", cx));
                                             this.filter_search_query.clear();
                                             cx.notify();
                                         }))

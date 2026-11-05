@@ -1,60 +1,61 @@
-# 🖥️ P2 Implementation Specification: GPUI Desktop Frontend Architecture
+# Specification: P2 Performance & Architecture Polish
 
-- **Version:** 1.0.0
-- **Scope:** Priority 2 Implementation (`crates/loganalysis-gui`)
-- **Status:** Approved for Implementation
-
----
-
-## 1. Problem Statement & Architecture Goals
-
-The desktop frontend `crates/loganalysis-gui` was previously a stub window. The goal of P2 is to implement a complete, GPU-accelerated desktop log analysis UI using Zed Industries' GPUI framework (`gpui 0.2.2`).
-
-### Core Architecture Components
-1. **`actions.rs`**: GPUI Action definitions for keyboard shortcuts (`Ctrl+O`, `Ctrl+F`, `F3`, `Shift+F3`, `Ctrl+H`, `Escape`).
-2. **`theme.rs`**: Color constants matching `loganalysis_gui` (Dark background `#1a1a1e`, Toolbar `#121214`, Gutter `#26262b`, Selection `#2d3748`, Highlight `#3e2723`).
-3. **`selection.rs`**: Line selection model (single selection, anchor tracking).
-4. **`workspace.rs`**: Main stateful entity orchestrating `LogSource` (`FileLogBuffer` or `StreamLogBuffer`), background Rayon filtering, cyclic search, and ADB live streaming.
-5. **Views (`views/`)**:
-   - **`log_list.rs`**: High-performance $O(1)$ GPU-rendered `uniform_list` viewport with line number gutter and styling.
-   - **`filter_panel.rs`**: Multi-tab filter sidebar with rule checkboxes, exclude indicators, and JSON profile import/export.
-   - **`find_modal.rs`**: Search bar with forward/backward search buttons, regex toggle, and case-sensitivity toggle.
-   - **`toolbar.rs`**: File open button, Show Only Filtered toggle (`Ctrl+H`), ADB device dropdown, and live stream control.
-   - **`status_bar.rs`**: Real-time line count, matched line count, streaming indicator, and current file name.
+**Target Codebase:** [`/home/drew/github/hwanjongyu/loganalysis`](file:///home/drew/github/hwanjongyu/loganalysis)  
+**Author:** Software Architect & Platform Engineer  
+**Status:** Approved for Implementation (Autonomous `/goal` Mode)  
+**Date:** 2026-11-04  
+**Audit Reference:** [`docs/multi_model_review_report.md`](file:///home/drew/github/hwanjongyu/loganalysis/docs/multi_model_review_report.md)
 
 ---
 
-## 2. Interaction Flows & Data Flow
+## 1. Problem Statements & Technical Root Causes
 
-```mermaid
-flowchart TD
-    User([User Keyboard / Mouse]) --> MainApp[GPUI Application]
-    MainApp --> Workspace[LogAnalysisWorkspace]
-    
-    subgraph UI_Components ["UI Components (GPUI Entity)"]
-        Toolbar[Toolbar & ADB Controls]
-        FilterPanel[Filter Panel & Multi-Tab Rules]
-        LogView[uniform_list Virtualized Viewport]
-        FindBar[Find Floating Bar]
-        StatusBar[Status & Statistics Bar]
-    end
-
-    subgraph Core_Engine ["loganalysis-core Integration"]
-        MmapSource[FileLogBuffer]
-        StreamSource[StreamLogBuffer]
-        FilterEngine[execute_filtering / Rayon]
-        SearchEngine[search_in_log]
-        AdbStreamer[start_logcat_stream / LogcatStreamHandle]
-    end
-
-    Workspace --> UI_Components
-    Workspace --> Core_Engine
-```
+### P2-1: Filter Rule Search Simulated Text & Lack of IME/CJK Support
+- **Locations:**  
+  - [`crates/loganalysis-gui/src/components/filter_dock.rs:148-218, 246-300`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/components/filter_dock.rs#L148-L218)
+  - [`crates/loganalysis-gui/src/workspace.rs:780-875`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/workspace.rs#L780-L875)
+- **Root Cause:**  
+  Unlike Find Bar and the Filter Edit Modal which use native `Entity<TextInput>`, the Filter Rule search in the dock paints an emulated text string with a pipe caret (`🔍 {}|`) and relies on manual character parsing in `workspace.handle_key_down`. International users cannot enter Korean, Japanese, Chinese, or accented characters to search filter rules, and clipboard/selection functionality is degraded.
+- **Target Fix:**  
+  1. Add `filter_rule_input: Entity<TextInput>` to `LogAnalysisWorkspace`.
+  2. Subscribe to `filter_rule_input` events: sync `filter_search_query` on `TextInputEvent::Change`, clear and unfocus on `TextInputEvent::Cancel`.
+  3. Replace simulated string rendering in `filter_dock.rs` with `workspace.filter_rule_input.clone()`.
+  4. Remove remaining manual keystroke emulation for `FilterRuleSearch` in `workspace.handle_key_down`.
 
 ---
 
-## 3. Verification Plan
+### P2-2: `FileLogBuffer` Line Allocation Churn in Virtual List
+- **Locations:**  
+  - [`crates/loganalysis-core/src/buffer/file_buffer.rs:132-156`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-core/src/buffer/file_buffer.rs#L132-L156)
+  - [`crates/loganalysis-gui/src/components/log_view.rs:73-83`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/components/log_view.rs#L73-L83)
+- **Root Cause:**  
+  `FileLogBuffer` relies on `LogSource::get_line_arc` default trait implementation which calls `get_line(idx)` and allocates a new `Arc<str>` on every invocation. In `log_view.rs`, virtual viewport rendering calls `get_line_arc` for every visible line on every frame render tick (~3,000 to 7,200 allocations/sec during scrolling on 60-144Hz displays).
+- **Target Fix:**  
+  1. Add a high-speed direct-mapped line cache (`line_cache: std::sync::RwLock<Box<[Option<(usize, Arc<str>)>; 1024]>>`) to `FileLogBuffer`.
+  2. Implement `LogSource::get_line_arc` for `FileLogBuffer`:
+     - On cache hit: return `Some(Arc::clone(cached_arc))` (0 heap allocations, ~10ns).
+     - On cache miss: decode string from mmap slice, populate cache slot, return `Some(arc)`.
+  3. Zero allocations while stationary or scrolling within cache locality.
 
-1. Verify compilation with `cargo check -p loganalysis-gui` and `cargo build -p loganalysis-gui`.
-2. Run automated workspace tests `cargo test --workspace`.
-3. Verify headless and simulated GUI execution without panics.
+---
+
+## 2. Implementation Plan
+
+1. **[`crates/loganalysis-core/src/buffer/file_buffer.rs`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-core/src/buffer/file_buffer.rs)**:
+   - Add `line_cache: std::sync::RwLock<Box<[Option<(usize, Arc<str>)>; 1024]>>` to `FileLogBuffer`.
+   - Implement `get_line_arc` in `impl LogSource for FileLogBuffer`.
+   - Add unit tests validating cache hit consistency and zero-allocation cloned pointer semantics.
+
+2. **[`crates/loganalysis-gui/src/workspace.rs`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/workspace.rs)**:
+   - Instantiate `filter_rule_input = cx.new(|cx| TextInput::new("Filter rules...", cx))` with subscriptions.
+   - Clean up manual keystroke handling in `handle_key_down`.
+
+3. **[`crates/loganalysis-gui/src/components/filter_dock.rs`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/components/filter_dock.rs)**:
+   - Mount `workspace.filter_rule_input.clone()` in both bottom dock and left dock modes.
+   - Wire clear button to `filter_rule_input.update(...)`.
+
+4. **Verification**:
+   - `cargo check --workspace`
+   - `cargo clippy --workspace`
+   - `cargo test --workspace` (verify all tests pass).
+   - Generate `docs/qa-fix-p2.md`.

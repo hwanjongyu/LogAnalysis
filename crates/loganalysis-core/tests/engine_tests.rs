@@ -274,6 +274,14 @@ fn test_file_buffer_and_mmap() {
     assert_eq!(buffer.get_line(1).unwrap(), "Line 2: Beta - longest line text here");
     assert_eq!(buffer.get_line(2).unwrap(), "Line 3: Gamma");
     assert_eq!(buffer.longest_line_text().unwrap(), "Line 2: Beta - longest line text here");
+
+    // Test cached get_line_arc pointer equality (zero-copy cache hits)
+    let arc1 = buffer.get_line_arc(0).expect("first get_line_arc");
+    let arc2 = buffer.get_line_arc(0).expect("second get_line_arc (cache hit)");
+    assert_eq!(&*arc1, "Line 1: Alpha");
+    assert!(std::sync::Arc::ptr_eq(&arc1, &arc2), "Expected cached Arc pointer equality");
+
+    assert!(buffer.get_line_arc(99).is_none());
 }
 
 #[test]
