@@ -146,29 +146,8 @@ impl TextInput {
         if self.content.is_empty() {
             return;
         }
-        let offset = offset.min(self.content.len());
-        let mut start = offset;
-        let mut end = offset;
-
-        for (idx, ch) in self.content.char_indices() {
-            if idx <= offset && idx + ch.len_utf8() >= offset {
-                start = idx;
-                end = idx + ch.len_utf8();
-                break;
-            }
-        }
-
-        // Expand word boundaries
-        let bytes = self.content.as_bytes();
-        while start > 0 && !bytes[start - 1].is_ascii_whitespace() {
-            start -= 1;
-        }
-        while end < bytes.len() && !bytes[end].is_ascii_whitespace() {
-            end += 1;
-        }
-
-        self.selected_range = start..end;
-        self.pivot = start;
+        self.selected_range = find_word_range_at(&self.content, offset);
+        self.pivot = self.selected_range.start;
         self.selection_reversed = false;
         cx.notify();
     }
@@ -738,6 +717,45 @@ impl Render for TextInput {
     }
 }
 
+/// Finds the UTF-8 word boundary range for word selection at a byte offset using Unicode Annex #29.
+/// Guaranteed to align to valid char boundaries on multi-byte UTF-8 sequences (Korean, CJK, Emoji).
+pub fn find_word_range_at(content: &str, offset: usize) -> Range<usize> {
+    if content.is_empty() {
+        return 0..0;
+    }
+    let offset = offset.min(content.len());
+    let mut target_range = 0..content.len();
+
+    let segments: Vec<(usize, &str)> = content.split_word_bound_indices().collect();
+    for (i, &(start, word)) in segments.iter().enumerate() {
+        let end = start + word.len();
+        if offset >= start && offset <= end {
+            let is_whitespace = word.chars().all(|c| c.is_whitespace());
+            if is_whitespace {
+                // If offset lands exactly on the boundary between word and whitespace, prefer selecting the word
+                if offset == start && i > 0 {
+                    let (prev_start, prev_word) = segments[i - 1];
+                    if !prev_word.chars().all(|c| c.is_whitespace()) {
+                        target_range = prev_start..start;
+                        break;
+                    }
+                } else if offset == end && i + 1 < segments.len() {
+                    let (next_start, next_word) = segments[i + 1];
+                    if !next_word.chars().all(|c| c.is_whitespace()) {
+                        target_range = next_start..next_start + next_word.len();
+                        break;
+                    }
+                }
+            }
+            target_range = start..end;
+            if offset < end || is_whitespace {
+                break;
+            }
+        }
+    }
+    target_range
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -749,5 +767,71 @@ mod tests {
         assert_ne!(submit, cancel);
         assert_eq!(submit, TextInputEvent::Submit);
         assert_eq!(cancel, TextInputEvent::Cancel);
+    }
+
+    #[test]
+    fn test_find_word_range_korean_cjk_emoji_no_panic() {
+        let content = "안녕하세요 로그 분석";
+        // Korean characters are 3 bytes each.
+        // "안녕하세요" = 15 bytes (0..15)
+        // " " = 1 byte (15..16)
+        // "로그" = 6 bytes (16..22)
+        // " " = 1 byte (22..23)
+        // "분석" = 6 bytes (23..29)
+
+        // Test offset in middle of first word
+        let r1 = find_word_range_at(content, 6);
+        assert_eq!(r1, 0..15);
+        assert_eq!(&content[r1], "안녕하세요");
+
+        // Test offset at boundary between first word and space
+        let r_bound = find_word_range_at(content, 15);
+        assert_eq!(r_bound, 0..15);
+        assert_eq!(&content[r_bound], "안녕하세요");
+
+        // Test offset in middle of second word
+        let r2 = find_word_range_at(content, 19);
+        assert_eq!(r2, 16..22);
+        assert_eq!(&content[r2], "로그");
+
+        // Test offset in middle of third word
+        let r3 = find_word_range_at(content, 26);
+        assert_eq!(r3, 23..29);
+        assert_eq!(&content[r3], "분석");
+
+        // Fuzz every single byte offset: every result must be a valid char boundary without panic!
+        for offset in 0..=content.len() {
+            let r = find_word_range_at(content, offset);
+            assert!(content.is_char_boundary(r.start));
+            assert!(content.is_char_boundary(r.end));
+            assert!(r.start <= r.end);
+            let _slice = &content[r];
+        }
+
+        // Test Japanese and Emoji
+        let jp_emoji = "こんにちは 世界 🚀🦀";
+        for offset in 0..=jp_emoji.len() {
+            let r = find_word_range_at(jp_emoji, offset);
+            assert!(jp_emoji.is_char_boundary(r.start));
+            assert!(jp_emoji.is_char_boundary(r.end));
+            let _slice = &jp_emoji[r];
+        }
+    }
+
+    #[test]
+    fn test_find_word_range_ascii_and_whitespace() {
+        let text = "hello   world";
+        let r_hello = find_word_range_at(text, 2);
+        assert_eq!(&text[r_hello], "hello");
+
+        // Inside whitespace
+        let r_spaces = find_word_range_at(text, 6);
+        assert_eq!(&text[r_spaces], "   ");
+
+        let r_world = find_word_range_at(text, 10);
+        assert_eq!(&text[r_world], "world");
+
+        // Empty string
+        assert_eq!(find_word_range_at("", 0), 0..0);
     }
 }

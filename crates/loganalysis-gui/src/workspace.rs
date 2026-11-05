@@ -1,7 +1,8 @@
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use crossbeam_channel::unbounded;
+use crossbeam_channel::{bounded, TryRecvError};
 use gpui::*;
 use loganalysis_core::*;
 
@@ -42,7 +43,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) is_streaming: bool,
     pub(crate) is_stream_paused: bool,
     pub(crate) auto_scroll: bool,
-    pub(crate) paused_stream_buffer: Vec<Vec<String>>,
+    pub(crate) paused_stream_buffer: VecDeque<Vec<String>>,
     pub(crate) paused_stream_line_count: usize,
 
     // Display & Status
@@ -140,7 +141,7 @@ impl LogAnalysisWorkspace {
             is_streaming: false,
             is_stream_paused: false,
             auto_scroll: true,
-            paused_stream_buffer: Vec::new(),
+            paused_stream_buffer: VecDeque::new(),
             paused_stream_line_count: 0,
 
             font_size: px(12.0),
@@ -355,7 +356,8 @@ impl LogAnalysisWorkspace {
             return;
         }
 
-        let (tx, rx) = unbounded();
+        // Bounded ingestion channel (256 chunks) prevents unbounded memory blowup on bursts
+        let (tx, rx) = bounded(256);
         let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let serial = self.selected_device.as_deref();
 
@@ -378,11 +380,22 @@ impl LogAnalysisWorkspace {
 
                         loop {
                             let mut batch = Vec::new();
-                            // Drain all available chunks in the channel into a single batch
-                            while let Ok(chunk) = rx.try_recv() {
-                                batch.extend(chunk);
-                                if batch.len() >= 5000 {
-                                    break;
+                            let mut is_disconnected = false;
+
+                            // Drain available chunks up to 5000 lines
+                            loop {
+                                match rx.try_recv() {
+                                    Ok(chunk) => {
+                                        batch.extend(chunk);
+                                        if batch.len() >= 5000 {
+                                            break;
+                                        }
+                                    }
+                                    Err(TryRecvError::Empty) => break,
+                                    Err(TryRecvError::Disconnected) => {
+                                        is_disconnected = true;
+                                        break;
+                                    }
                                 }
                             }
 
@@ -393,56 +406,74 @@ impl LogAnalysisWorkspace {
                                             // Buffer chunks with bounded capacity to prevent OOM
                                             let chunk_len = batch.len();
                                             workspace.paused_stream_line_count += chunk_len;
-                                            workspace.paused_stream_buffer.push(batch);
+                                            workspace.paused_stream_buffer.push_back(batch);
 
                                             while workspace.paused_stream_line_count > loganalysis_core::MAX_MONITOR_LINES {
-                                                if let Some(front) = workspace.paused_stream_buffer.first() {
+                                                if let Some(front) = workspace.paused_stream_buffer.pop_front() {
                                                     workspace.paused_stream_line_count =
                                                         workspace.paused_stream_line_count.saturating_sub(front.len());
-                                                    workspace.paused_stream_buffer.remove(0);
                                                 } else {
                                                     break;
                                                 }
                                             }
-                                        } else if let Some(src) = &workspace.log_source {
-                                            if let ActiveLogSource::Stream(ref stream) = **src {
+                                        } else if let Some(src) = &mut workspace.log_source {
+                                            // Zero-copy in-place mutation when unique; fallback to clone only if filter task holds Arc
+                                            if let Some(active_src) = Arc::get_mut(src) {
+                                                if let ActiveLogSource::Stream(ref mut stream) = active_src {
+                                                    stream.append_chunk(batch);
+                                                    stream.trim_if_needed();
+                                                }
+                                            } else if let ActiveLogSource::Stream(ref stream) = **src {
                                                 let mut new_stream = stream.clone();
                                                 new_stream.append_chunk(batch);
                                                 new_stream.trim_if_needed();
-                                                workspace.log_source =
-                                                    Some(Arc::new(ActiveLogSource::Stream(new_stream)));
+                                                *src = Arc::new(ActiveLogSource::Stream(new_stream));
+                                            }
 
-                                                // Throttle filter reapplication to at most once per 60ms
-                                                if last_reapply.elapsed() >= Duration::from_millis(60) {
-                                                    workspace.reapply_filters(cx);
-                                                    last_reapply = std::time::Instant::now();
-                                                    pending_filter_reapply = false;
-                                                } else {
-                                                    pending_filter_reapply = true;
-                                                }
+                                            // Throttle filter reapplication to at most once per 60ms
+                                            if last_reapply.elapsed() >= Duration::from_millis(60) {
+                                                workspace.reapply_filters(cx);
+                                                last_reapply = std::time::Instant::now();
+                                                pending_filter_reapply = false;
+                                            } else {
+                                                pending_filter_reapply = true;
+                                            }
 
-                                                // Smart Auto-Scroll to bottom if enabled
-                                                if workspace.auto_scroll {
-                                                    if let Some(res) = &workspace.filter_result {
-                                                        let count = res.visible_indices.len();
-                                                        if count > 0 {
-                                                            workspace.scroll_handle.scroll_to_item(
-                                                                count - 1,
-                                                                ScrollStrategy::Bottom,
-                                                            );
-                                                        }
+                                            // Smart Auto-Scroll to bottom if enabled
+                                            if workspace.auto_scroll {
+                                                if let Some(res) = &workspace.filter_result {
+                                                    let count = res.visible_indices.len();
+                                                    if count > 0 {
+                                                        workspace.scroll_handle.scroll_to_item(
+                                                            count - 1,
+                                                            ScrollStrategy::Bottom,
+                                                        );
                                                     }
                                                 }
                                             }
                                         }
+
+                                        if is_disconnected {
+                                            workspace.is_streaming = false;
+                                            workspace.status_text = "ADB stream disconnected".into();
+                                        }
+
                                         cx.notify();
                                         workspace.is_streaming
                                     })
                                     .unwrap_or(false);
 
-                                if !should_continue {
+                                if !should_continue || is_disconnected {
                                     break;
                                 }
+                            } else if is_disconnected {
+                                // Subprocess closed pipe: cleanly exit streaming state and terminate async loop
+                                let _ = this.update(&mut async_cx, |workspace, cx| {
+                                    workspace.is_streaming = false;
+                                    workspace.status_text = "ADB stream disconnected".into();
+                                    cx.notify();
+                                });
+                                break;
                             } else {
                                 // Flush any pending throttled filter reapply when channel is empty
                                 if pending_filter_reapply && last_reapply.elapsed() >= Duration::from_millis(60) {
@@ -1296,16 +1327,23 @@ impl LogAnalysisWorkspace {
                 let buffered = std::mem::take(&mut self.paused_stream_buffer);
                 self.paused_stream_line_count = 0;
                 if !buffered.is_empty() {
-                    if let Some(src) = &self.log_source {
-                        if let ActiveLogSource::Stream(ref stream) = **src {
+                    if let Some(src) = &mut self.log_source {
+                        if let Some(active_src) = Arc::get_mut(src) {
+                            if let ActiveLogSource::Stream(ref mut stream) = active_src {
+                                for chunk in buffered {
+                                    stream.append_chunk(chunk);
+                                }
+                                stream.trim_if_needed();
+                            }
+                        } else if let ActiveLogSource::Stream(ref stream) = **src {
                             let mut new_stream = stream.clone();
                             for chunk in buffered {
                                 new_stream.append_chunk(chunk);
                             }
                             new_stream.trim_if_needed();
-                            self.log_source = Some(Arc::new(ActiveLogSource::Stream(new_stream)));
-                            self.reapply_filters(cx);
+                            *src = Arc::new(ActiveLogSource::Stream(new_stream));
                         }
+                        self.reapply_filters(cx);
                     }
                 }
                 self.status_text = "ADB streaming RESUMED".into();

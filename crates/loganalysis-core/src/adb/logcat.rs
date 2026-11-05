@@ -76,46 +76,8 @@ pub fn start_logcat_stream(
     let stop_flag_clone = Arc::clone(&stop_flag);
 
     let handle = thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
-        let mut raw_buf = Vec::with_capacity(512);
-        let mut buffer = Vec::with_capacity(100);
-        let mut last_flush = Instant::now();
-
-        loop {
-            if stop_flag_clone.load(Ordering::Relaxed) {
-                break;
-            }
-
-            raw_buf.clear();
-            match reader.read_until(b'\n', &mut raw_buf) {
-                Ok(0) => break, // Clean EOF (subprocess closed pipe or was killed)
-                Ok(_) => {
-                    // Strip trailing newline / carriage return
-                    while raw_buf.ends_with(b"\n") || raw_buf.ends_with(b"\r") {
-                        raw_buf.pop();
-                    }
-                    // Lossy UTF-8 conversion: resilient against non-UTF8/binary crash logs
-                    let line = String::from_utf8_lossy(&raw_buf).to_string();
-                    buffer.push(line);
-
-                    let should_flush = buffer.len() >= 100
-                        || (last_flush.elapsed() >= Duration::from_millis(16) && !buffer.is_empty());
-                    if should_flush {
-                        let to_send = std::mem::replace(&mut buffer, Vec::with_capacity(100));
-                        if chunk_tx.send(to_send).is_err() {
-                            break;
-                        }
-                        last_flush = Instant::now();
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => break,
-            }
-        }
-
-        if !buffer.is_empty() {
-            let _ = chunk_tx.send(buffer);
-        }
+        let reader = BufReader::new(stdout);
+        stream_log_lines(reader, chunk_tx, stop_flag_clone);
 
         // Clean up child process if still alive
         let mut lock = child_clone.lock().unwrap_or_else(|e| e.into_inner());
@@ -130,4 +92,54 @@ pub fn start_logcat_stream(
         child: child_arc,
         stop_flag,
     })
+}
+
+/// Reads lines from any `BufRead` stream and flushes batches to `chunk_tx`.
+/// Flushes immediately if `reader.buffer().is_empty()` (no pending bytes in OS pipe)
+/// or if 100 lines accumulated or 16ms elapsed, avoiding stalling sparse/interactive logs.
+pub fn stream_log_lines<R: std::io::Read>(
+    mut reader: BufReader<R>,
+    chunk_tx: Sender<Vec<String>>,
+    stop_flag: Arc<AtomicBool>,
+) {
+    let mut raw_buf = Vec::with_capacity(512);
+    let mut buffer = Vec::with_capacity(100);
+    let mut last_flush = Instant::now();
+
+    loop {
+        if stop_flag.load(Ordering::Relaxed) {
+            break;
+        }
+
+        raw_buf.clear();
+        match reader.read_until(b'\n', &mut raw_buf) {
+            Ok(0) => break, // Clean EOF (subprocess closed pipe or was killed)
+            Ok(_) => {
+                // Strip trailing newline / carriage return
+                while raw_buf.ends_with(b"\n") || raw_buf.ends_with(b"\r") {
+                    raw_buf.pop();
+                }
+                // Lossy UTF-8 conversion: resilient against non-UTF8/binary crash logs
+                let line = String::from_utf8_lossy(&raw_buf).to_string();
+                buffer.push(line);
+
+                let should_flush = buffer.len() >= 100
+                    || reader.buffer().is_empty()
+                    || (last_flush.elapsed() >= Duration::from_millis(16) && !buffer.is_empty());
+                if should_flush {
+                    let to_send = std::mem::replace(&mut buffer, Vec::with_capacity(100));
+                    if chunk_tx.send(to_send).is_err() {
+                        break;
+                    }
+                    last_flush = Instant::now();
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+
+    if !buffer.is_empty() {
+        let _ = chunk_tx.send(buffer);
+    }
 }

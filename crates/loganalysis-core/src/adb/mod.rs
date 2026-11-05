@@ -4,7 +4,7 @@ pub mod logcat;
 use std::path::PathBuf;
 
 pub use device::{is_valid_device_serial, scan_adb_devices};
-pub use logcat::{start_logcat_stream, LogcatStreamHandle};
+pub use logcat::{start_logcat_stream, stream_log_lines, LogcatStreamHandle};
 
 /// Resolves the executable path to `adb`.
 /// Inspects $ANDROID_HOME, $ANDROID_SDK_ROOT, standard UNIX paths, and falls back to PATH.

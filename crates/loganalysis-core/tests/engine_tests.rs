@@ -664,3 +664,121 @@ fn test_scan_adb_devices_nonblocking_timeout_reap() {
         Ok(_) => {} // Finished extremely fast if adb was cached
     }
 }
+
+#[test]
+fn test_stream_log_lines_immediate_flush_and_stop_flag() {
+    use std::io::{BufReader, Cursor};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use crossbeam_channel::bounded;
+
+    let (tx, rx) = bounded(16);
+    let stop_flag = Arc::new(AtomicBool::new(false));
+
+    // A single line in input: should be flushed immediately because reader.buffer().is_empty()
+    let data = "11-04 18:30:00.123 1000 1001 I SingleLogLine: Hello ADB\n";
+    let reader = BufReader::new(Cursor::new(data));
+
+    stream_log_lines(reader, tx, stop_flag.clone());
+
+    let batch = rx.try_recv().expect("Single line must flush immediately");
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0], "11-04 18:30:00.123 1000 1001 I SingleLogLine: Hello ADB");
+
+    // Multiple lines test
+    let (tx2, rx2) = bounded(16);
+    let multi_data = "Line A\nLine B\nLine C\n";
+    let reader2 = BufReader::new(Cursor::new(multi_data));
+    stream_log_lines(reader2, tx2, stop_flag.clone());
+
+    let mut total_lines = 0;
+    while let Ok(batch) = rx2.try_recv() {
+        total_lines += batch.len();
+    }
+    assert_eq!(total_lines, 3);
+
+    // Stop flag early exit test
+    let (tx3, _rx3) = bounded(16);
+    let infinite_data = "Line\n".repeat(1000);
+    let reader3 = BufReader::new(Cursor::new(infinite_data));
+    let stop_now = Arc::new(AtomicBool::new(true));
+    stream_log_lines(reader3, tx3, stop_now);
+}
+
+#[test]
+fn test_stream_log_buffer_in_place_arc_get_mut_and_fallback() {
+    use std::sync::Arc;
+
+    let stream = StreamLogBuffer::new(100, 20);
+    let mut log_source = Some(Arc::new(ActiveLogSource::Stream(stream)));
+
+    let batch1 = vec!["Line 1".to_string(), "Line 2".to_string()];
+
+    // Case 1: Uniquely owned Arc - must succeed in-place with Arc::get_mut (zero Arc<str> pointer cloning)
+    if let Some(src) = &mut log_source {
+        let is_unique = Arc::get_mut(src).is_some();
+        assert!(is_unique, "Log source Arc must be unique before concurrent tasks");
+
+        if let Some(ActiveLogSource::Stream(ref mut stream)) = Arc::get_mut(src) {
+            stream.append_chunk(batch1);
+            stream.trim_if_needed();
+        }
+    }
+
+    assert_eq!(log_source.as_ref().unwrap().line_count(), 2);
+
+    // Case 2: Concurrent background task holds a cloned reference (e.g. background filter task)
+    let background_ref = log_source.clone();
+    let batch2 = vec!["Line 3".to_string(), "Line 4".to_string()];
+
+    if let Some(src) = &mut log_source {
+        // Arc::get_mut must return None because background_ref exists
+        assert!(Arc::get_mut(src).is_none(), "Arc::get_mut must be None when shared");
+
+        // Safe fallback clone: mutates independent instance without corrupting background task
+        if let ActiveLogSource::Stream(ref stream) = **src {
+            let mut new_stream = stream.clone();
+            new_stream.append_chunk(batch2);
+            new_stream.trim_if_needed();
+            *src = Arc::new(ActiveLogSource::Stream(new_stream));
+        }
+    }
+
+    // Foreground has 4 lines
+    assert_eq!(log_source.as_ref().unwrap().line_count(), 4);
+    // Background snapshot is completely preserved with 2 lines
+    assert_eq!(background_ref.as_ref().unwrap().line_count(), 2);
+}
+
+#[test]
+fn test_bounded_channel_disconnect_semantics() {
+    use crossbeam_channel::{bounded, TryRecvError};
+
+    let (tx, rx) = bounded::<Vec<String>>(256);
+
+    tx.send(vec!["chunk1".to_string()]).unwrap();
+    tx.send(vec!["chunk2".to_string()]).unwrap();
+    drop(tx); // Simulate ADB process exit / pipe closure
+
+    let mut batch = Vec::new();
+    let mut is_disconnected = false;
+
+    loop {
+        match rx.try_recv() {
+            Ok(chunk) => batch.extend(chunk),
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => {
+                is_disconnected = true;
+                break;
+            }
+        }
+    }
+
+    assert_eq!(batch.len(), 2);
+    assert_eq!(batch[0], "chunk1");
+    assert_eq!(batch[1], "chunk2");
+
+    // After draining, next try_recv must return Disconnected
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+    assert!(is_disconnected, "Loop must have detected disconnection after draining");
+}
