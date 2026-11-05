@@ -37,8 +37,8 @@ fn test_exclude_filter_priority() {
         ..Default::default()
     };
 
-    let p1 = PreparedFilter::new(f1, 0, 0).unwrap();
-    let p2 = PreparedFilter::new(f2, 1, 0).unwrap();
+    let p1 = PreparedFilter::new(f1, 0).unwrap();
+    let p2 = PreparedFilter::new(f2, 1).unwrap();
     let filters = vec![p1, p2];
 
     let (visible, _style, is_matched) = evaluate_and_style_line(raw_line, &filters, true, None);
@@ -66,8 +66,8 @@ fn test_independent_reverse_style_inheritance() {
         ..Default::default()
     };
 
-    let p1 = PreparedFilter::new(f1, 0, 0).unwrap();
-    let p2 = PreparedFilter::new(f2, 1, 0).unwrap();
+    let p1 = PreparedFilter::new(f1, 0).unwrap();
+    let p2 = PreparedFilter::new(f2, 1).unwrap();
     let filters = vec![p1, p2];
 
     let (visible, style, is_matched) = evaluate_and_style_line(raw_line, &filters, true, None);
@@ -344,7 +344,7 @@ fn test_case_insensitive_simd_literal_matching() {
         active: true,
         ..Default::default()
     };
-    let pf = PreparedFilter::new(filter, 0, 0).expect("must compile");
+    let pf = PreparedFilter::new(filter, 0).expect("must compile");
 
     let line1 = b"2026-11-03 ERROR: Connection Reset by peer";
     let line2 = b"2026-11-03 INFO: Normal connection alive";
@@ -356,12 +356,13 @@ fn test_case_insensitive_simd_literal_matching() {
 #[test]
 fn test_cjk_measured_length_accuracy() {
     let mut stream = StreamLogBuffer::new(10, 5);
-    // Korean log line: "안녕하세요 2026 로그" (13 chars, 25 UTF-8 bytes)
+    // Korean log line: "안녕하세요 2026 로그" (13 chars, 25 UTF-8 bytes, 20 visual monospace columns)
     stream.append_chunk(vec!["안녕하세요 2026 로그".to_string()]);
 
     let measured = stream.get_measured_length(0);
-    // Must be 13 (character count), NOT 25 (byte count)
-    assert_eq!(measured, 13);
+    // Must be 20 (East Asian monospace column width: 7 fullwidth * 2 + 6 ascii = 20), NOT 25 (byte count)
+    assert_eq!(measured, 20);
+    assert_eq!(stream.max_line_len(), 20);
 }
 
 #[test]
@@ -373,7 +374,7 @@ fn test_strongly_typed_domain_errors() {
         active: true,
         ..Default::default()
     };
-    match PreparedFilter::new(bad_rule, 0, 0) {
+    match PreparedFilter::new(bad_rule, 0) {
         Err(FilterError::InvalidRegex(_)) => (),
         _ => panic!("Expected FilterError::InvalidRegex"),
     }
@@ -541,14 +542,14 @@ fn test_rule_reorder_precedence_inversion_and_anchor_stability() {
     };
 
     // Order 1: Fatal (idx 0), database (idx 1) -> database (later in list) has precedence via reverse inheritance
-    let p1 = PreparedFilter::new(rule_fatal.clone(), 0, 0).unwrap();
-    let p2 = PreparedFilter::new(rule_db.clone(), 1, 0).unwrap();
+    let p1 = PreparedFilter::new(rule_fatal.clone(), 0).unwrap();
+    let p2 = PreparedFilter::new(rule_db.clone(), 1).unwrap();
     let (_, style1, _) = evaluate_and_style_line(sample_line, &[p1, p2], true, None);
     assert_eq!(style1.bg_hex, parse_color_spec("Yellow", true));
 
     // Order 2 (Swapped): database (idx 0), Fatal (idx 1) -> Fatal (later in list) now has precedence
-    let p1_swapped = PreparedFilter::new(rule_db, 0, 0).unwrap();
-    let p2_swapped = PreparedFilter::new(rule_fatal, 1, 0).unwrap();
+    let p1_swapped = PreparedFilter::new(rule_db, 0).unwrap();
+    let p2_swapped = PreparedFilter::new(rule_fatal, 1).unwrap();
     let (_, style2, _) = evaluate_and_style_line(sample_line, &[p1_swapped, p2_swapped], true, None);
     assert_eq!(style2.bg_hex, parse_color_spec("Red", true));
 
@@ -570,7 +571,7 @@ fn test_custom_foreground_and_background_styling() {
         ..Default::default()
     };
 
-    let pf = PreparedFilter::new(rule, 0, 0).unwrap();
+    let pf = PreparedFilter::new(rule, 0).unwrap();
     let (visible, style, is_matched) = evaluate_and_style_line(raw_line, &[pf], true, None);
 
     assert!(visible);
@@ -592,7 +593,7 @@ fn test_text_only_filter_inherits_theme_bg() {
         ..Default::default()
     };
 
-    let pf = PreparedFilter::new(rule, 0, 0).unwrap();
+    let pf = PreparedFilter::new(rule, 0).unwrap();
     let (visible, style, is_matched) = evaluate_and_style_line(raw_line, &[pf], true, None);
 
     assert!(visible);
@@ -703,6 +704,32 @@ fn test_stream_log_lines_immediate_flush_and_stop_flag() {
     let reader3 = BufReader::new(Cursor::new(infinite_data));
     let stop_now = Arc::new(AtomicBool::new(true));
     stream_log_lines(reader3, tx3, stop_now);
+}
+
+#[test]
+fn test_stream_log_lines_bounded_line_reader() {
+    use std::io::{BufReader, Cursor};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use crossbeam_channel::bounded;
+
+    let (tx, rx) = bounded(16);
+    let stop_flag = Arc::new(AtomicBool::new(false));
+
+    // Create a 100 KB line without any newlines
+    let giant_line = "A".repeat(100_000);
+    let reader = BufReader::new(Cursor::new(giant_line));
+
+    stream_log_lines(reader, tx, stop_flag);
+
+    let mut total_received_chars = 0;
+    while let Ok(batch) = rx.try_recv() {
+        for line in batch {
+            assert!(line.len() <= 65536, "Chunk line must be bounded to 64KB");
+            total_received_chars += line.len();
+        }
+    }
+    assert_eq!(total_received_chars, 100_000);
 }
 
 #[test]
@@ -819,7 +846,7 @@ fn test_multi_filter_matcher_aho_corasick_consistency() {
     let prepared: Vec<PreparedFilter> = rules
         .iter()
         .enumerate()
-        .map(|(i, r)| PreparedFilter::new(r.clone(), i, 0).unwrap())
+        .map(|(i, r)| PreparedFilter::new(r.clone(), i).unwrap())
         .collect();
 
     let multi_matcher = MultiFilterMatcher::new(&prepared);

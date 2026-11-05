@@ -172,7 +172,7 @@ pub fn execute_filtering(
     let mut prepared = Vec::new();
     for (idx, rule) in filters.iter().enumerate() {
         if rule.active && !rule.text.is_empty() {
-            if let Ok(pf) = PreparedFilter::new(rule.clone(), idx, 0) {
+            if let Ok(pf) = PreparedFilter::new(rule.clone(), idx) {
                 prepared.push(pf);
             }
         }
@@ -377,7 +377,7 @@ pub fn append_streaming_batch(
     let mut prepared = Vec::new();
     for (idx, rule) in filters.iter().enumerate() {
         if rule.active && !rule.text.is_empty() {
-            if let Ok(pf) = PreparedFilter::new(rule.clone(), idx, 0) {
+            if let Ok(pf) = PreparedFilter::new(rule.clone(), idx) {
                 prepared.push(pf);
             }
         }

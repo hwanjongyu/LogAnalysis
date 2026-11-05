@@ -78,8 +78,11 @@ impl Render for LogAnalysisWorkspace {
             .on_action(cx.listener(|this, _: &ToggleFilteredOnly, _window, cx| {
                 this.toggle_filtered_only(cx);
             }))
-            .on_action(cx.listener(|this, _: &Find, _window, cx| {
+            .on_action(cx.listener(|this, _: &Find, window, cx| {
                 this.toggle_search_bar(cx);
+                if this.is_search_visible {
+                    window.focus(&this.find_input.read(cx).focus_handle);
+                }
             }))
             .on_action(cx.listener(|this, _: &FindNext, _window, cx| {
                 this.search(true, cx);

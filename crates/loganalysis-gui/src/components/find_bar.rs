@@ -1,6 +1,5 @@
 use gpui::*;
 
-use crate::types::InputFocusTarget;
 use crate::workspace::LogAnalysisWorkspace;
 
 pub fn render_find_bar(
@@ -12,7 +11,6 @@ pub fn render_find_bar(
     }
 
     let theme = workspace.theme;
-    let is_search_focused = workspace.input_focus == InputFocusTarget::SearchBar;
 
     Some(
         div()
@@ -38,47 +36,13 @@ pub fn render_find_bar(
                             .text_color(theme.text_muted)
                             .child("FIND"),
                     )
-                    // Clickable Text Input Field
+                    // Native TextInput Field
                     .child(
                         div()
                             .id("input-find-bar")
                             .w(px(320.0))
                             .h(px(26.0))
-                            .px(px(8.0))
-                            .rounded_md()
-                            .bg(theme.bg_dark)
-                            .border_1()
-                            .border_color(if is_search_focused {
-                                theme.accent
-                            } else {
-                                theme.border_subtle
-                            })
-                            .flex()
-                            .items_center()
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.input_focus = InputFocusTarget::SearchBar;
-                                window.focus(&this.focus_handle);
-                                cx.notify();
-                            }))
-                            .font_family("monospace")
-                            .text_size(px(11.5))
-                            .text_color(if workspace.search_query.is_empty() {
-                                theme.text_muted
-                            } else {
-                                theme.text_primary
-                            })
-                            .child(if workspace.search_query.is_empty() {
-                                if is_search_focused {
-                                    "| Type search query & press Enter...".to_string()
-                                } else {
-                                    "Click to type search query...".to_string()
-                                }
-                            } else if is_search_focused {
-                                format!("{}|", workspace.search_query)
-                            } else {
-                                workspace.search_query.clone()
-                            }),
+                            .child(workspace.find_input.clone()),
                     )
                     // Regex & Case Toggles
                     .child(

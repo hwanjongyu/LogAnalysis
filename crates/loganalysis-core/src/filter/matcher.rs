@@ -171,14 +171,13 @@ impl CompiledMatcher {
 pub struct PreparedFilter {
     pub rule: FilterRule,
     pub flat_index: usize,
-    pub tab_index: usize,
     pub matcher: Option<CompiledMatcher>,
     pub resolved_bg_hex: Option<u32>,
     pub resolved_fg_hex: Option<u32>,
 }
 
 impl PreparedFilter {
-    pub fn new(rule: FilterRule, flat_index: usize, tab_index: usize) -> Result<Self, FilterError> {
+    pub fn new(rule: FilterRule, flat_index: usize) -> Result<Self, FilterError> {
         let matcher = if !rule.active || rule.text.is_empty() {
             None
         } else {
@@ -191,7 +190,6 @@ impl PreparedFilter {
         Ok(Self {
             rule,
             flat_index,
-            tab_index,
             matcher,
             resolved_bg_hex,
             resolved_fg_hex,

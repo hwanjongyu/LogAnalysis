@@ -34,6 +34,7 @@ actions!(
 pub enum TextInputEvent {
     Submit,
     Cancel,
+    Change,
 }
 
 /// Registers OS-standard keybindings scoped to the `TextInput` key context
@@ -129,6 +130,7 @@ impl TextInput {
         self.pivot = len;
         self.marked_range = None;
         self.scroll_offset = px(0.0);
+        cx.emit(TextInputEvent::Change);
         cx.notify();
     }
 
@@ -424,6 +426,7 @@ impl EntityInputHandler for TextInput {
         self.pivot = start + new_text.len();
         self.selection_reversed = false;
         self.marked_range.take();
+        cx.emit(TextInputEvent::Change);
         cx.notify();
     }
 
@@ -464,6 +467,7 @@ impl EntityInputHandler for TextInput {
         self.pivot = self.selected_range.end;
         self.selection_reversed = false;
 
+        cx.emit(TextInputEvent::Change);
         cx.notify();
     }
 
@@ -807,9 +811,12 @@ mod tests {
     fn test_text_input_events_variants() {
         let submit = TextInputEvent::Submit;
         let cancel = TextInputEvent::Cancel;
+        let change = TextInputEvent::Change;
         assert_ne!(submit, cancel);
+        assert_ne!(submit, change);
         assert_eq!(submit, TextInputEvent::Submit);
         assert_eq!(cancel, TextInputEvent::Cancel);
+        assert_eq!(change, TextInputEvent::Change);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use unicode_width::UnicodeWidthStr;
 
 use super::{trim_line_end, LogSource};
 use crate::constants::{MAX_MONITOR_LINES, MONITOR_TRIM_BATCH};
@@ -49,8 +50,9 @@ impl StreamLogBuffer {
 
         for line in &chunk {
             let measured = line.trim_end();
-            if measured.len() > self.max_line_len {
-                self.max_line_len = measured.len();
+            let width = UnicodeWidthStr::width(measured);
+            if width > self.max_line_len {
+                self.max_line_len = width;
                 self.longest_line_text = measured.to_string();
             }
         }
@@ -75,7 +77,7 @@ impl StreamLogBuffer {
         let had_longest = self
             .lines
             .range(0..excess)
-            .any(|l| l.trim_end().len() >= self.max_line_len);
+            .any(|l| UnicodeWidthStr::width(l.trim_end()) >= self.max_line_len);
 
         self.lines.drain(0..excess);
 
@@ -91,8 +93,9 @@ impl StreamLogBuffer {
         let mut longest_idx = None;
         for (idx, line) in self.lines.iter().enumerate() {
             let measured = line.trim_end();
-            if measured.len() > max_len {
-                max_len = measured.len();
+            let width = UnicodeWidthStr::width(measured);
+            if width > max_len {
+                max_len = width;
                 longest_idx = Some(idx);
             }
         }

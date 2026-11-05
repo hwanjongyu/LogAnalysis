@@ -24,7 +24,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) filter_tabs: Vec<FilterTabData>,
     pub(crate) active_tab_index: usize,
     pub(crate) show_only_filtered: bool,
-    pub(crate) cancel_generation: Arc<AtomicU64>,
+    pub(crate) filter_cancel_gen: Arc<AtomicU64>,
     pub(crate) filter_edit_modal: FilterEditState,
     pub(crate) modal_pattern_input: Entity<TextInput>,
     pub(crate) filter_search_query: String,
@@ -35,6 +35,8 @@ pub struct LogAnalysisWorkspace {
     pub(crate) is_search_regex: bool,
     pub(crate) is_search_case_sensitive: bool,
     pub(crate) cached_search_matcher: Option<Arc<loganalysis_core::CompiledMatcher>>,
+    pub(crate) search_cancel_gen: Arc<AtomicU64>,
+    pub(crate) find_input: Entity<TextInput>,
 
     // ADB state
     pub(crate) adb_devices: Vec<String>,
@@ -108,6 +110,32 @@ impl LogAnalysisWorkspace {
                 TextInputEvent::Cancel => {
                     this.close_filter_modal(cx);
                 }
+                TextInputEvent::Change => {}
+            },
+        )
+        .detach();
+
+        let find_input = cx.new(|cx| TextInput::new("Type search query & press Enter...", cx));
+
+        cx.subscribe(
+            &find_input,
+            |this, input, event: &TextInputEvent, cx| match event {
+                TextInputEvent::Submit => {
+                    this.search_query = input.read(cx).text().to_string();
+                    this.update_cached_search_matcher();
+                    this.search(true, cx);
+                }
+                TextInputEvent::Cancel => {
+                    this.is_search_visible = false;
+                    this.input_focus = InputFocusTarget::None;
+                    this.update_cached_search_matcher();
+                    cx.notify();
+                }
+                TextInputEvent::Change => {
+                    this.search_query = input.read(cx).text().to_string();
+                    this.update_cached_search_matcher();
+                    cx.notify();
+                }
             },
         )
         .detach();
@@ -124,7 +152,7 @@ impl LogAnalysisWorkspace {
             filter_tabs: vec![default_tab],
             active_tab_index: 0,
             show_only_filtered: false,
-            cancel_generation: Arc::new(AtomicU64::new(0)),
+            filter_cancel_gen: Arc::new(AtomicU64::new(0)),
             filter_edit_modal: FilterEditState::default(),
             modal_pattern_input,
             filter_search_query: String::new(),
@@ -134,6 +162,8 @@ impl LogAnalysisWorkspace {
             is_search_regex: false,
             is_search_case_sensitive: false,
             cached_search_matcher: None,
+            search_cancel_gen: Arc::new(AtomicU64::new(0)),
+            find_input,
 
             adb_devices: Vec::new(),
             selected_device: None,
@@ -243,8 +273,8 @@ impl LogAnalysisWorkspace {
             }
         }
 
-        let generation = self.cancel_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let token = self.cancel_generation.clone();
+        let generation = self.filter_cancel_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        let token = self.filter_cancel_gen.clone();
         let show_only = self.show_only_filtered;
 
         let source_for_bg = source.clone();
@@ -270,7 +300,7 @@ impl LogAnalysisWorkspace {
                 if let Some(res) = result {
                     let _ = this.update(&mut async_cx, |workspace, cx| {
                         // Check if a newer generation superseded this task
-                        if workspace.cancel_generation.load(Ordering::SeqCst) != generation {
+                        if workspace.filter_cancel_gen.load(Ordering::SeqCst) != generation {
                             return;
                         }
 
@@ -572,6 +602,12 @@ impl LogAnalysisWorkspace {
 
     /// Cyclic search forward or backward (with async dispatch for large logs)
     pub fn search(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let input_text = self.find_input.read(cx).text().trim().to_string();
+        if !input_text.is_empty() {
+            self.search_query = input_text;
+        }
+        self.update_cached_search_matcher();
+
         if self.search_query.is_empty() {
             return;
         }
@@ -598,8 +634,8 @@ impl LogAnalysisWorkspace {
             cx.notify();
 
             // Advance generation to invalidate and cancel any previous in-flight background searches
-            let generation = self.cancel_generation.fetch_add(1, Ordering::SeqCst) + 1;
-            let cancel_token = self.cancel_generation.clone();
+            let generation = self.search_cancel_gen.fetch_add(1, Ordering::SeqCst) + 1;
+            let cancel_token = self.search_cancel_gen.clone();
 
             cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                 let bg_executor = cx.background_executor().clone();
@@ -621,8 +657,8 @@ impl LogAnalysisWorkspace {
                         .await;
 
                     let _ = this.update(&mut async_cx, |workspace, cx| {
-                        // Discard results if superseded by a newer search or filter operation
-                        if workspace.cancel_generation.load(Ordering::SeqCst) != generation {
+                        // Discard results if superseded by a newer search
+                        if workspace.search_cancel_gen.load(Ordering::SeqCst) != generation {
                             return;
                         }
 
@@ -1260,37 +1296,59 @@ impl LogAnalysisWorkspace {
         .detach();
     }
 
-    /// Loads filter profiles from a specific file path on disk
+    /// Loads filter profiles asynchronously from a specific file path on disk
     pub fn load_filters_from_path(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
-        match std::fs::read_to_string(path) {
-            Ok(content) => {
-                match self.import_filters_json(&content, cx) {
-                    Ok(_) => {
-                        let fname = path.file_name().unwrap_or_default().to_string_lossy();
-                        self.status_text = format!("✓ Loaded filter profile: {}", fname).into();
-                        crate::logging::log_event(
-                            "INFO",
-                            &format!("Loaded filter profile from {:?}", path),
-                        );
-                    }
-                    Err(e) => {
-                        self.status_text = format!("Failed to parse profile JSON: {}", e).into();
-                        crate::logging::log_event(
-                            "WARN",
-                            &format!("Failed to parse filter profile from {:?}: {}", path, e),
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                self.status_text = format!("Failed to read file: {}", e).into();
-                crate::logging::log_event(
-                    "WARN",
-                    &format!("Failed to read filter profile file {:?}: {}", path, e),
-                );
-            }
-        }
+        let path_buf = path.to_path_buf();
+        self.status_text = "Loading filter profile...".into();
         cx.notify();
+
+        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
+            let mut async_cx = cx.clone();
+            async move {
+                let path_clone = path_buf.clone();
+                let read_res = bg_executor
+                    .spawn(async move { std::fs::read_to_string(&path_clone) })
+                    .await;
+
+                let _ = this.update(&mut async_cx, |workspace, cx| {
+                    match read_res {
+                        Ok(content) => match workspace.import_filters_json(&content, cx) {
+                            Ok(_) => {
+                                let fname =
+                                    path_buf.file_name().unwrap_or_default().to_string_lossy();
+                                workspace.status_text =
+                                    format!("✓ Loaded filter profile: {}", fname).into();
+                                crate::logging::log_event(
+                                    "INFO",
+                                    &format!("Loaded filter profile from {:?}", path_buf),
+                                );
+                            }
+                            Err(e) => {
+                                workspace.status_text =
+                                    format!("Failed to parse profile JSON: {}", e).into();
+                                crate::logging::log_event(
+                                    "WARN",
+                                    &format!(
+                                        "Failed to parse filter profile from {:?}: {}",
+                                        path_buf, e
+                                    ),
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            workspace.status_text = format!("Failed to read file: {}", e).into();
+                            crate::logging::log_event(
+                                "WARN",
+                                &format!("Failed to read filter profile file {:?}: {}", path_buf, e),
+                            );
+                        }
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     /// Prompts user to select and load a filter profile JSON file with JSON and All Files filters

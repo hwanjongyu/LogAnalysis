@@ -82,14 +82,14 @@ pub trait LogSource: Send + Sync {
         self.get_line(idx).map(|s| Arc::from(s.as_ref()))
     }
 
-    /// Retrieve the measured character length of the line (excluding trailing whitespace/newlines).
-    /// Uses UTF-8 character counts to prevent CJK 3-byte expansion distortion.
+    /// Retrieve the measured character display column width of the line (excluding trailing whitespace/newlines).
+    /// Uses East Asian Unicode width so CJK full-width characters reserve 2 monospace columns.
     fn get_measured_length(&self, idx: usize) -> usize {
         match self.get_raw_line(idx) {
             Some(bytes) => {
                 let trimmed = trim_line_end(bytes);
                 if let Ok(s) = std::str::from_utf8(trimmed) {
-                    s.chars().count()
+                    unicode_width::UnicodeWidthStr::width(s)
                 } else {
                     trimmed.len()
                 }

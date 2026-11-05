@@ -100,7 +100,9 @@ impl FileLogBuffer {
             } else {
                 bytes.len()
             };
-            trim_trailing_whitespace(&bytes[start..end]).len()
+            let slice = trim_trailing_whitespace(&bytes[start..end]);
+            let s = String::from_utf8_lossy(slice);
+            unicode_width::UnicodeWidthStr::width(s.as_ref())
         } else {
             0
         };

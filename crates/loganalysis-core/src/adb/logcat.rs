@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -97,6 +97,8 @@ pub fn start_logcat_stream(
 /// Reads lines from any `BufRead` stream and flushes batches to `chunk_tx`.
 /// Flushes immediately if `reader.buffer().is_empty()` (no pending bytes in OS pipe)
 /// or if 100 lines accumulated or 16ms elapsed, avoiding stalling sparse/interactive logs.
+pub const MAX_STREAM_LINE_BYTES: usize = 65536;
+
 pub fn stream_log_lines<R: std::io::Read>(
     mut reader: BufReader<R>,
     chunk_tx: Sender<Vec<String>>,
@@ -112,7 +114,11 @@ pub fn stream_log_lines<R: std::io::Read>(
         }
 
         raw_buf.clear();
-        match reader.read_until(b'\n', &mut raw_buf) {
+        match reader
+            .by_ref()
+            .take(MAX_STREAM_LINE_BYTES as u64)
+            .read_until(b'\n', &mut raw_buf)
+        {
             Ok(0) => break, // Clean EOF (subprocess closed pipe or was killed)
             Ok(_) => {
                 // Strip trailing newline / carriage return

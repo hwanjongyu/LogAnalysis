@@ -5,8 +5,6 @@ use thiserror::Error;
 pub enum FilterError {
     #[error("Invalid regex syntax: {0}")]
     InvalidRegex(String),
-    #[error("Invalid color specification: {0}")]
-    InvalidColor(String),
     #[error("JSON format error: {0}")]
     JsonError(String),
 }
