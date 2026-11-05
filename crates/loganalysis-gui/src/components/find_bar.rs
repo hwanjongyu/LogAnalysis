@@ -36,14 +36,76 @@ pub fn render_find_bar(
                             .text_color(theme.text_muted)
                             .child("FIND"),
                     )
-                    // Native TextInput Field
+                    // Native TextInput Field with inline clear button
                     .child(
                         div()
-                            .id("input-find-bar")
-                            .w(px(320.0))
-                            .h(px(26.0))
-                            .child(workspace.find_input.clone()),
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .id("input-find-bar")
+                                    .w(px(280.0))
+                                    .h(px(26.0))
+                                    .child(workspace.find_input.clone()),
+                            )
+                            .children(if !workspace.search_query.is_empty() {
+                                Some(
+                                    div()
+                                        .id("btn-clear-find-query")
+                                        .px(px(5.0))
+                                        .py(px(2.0))
+                                        .rounded_xs()
+                                        .cursor_pointer()
+                                        .hover(move |s| s.bg(theme.btn_hover))
+                                        .text_size(px(10.5))
+                                        .text_color(theme.text_muted)
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.find_input.update(cx, |inp, cx| inp.set_text("", cx));
+                                            this.search_query.clear();
+                                            this.search_match_status = None;
+                                            this.update_cached_search_matcher();
+                                            cx.notify();
+                                        }))
+                                        .child("✕"),
+                                )
+                            } else {
+                                None
+                            }),
                     )
+                    // Live Search Match Status Pill
+                    .children(if let Some(status) = &workspace.search_match_status {
+                        let is_zero = status.contains('0') || status.contains("not found");
+                        Some(
+                            div()
+                                .id("pill-find-status")
+                                .px(px(7.0))
+                                .py(px(2.5))
+                                .rounded_sm()
+                                .bg(if is_zero {
+                                    theme.bg_card
+                                } else {
+                                    theme.accent_muted
+                                })
+                                .border_1()
+                                .border_color(if is_zero {
+                                    theme.error_red
+                                } else {
+                                    theme.accent
+                                })
+                                .text_color(if is_zero {
+                                    theme.error_red
+                                } else {
+                                    theme.accent
+                                })
+                                .text_size(px(10.5))
+                                .font_family("monospace")
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(status.clone()),
+                        )
+                    } else {
+                        None
+                    })
                     // Regex & Case Toggles
                     .child(
                         div()
@@ -55,6 +117,13 @@ pub fn render_find_bar(
                                 theme.accent
                             } else {
                                 theme.bg_card
+                            })
+                            .hover(move |s| {
+                                if !workspace.is_search_regex {
+                                    s.bg(theme.btn_hover)
+                                } else {
+                                    s
+                                }
                             })
                             .text_color(if workspace.is_search_regex {
                                 rgb(0xffffff)
@@ -79,6 +148,13 @@ pub fn render_find_bar(
                                 theme.accent
                             } else {
                                 theme.bg_card
+                            })
+                            .hover(move |s| {
+                                if !workspace.is_search_case_sensitive {
+                                    s.bg(theme.btn_hover)
+                                } else {
+                                    s
+                                }
                             })
                             .text_color(if workspace.is_search_case_sensitive {
                                 rgb(0xffffff)
@@ -113,7 +189,7 @@ pub fn render_find_bar(
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.search(false, cx);
                             }))
-                            .child("↑ Prev"),
+                            .child("↑ Prev (Shift+F3)"),
                     )
                     .child(
                         div()
@@ -122,13 +198,14 @@ pub fn render_find_bar(
                             .py(px(3.0))
                             .rounded_sm()
                             .bg(theme.accent)
+                            .hover(move |s| s.bg(theme.accent_muted).text_color(theme.accent))
                             .text_color(rgb(0xffffff))
                             .text_size(px(11.0))
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.search(true, cx);
                             }))
-                            .child("↓ Next"),
+                            .child("↓ Next (F3)"),
                     )
                     .child(
                         div()
@@ -137,12 +214,13 @@ pub fn render_find_bar(
                             .py(px(3.0))
                             .rounded_sm()
                             .cursor_pointer()
+                            .hover(move |s| s.bg(theme.btn_hover))
                             .text_size(px(11.0))
                             .text_color(theme.text_muted)
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.toggle_search_bar(cx);
                             }))
-                            .child("✕"),
+                            .child("✕ (Esc)"),
                     ),
             ),
     )

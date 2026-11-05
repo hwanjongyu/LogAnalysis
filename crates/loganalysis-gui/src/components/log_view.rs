@@ -137,7 +137,7 @@ pub fn render_log_viewport(
                                     this.select_log_row(idx, real_idx, cx);
                                 });
                             })
-                            // Line Number Gutter (Fixed 64px + Subtle Right Border)
+                            // Line Number Gutter (Fixed 64px + Subtle Right Border + Active Left Accent Marker)
                             .child(
                                 div()
                                     .w(px(64.0))
@@ -148,8 +148,13 @@ pub fn render_log_viewport(
                                     } else {
                                         theme.bg_gutter
                                     })
+                                    .border_l_2()
                                     .border_r_1()
-                                    .border_color(theme.border_subtle)
+                                    .border_color(if is_selected {
+                                        theme.accent
+                                    } else {
+                                        theme.border_subtle
+                                    })
                                     .text_color(if is_selected {
                                         theme.accent
                                     } else {

@@ -38,6 +38,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) cached_search_matcher: Option<Arc<loganalysis_core::CompiledMatcher>>,
     pub(crate) search_cancel_gen: Arc<AtomicU64>,
     pub(crate) find_input: Entity<TextInput>,
+    pub(crate) search_match_status: Option<String>,
 
     // ADB state
     pub(crate) adb_devices: Vec<String>,
@@ -117,6 +118,9 @@ impl LogAnalysisWorkspace {
                 }
                 TextInputEvent::Change => {
                     this.search_query = input.read(cx).text().to_string();
+                    if this.search_query.trim().is_empty() {
+                        this.search_match_status = None;
+                    }
                     this.update_cached_search_matcher();
                     cx.notify();
                 }
@@ -172,6 +176,7 @@ impl LogAnalysisWorkspace {
             cached_search_matcher: None,
             search_cancel_gen: Arc::new(AtomicU64::new(0)),
             find_input,
+            search_match_status: None,
 
             adb_devices: Vec::new(),
             selected_device: None,
@@ -638,6 +643,7 @@ impl LogAnalysisWorkspace {
         self.update_cached_search_matcher();
 
         if self.search_query.is_empty() {
+            self.search_match_status = None;
             return;
         }
 
@@ -660,6 +666,7 @@ impl LogAnalysisWorkspace {
         // If dataset is large (> ASYNC_SEARCH_THRESHOLD), dispatch to background executor
         if res.visible_indices.len() > ASYNC_SEARCH_THRESHOLD {
             self.status_text = "Searching in background...".into();
+            self.search_match_status = Some("Searching...".into());
             cx.notify();
 
             // Advance generation to invalidate and cancel any previous in-flight background searches
@@ -698,8 +705,11 @@ impl LogAnalysisWorkspace {
                                 .scroll_to_item(found.visible_row, ScrollStrategy::Center);
                             workspace.status_text =
                                 format!("Found match at line {}", found.real_idx + 1).into();
+                            workspace.search_match_status =
+                                Some(format!("Line {}", found.real_idx + 1));
                         } else {
                             workspace.status_text = "Search pattern not found".into();
+                            workspace.search_match_status = Some("0 matches".into());
                         }
                         cx.notify();
                     });
@@ -713,9 +723,11 @@ impl LogAnalysisWorkspace {
             self.scroll_handle
                 .scroll_to_item(found.visible_row, ScrollStrategy::Center);
             self.status_text = format!("Found match at line {}", found.real_idx + 1).into();
+            self.search_match_status = Some(format!("Line {}", found.real_idx + 1));
             cx.notify();
         } else {
             self.status_text = "Search pattern not found".into();
+            self.search_match_status = Some("0 matches".into());
             cx.notify();
         }
     }
@@ -784,9 +796,13 @@ impl LogAnalysisWorkspace {
     pub fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
 
-        // If the filter modal is open, handle Escape fallback when focus is on non-input elements
-        if self.filter_edit_modal.is_open && key == "escape" {
-            self.close_filter_modal(cx);
+        // If the filter modal is open, handle Escape and Enter fallback when focus is on non-input elements
+        if self.filter_edit_modal.is_open {
+            if key == "escape" {
+                self.close_filter_modal(cx);
+            } else if key == "enter" {
+                self.save_modal_filter(cx);
+            }
         }
     }
 

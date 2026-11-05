@@ -1,4 +1,5 @@
 use gpui::*;
+use loganalysis_core::LogSource;
 
 use crate::types::FilterPanelPosition;
 use crate::workspace::LogAnalysisWorkspace;
@@ -64,6 +65,7 @@ pub fn render_toolbar(
                                 .py(px(4.0))
                                 .rounded_sm()
                                 .bg(theme.accent)
+                                .hover(move |s| s.bg(theme.accent_muted).text_color(theme.accent))
                                 .text_color(rgb(0xffffff))
                                 .text_size(px(11.0))
                                 .font_weight(FontWeight::MEDIUM)
@@ -71,7 +73,7 @@ pub fn render_toolbar(
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.prompt_open_file(Some(window), cx);
                                 }))
-                                .child("Open"),
+                                .child("Open (Ctrl+O)"),
                         )
                         .child(
                             div()
@@ -114,7 +116,7 @@ pub fn render_toolbar(
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.clear_logs(cx);
                                 }))
-                                .child("Clear"),
+                                .child("Clear (Ctrl+K)"),
                         ),
                 )
                 // Active File Pill Badge
@@ -134,7 +136,8 @@ pub fn render_toolbar(
                             theme.text_muted
                         })
                         .child(if let Some(name) = &workspace.active_file_name {
-                            format!("📄 {}", name)
+                            let lines = workspace.log_source.as_ref().map(|s| s.line_count()).unwrap_or(0);
+                            format!("📄 {} ({} lines)", name, lines)
                         } else {
                             "No active log".into()
                         }),
@@ -167,6 +170,13 @@ pub fn render_toolbar(
                                 } else {
                                     rgba(0x00000000)
                                 })
+                                .hover(move |s| {
+                                    if workspace.show_only_filtered {
+                                        s.bg(theme.btn_hover)
+                                    } else {
+                                        s
+                                    }
+                                })
                                 .text_color(if !workspace.show_only_filtered {
                                     rgb(0xffffff)
                                 } else {
@@ -193,6 +203,13 @@ pub fn render_toolbar(
                                 } else {
                                     rgba(0x00000000)
                                 })
+                                .hover(move |s| {
+                                    if !workspace.show_only_filtered {
+                                        s.bg(theme.btn_hover)
+                                    } else {
+                                        s
+                                    }
+                                })
                                 .text_color(if workspace.show_only_filtered {
                                     rgb(0xffffff)
                                 } else {
@@ -206,7 +223,7 @@ pub fn render_toolbar(
                                         this.toggle_filtered_only(cx);
                                     }
                                 }))
-                                .child("Filtered Only"),
+                                .child("Filtered Only (Ctrl+H)"),
                         ),
                 )
                 // View Options Pill Group: Full Width & Auto-Scroll
@@ -231,6 +248,7 @@ pub fn render_toolbar(
                                 } else {
                                     rgba(0x00000000)
                                 })
+                                .hover(move |s| s.bg(theme.btn_hover))
                                 .text_color(if workspace.full_line_display {
                                     theme.accent
                                 } else {
@@ -258,6 +276,7 @@ pub fn render_toolbar(
                                 } else {
                                     rgba(0x00000000)
                                 })
+                                .hover(move |s| s.bg(theme.btn_hover))
                                 .text_color(if workspace.auto_scroll {
                                     theme.accent
                                 } else {
@@ -286,6 +305,7 @@ pub fn render_toolbar(
                                         rgba(0x00000000)
                                     },
                                 )
+                                .hover(move |s| s.bg(theme.btn_hover))
                                 .text_color(
                                     if workspace.filter_panel_position
                                         == FilterPanelPosition::Bottom
@@ -304,9 +324,9 @@ pub fn render_toolbar(
                                     if workspace.filter_panel_position
                                         == FilterPanelPosition::Bottom
                                     {
-                                        "⬒ Bottom Dock"
+                                        "⬒ Bottom (Ctrl+Shift+L)"
                                     } else {
-                                        "◨ Left Dock"
+                                        "◨ Left (Ctrl+Shift+L)"
                                     },
                                 ),
                         ),
@@ -334,7 +354,7 @@ pub fn render_toolbar(
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.copy_selection(cx);
                                 }))
-                                .child("Copy Line"),
+                                .child("Copy (Ctrl+C)"),
                         )
                         .child(
                             div()
@@ -377,6 +397,13 @@ pub fn render_toolbar(
                         } else {
                             theme.bg_panel
                         })
+                        .hover(move |s| {
+                            if !workspace.is_search_visible {
+                                s.bg(theme.btn_hover)
+                            } else {
+                                s
+                            }
+                        })
                         .text_color(if workspace.is_search_visible {
                             theme.accent
                         } else {
@@ -387,7 +414,7 @@ pub fn render_toolbar(
                         .on_click(cx.listener(|this, _, _window, cx| {
                             this.toggle_search_bar(cx);
                         }))
-                        .child("🔍 Find"),
+                        .child("🔍 Find (Ctrl+F)"),
                 )
                 // Theme Switcher
                 .child(
@@ -481,6 +508,13 @@ pub fn render_toolbar(
                             theme.error_red
                         } else {
                             theme.success_green
+                        })
+                        .hover(move |s| {
+                            if workspace.is_streaming {
+                                s.bg(rgb(0xdc2626))
+                            } else {
+                                s.bg(rgb(0x16a34a))
+                            }
                         })
                         .text_color(rgb(0xffffff))
                         .text_size(px(11.0))

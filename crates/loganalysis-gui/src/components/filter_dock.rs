@@ -260,10 +260,63 @@ pub fn render_filter_dock(
                         .filter_tabs
                         .get(workspace.active_tab_index)
                         .map(|tab| {
+                            if tab.filters.is_empty() {
+                                return vec![
+                                    div()
+                                        .id("filter-dock-empty-state")
+                                        .w_full()
+                                        .py(px(24.0))
+                                        .px(px(12.0))
+                                        .flex()
+                                        .flex_col()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .text_size(px(24.0))
+                                                .child("🎯"),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_size(px(12.0))
+                                                .text_color(theme.text_primary)
+                                                .child("No Filter Rules"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(11.0))
+                                                .text_color(theme.text_muted)
+                                                .child("Click '+ New Rule' or select log text to filter."),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("btn-empty-add-rule")
+                                                .mt(px(4.0))
+                                                .px(px(12.0))
+                                                .py(px(4.0))
+                                                .rounded_md()
+                                                .bg(theme.accent)
+                                                .hover(move |s| s.bg(theme.btn_hover))
+                                                .text_color(rgb(0xffffff))
+                                                .text_size(px(11.0))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .cursor_pointer()
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.open_add_filter_modal(cx);
+                                                    window.focus(&this.modal_pattern_input.read(cx).focus_handle);
+                                                }))
+                                                .child("+ Add Rule (Ctrl+Shift+F)"),
+                                        )
+                                        .into_any_element(),
+                                ];
+                            }
+
                             let is_filtering_rules = !workspace.filter_search_query.trim().is_empty();
                             let total_rules = tab.filters.len();
                             let search_q = workspace.filter_search_query.to_lowercase();
-                            tab.filters
+                            let matching_rules: Vec<_> = tab.filters
                                 .iter()
                                 .enumerate()
                                 .filter(|(_, r)| {
@@ -273,6 +326,49 @@ pub fn render_filter_dock(
                                         r.text.to_lowercase().contains(&search_q)
                                     }
                                 })
+                                .collect();
+
+                            if matching_rules.is_empty() {
+                                return vec![
+                                    div()
+                                        .id("filter-dock-no-match-state")
+                                        .w_full()
+                                        .py(px(20.0))
+                                        .px(px(8.0))
+                                        .flex()
+                                        .flex_col()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .text_size(px(11.5))
+                                                .text_color(theme.text_muted)
+                                                .child(format!("No rules match \"{}\"", workspace.filter_search_query)),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("btn-empty-clear-rules-search")
+                                                .px(px(8.0))
+                                                .py(px(3.0))
+                                                .rounded_sm()
+                                                .bg(theme.bg_card)
+                                                .hover(move |s| s.bg(theme.btn_hover))
+                                                .text_size(px(10.5))
+                                                .cursor_pointer()
+                                                .on_click(cx.listener(|this, _, _window, cx| {
+                                                    this.filter_rule_input.update(cx, |inp, cx| inp.set_text("", cx));
+                                                    this.filter_search_query.clear();
+                                                    cx.notify();
+                                                }))
+                                                .child("Clear Search (✕)"),
+                                        )
+                                        .into_any_element(),
+                                ];
+                            }
+
+                            matching_rules
+                                .into_iter()
                                 .map(|(r_idx, rule)| {
                                     let count = workspace
                                         .filter_result
@@ -514,6 +610,7 @@ pub fn render_filter_dock(
                                                         .cursor_pointer()
                                                         .text_size(px(11.0))
                                                         .text_color(theme.text_muted)
+                                                        .hover(move |s| s.text_color(theme.accent))
                                                         .on_click(cx.listener(
                                                             move |this, _, window, cx| {
                                                                 this.open_edit_filter_modal(
@@ -535,6 +632,7 @@ pub fn render_filter_dock(
                                                         .cursor_pointer()
                                                         .text_size(px(11.0))
                                                         .text_color(theme.text_muted)
+                                                        .hover(move |s| s.text_color(theme.error_red))
                                                         .on_click(cx.listener(
                                                             move |this, _, _window, cx| {
                                                                 this.delete_rule(r_idx, cx);
@@ -543,6 +641,7 @@ pub fn render_filter_dock(
                                                         .child("✕"),
                                                 ),
                                         )
+                                        .into_any_element()
                                 })
                                 .collect::<Vec<_>>()
                         })

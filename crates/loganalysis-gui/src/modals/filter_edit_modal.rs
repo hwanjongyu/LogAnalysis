@@ -532,17 +532,19 @@ pub fn render_filter_edit_modal(
                                     .gap_1p5()
                                     .children(
                                         [
-                                            ("Fatal", "Red", "Black"),
-                                            ("Error (Text)", "None", "Red"),
-                                            ("Exception", "Yellow", "Black"),
-                                            ("Warning", "Orange", "Black"),
-                                            ("Success", "Green", "Black"),
-                                            ("ActivityTaskManager", "Cyan", "Black"),
-                                            ("System", "Blue", "DarkBlue"),
+                                            ("🔴 ERROR", "error", "Red", "DarkRed"),
+                                            ("🟡 WARN", "warn", "Orange", "Black"),
+                                            ("🔵 INFO", "info", "Blue", "DarkBlue"),
+                                            ("🟣 DEBUG", "debug", "Purple", "Purple"),
+                                            ("⚪ TRACE", "trace", "Gray", "Black"),
+                                            ("⚡ FATAL", "fatal", "Salmon", "DarkRed"),
+                                            ("✓ SUCCESS", "success", "Green", "DarkGreen"),
+                                            ("⚙ ActivityTaskManager", "ActivityTaskManager", "Cyan", "Black"),
+                                            ("⚙ System", "System", "Blue", "DarkBlue"),
                                         ]
                                         .into_iter()
                                         .enumerate()
-                                        .map(|(p_idx, (pat, bg, fg))| {
+                                        .map(|(p_idx, (label, pat, bg, fg))| {
                                             div()
                                                 .id(ElementId::NamedInteger(
                                                     "quick-preset".into(),
@@ -573,7 +575,7 @@ pub fn render_filter_edit_modal(
                                                         cx.notify();
                                                     },
                                                 ))
-                                                .child(pat)
+                                                .child(label)
                                         })
                                         .collect::<Vec<_>>(),
                                     ),

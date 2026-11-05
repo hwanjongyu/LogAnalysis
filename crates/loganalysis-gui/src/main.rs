@@ -320,3 +320,39 @@ fn main() {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use loganalysis_core::parse_color_spec;
+
+    #[test]
+    fn test_ui_ux_log_level_color_presets_validity() {
+        let presets = [
+            ("🔴 ERROR", "error", "Red", "DarkRed"),
+            ("🟡 WARN", "warn", "Orange", "Black"),
+            ("🔵 INFO", "info", "Blue", "DarkBlue"),
+            ("🟣 DEBUG", "debug", "Purple", "Purple"),
+            ("⚪ TRACE", "trace", "Gray", "Black"),
+            ("⚡ FATAL", "fatal", "Salmon", "DarkRed"),
+            ("✓ SUCCESS", "success", "Green", "DarkGreen"),
+            ("⚙ ActivityTaskManager", "ActivityTaskManager", "Cyan", "Black"),
+            ("⚙ System", "System", "Blue", "DarkBlue"),
+        ];
+
+        for (label, pattern, bg, fg) in presets {
+            assert!(!pattern.is_empty(), "Pattern for {} cannot be empty", label);
+            assert!(
+                parse_color_spec(bg, true).is_some() || bg.eq_ignore_ascii_case("none"),
+                "Background '{}' in preset '{}' must be valid color spec",
+                bg,
+                label
+            );
+            assert!(
+                parse_color_spec(fg, false).is_some() || fg.eq_ignore_ascii_case("default"),
+                "Foreground '{}' in preset '{}' must be valid color spec",
+                fg,
+                label
+            );
+        }
+    }
+}
