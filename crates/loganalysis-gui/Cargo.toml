@@ -15,6 +15,7 @@ crossbeam-channel = "0.5"
 anyhow = "1.0"
 smallvec = "1.13"
 rfd = "0.17.2"
+raw-window-handle = "0.6"
 
 [[bin]]
 name = "loganalysis"

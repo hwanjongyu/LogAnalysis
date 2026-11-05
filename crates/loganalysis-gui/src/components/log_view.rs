@@ -333,8 +333,8 @@ pub fn render_log_viewport(
                                         .text_size(px(12.0))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, _window, cx| {
-                                            this.prompt_open_file(cx);
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.prompt_open_file(Some(window), cx);
                                         }))
                                         .child("📂 Open Log File (Ctrl+O)"),
                                 )

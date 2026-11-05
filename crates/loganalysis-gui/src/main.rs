@@ -72,8 +72,8 @@ impl Render for LogAnalysisWorkspace {
                     }
                 }
             }))
-            .on_action(cx.listener(|this, _: &OpenFile, _window, cx| {
-                this.prompt_open_file(cx);
+            .on_action(cx.listener(|this, _: &OpenFile, window, cx| {
+                this.prompt_open_file(Some(window), cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleFilteredOnly, _window, cx| {
                 this.toggle_filtered_only(cx);
@@ -97,14 +97,14 @@ impl Render for LogAnalysisWorkspace {
                 this.open_add_filter_modal(cx);
                 window.focus(&this.modal_pattern_input.read(cx).focus_handle);
             }))
-            .on_action(cx.listener(|this, _: &SaveFilters, _window, cx| {
-                this.prompt_save_filters(cx);
+            .on_action(cx.listener(|this, _: &SaveFilters, window, cx| {
+                this.prompt_save_filters(Some(window), cx);
             }))
-            .on_action(cx.listener(|this, _: &SaveFiltersAs, _window, cx| {
-                this.prompt_save_filters(cx);
+            .on_action(cx.listener(|this, _: &SaveFiltersAs, window, cx| {
+                this.prompt_save_filters(Some(window), cx);
             }))
-            .on_action(cx.listener(|this, _: &LoadFilters, _window, cx| {
-                this.prompt_load_filters(cx);
+            .on_action(cx.listener(|this, _: &LoadFilters, window, cx| {
+                this.prompt_load_filters(Some(window), cx);
             }))
             .on_action(cx.listener(|this, _: &ClearLogs, _window, cx| {
                 if this.input_focus != InputFocusTarget::None {

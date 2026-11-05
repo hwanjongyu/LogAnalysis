@@ -68,8 +68,8 @@ pub fn render_toolbar(
                                 .text_size(px(11.0))
                                 .font_weight(FontWeight::MEDIUM)
                                 .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.prompt_open_file(cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.prompt_open_file(Some(window), cx);
                                 }))
                                 .child("Open"),
                         )
@@ -82,8 +82,8 @@ pub fn render_toolbar(
                                 .hover(move |s| s.bg(theme.btn_hover))
                                 .text_size(px(11.0))
                                 .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.prompt_load_filters(cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.prompt_load_filters(Some(window), cx);
                                 }))
                                 .child("Load Profile"),
                         )
@@ -96,8 +96,8 @@ pub fn render_toolbar(
                                 .hover(move |s| s.bg(theme.btn_hover))
                                 .text_size(px(11.0))
                                 .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.prompt_save_filters(cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.prompt_save_filters(Some(window), cx);
                                 }))
                                 .child("Save Profile"),
                         )
