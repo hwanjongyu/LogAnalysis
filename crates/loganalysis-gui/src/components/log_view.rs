@@ -17,13 +17,8 @@ pub fn render_log_viewport(
     let font_size = workspace.font_size;
     let row_height = font_size * 1.55;
 
-    let filter_res = workspace.filter_result.clone();
-    let source = workspace.log_source.clone();
-    let selected = workspace.selection.selected_row;
     let has_log_source = workspace.log_source.is_some();
     let weak_self = cx.weak_entity();
-
-    let search_matcher = workspace.cached_search_matcher.clone();
 
     let highlight_fg = if workspace.is_dark_theme {
         rgb(0xffffff)
@@ -63,11 +58,20 @@ pub fn render_log_viewport(
         .children(render_find_bar(workspace, cx))
         // Virtualized Log Rows or Polished Empty State
         .child(if has_log_source {
-            let mut list = uniform_list("log-view", row_count, move |range, _window, _cx| {
+            let weak_handle = weak_self.clone();
+            let mut list = uniform_list("log-view", row_count, move |range, _window, cx| {
+                let ws_opt = weak_handle.upgrade();
+                let ws = ws_opt.as_ref().map(|entity| entity.read(cx));
+                let filter_res = ws.and_then(|w| w.filter_result.as_deref());
+                let source = ws.and_then(|w| w.log_source.as_deref());
+                let selected = ws.and_then(|w| w.selection.selected_row);
+                let search_matcher = ws.and_then(|w| w.cached_search_matcher.clone());
+                let row_theme = ws.map(|w| w.theme).unwrap_or(theme);
+
                 range
                     .map(|idx| {
                         let (real_idx, text): (usize, SharedString) =
-                            if let (Some(res), Some(src)) = (&filter_res, &source) {
+                            if let (Some(res), Some(src)) = (filter_res, source) {
                                 let r_idx = res.visible_indices.get(idx).copied().unwrap_or(0);
                                 let t: SharedString = src
                                     .get_line_arc(r_idx)
@@ -78,23 +82,23 @@ pub fn render_log_viewport(
                                 (0, SharedString::default())
                             };
 
-                        let (has_custom_bg, bg_color, fg_color) = if let Some(res) = &filter_res {
+                        let (has_custom_bg, bg_color, fg_color) = if let Some(res) = filter_res {
                             if let Some(style) = res.visible_styles.get(idx) {
                                 (
                                     style.bg_hex.is_some(),
-                                    style.bg_hex.map(rgb).unwrap_or(theme.bg_dark),
-                                    style.fg_hex.map(rgb).unwrap_or(theme.text_primary),
+                                    style.bg_hex.map(rgb).unwrap_or(row_theme.bg_dark),
+                                    style.fg_hex.map(rgb).unwrap_or(row_theme.text_primary),
                                 )
                             } else {
-                                (false, theme.bg_dark, theme.text_primary)
+                                (false, row_theme.bg_dark, row_theme.text_primary)
                             }
                         } else {
-                            (false, theme.bg_dark, theme.text_primary)
+                            (false, row_theme.bg_dark, row_theme.text_primary)
                         };
 
                         let is_selected = selected == Some(idx);
                         let final_bg = if is_selected {
-                            theme.selection_bg
+                            row_theme.selection_bg
                         } else {
                             bg_color
                         };
@@ -103,7 +107,7 @@ pub fn render_log_viewport(
                         } else {
                             fg_color
                         };
-                        let entity_handle = weak_self.clone();
+                        let entity_handle = weak_handle.clone();
 
                         div()
                             .id(ElementId::NamedInteger("log-row".into(), idx as u64))

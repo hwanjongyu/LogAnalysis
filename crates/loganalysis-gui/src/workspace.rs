@@ -179,6 +179,9 @@ impl LogAnalysisWorkspace {
 
     /// Loads a log file using FileLogBuffer asynchronously on the background executor and executes filtering
     pub fn open_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        if self.is_streaming {
+            self.stop_adb_stream(cx);
+        }
         let path_buf = path.to_path_buf();
         let file_name: SharedString = path
             .file_name()
@@ -377,6 +380,7 @@ impl LogAnalysisWorkspace {
                     async move {
                         let mut last_reapply = std::time::Instant::now();
                         let mut pending_filter_reapply = false;
+                        let mut accumulated_trimmed = 0usize;
 
                         loop {
                             let mut batch = Vec::new();
@@ -400,8 +404,9 @@ impl LogAnalysisWorkspace {
                             }
 
                             if !batch.is_empty() {
-                                let should_continue = this
+                                let (should_continue, tr) = this
                                     .update(&mut async_cx, |workspace, cx| {
+                                        let mut trimmed_count = 0;
                                         if workspace.is_stream_paused {
                                             // Buffer chunks with bounded capacity to prevent OOM
                                             let chunk_len = batch.len();
@@ -441,6 +446,7 @@ impl LogAnalysisWorkspace {
                                                 let start = len.saturating_sub(batch_len);
                                                 (len, start..len, tr)
                                             };
+                                            trimmed_count = trimmed;
 
                                             // Incremental filtering: evaluate only newly arrived lines without full buffer Rayon pass
                                             if let (Some(filter_res), Some(src_ref)) = (&mut workspace.filter_result, &workspace.log_source) {
@@ -498,9 +504,16 @@ impl LogAnalysisWorkspace {
                                         }
 
                                         cx.notify();
-                                        workspace.is_streaming
+                                        (workspace.is_streaming, trimmed_count)
                                     })
-                                    .unwrap_or(false);
+                                    .unwrap_or((false, 0));
+
+                                if tr > 0 {
+                                    accumulated_trimmed += tr;
+                                    if accumulated_trimmed >= 10_000 || last_reapply.elapsed() >= Duration::from_secs(5) {
+                                        pending_filter_reapply = true;
+                                    }
+                                }
 
                                 if !should_continue || is_disconnected {
                                     break;
@@ -523,6 +536,7 @@ impl LogAnalysisWorkspace {
                                     });
                                     last_reapply = std::time::Instant::now();
                                     pending_filter_reapply = false;
+                                    accumulated_trimmed = 0;
                                 }
 
                                 // Yield execution cooperatively to GPUI async executor
@@ -1304,6 +1318,9 @@ impl LogAnalysisWorkspace {
 
     /// Clears currently loaded logs (Ctrl+K)
     pub fn clear_logs(&mut self, cx: &mut Context<Self>) {
+        if self.is_streaming {
+            self.stop_adb_stream(cx);
+        }
         self.log_source = None;
         self.filter_result = None;
         self.selection.clear();

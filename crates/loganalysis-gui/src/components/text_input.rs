@@ -60,6 +60,28 @@ pub fn register_keybindings(cx: &mut App) {
     ]);
 }
 
+/// Converts a UTF-16 range relative to a string slice `s` into a byte offset range `Range<usize>`,
+/// ensuring the resulting range aligns with valid UTF-8 character boundaries.
+pub fn utf16_range_to_utf8_in_str(s: &str, range_utf16: &Range<usize>) -> Range<usize> {
+    let mut utf8_start = 0;
+    let mut utf8_end = 0;
+    let mut utf16_count = 0;
+
+    for ch in s.chars() {
+        if utf16_count < range_utf16.start {
+            utf8_start += ch.len_utf8();
+        }
+        if utf16_count < range_utf16.end {
+            utf8_end += ch.len_utf8();
+        }
+        utf16_count += ch.len_utf16();
+    }
+    if utf16_count < range_utf16.end {
+        utf8_end = s.len();
+    }
+    utf8_start..utf8_end
+}
+
 impl EventEmitter<TextInputEvent> for TextInput {}
 
 /// A native-grade GPUI text input component supporting full OS IME (Hangul/CJK),
@@ -345,7 +367,13 @@ impl EntityInputHandler for TextInput {
     ) -> Option<String> {
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
-        Some(self.content[range].to_string())
+        let start = range.start.min(self.content.len());
+        let end = range.end.min(self.content.len());
+        if start <= end && self.content.is_char_boundary(start) && self.content.is_char_boundary(end) {
+            Some(self.content[start..end].to_string())
+        } else {
+            None
+        }
     }
 
     fn selected_text_range(
@@ -427,9 +455,12 @@ impl EntityInputHandler for TextInput {
 
         self.selected_range = new_selected_range_utf16
             .as_ref()
-            .map(|r| self.range_from_utf16(r))
-            .map(|new_r| new_r.start + start..new_r.end + start)
-            .unwrap_or_else(|| start + new_text.len()..start + new_text.len());
+            .map(|r| utf16_range_to_utf8_in_str(new_text, r))
+            .map(|new_r| (start + new_r.start)..(start + new_r.end))
+            .unwrap_or_else(|| (start + new_text.len())..(start + new_text.len()));
+        let sel_start = self.selected_range.start.min(self.content.len());
+        let sel_end = self.selected_range.end.min(self.content.len());
+        self.selected_range = sel_start..sel_end;
         self.pivot = self.selected_range.end;
         self.selection_reversed = false;
 
@@ -702,6 +733,7 @@ impl Render for TextInput {
             .on_action(cx.listener(|this, _: &Submit, _window, cx| {
                 // If IME is currently composing syllables (e.g. Korean Hangul), commit preedit only without submitting modal
                 if this.marked_range.is_some() {
+                    cx.stop_propagation();
                     return;
                 }
                 this.marked_range = None;
@@ -865,5 +897,36 @@ mod tests {
 
         // Empty string
         assert_eq!(find_word_range_at("", 0), 0..0);
+    }
+
+    #[test]
+    fn test_utf16_range_to_utf8_in_str_mixed_ascii_and_cjk() {
+        let text = "Hello 한국어 🚀 World";
+        // "Hello " = 6 bytes, 6 UTF-16 code units
+        // "한국어" = 9 bytes (3 UTF-8 chars, 3 bytes each), 3 UTF-16 code units
+        // " " = 1 byte, 1 UTF-16 code unit
+        // "🚀" = 4 bytes (1 UTF-8 char, 4 bytes), 2 UTF-16 code units (surrogate pair)
+        // " World" = 6 bytes, 6 UTF-16 code units
+
+        // UTF-16 range for "한국어": start at 6, end at 9 (len 3)
+        let r_korean = utf16_range_to_utf8_in_str(text, &(6..9));
+        assert_eq!(r_korean, 6..15);
+        assert_eq!(&text[r_korean], "한국어");
+
+        // UTF-16 range for "🚀": start at 10, end at 12 (len 2 UTF-16 code units)
+        let r_rocket = utf16_range_to_utf8_in_str(text, &(10..12));
+        assert_eq!(r_rocket, 16..20);
+        assert_eq!(&text[r_rocket], "🚀");
+
+        // Test every possible UTF-16 slice: must always align to valid UTF-8 char boundaries
+        let total_utf16 = text.encode_utf16().count();
+        for start_u16 in 0..=total_utf16 {
+            for end_u16 in start_u16..=total_utf16 {
+                let r_utf8 = utf16_range_to_utf8_in_str(text, &(start_u16..end_u16));
+                assert!(text.is_char_boundary(r_utf8.start));
+                assert!(text.is_char_boundary(r_utf8.end));
+                assert!(r_utf8.start <= r_utf8.end);
+            }
+        }
     }
 }

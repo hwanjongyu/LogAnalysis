@@ -963,3 +963,49 @@ fn test_log_source_get_line_arc_zero_copy() {
     assert!(Arc::ptr_eq(&arc1, &arc2));
     assert_eq!(&*arc1, "Test Line 1");
 }
+
+#[test]
+fn test_append_streaming_batch_trims_adjust_total_matched() {
+    let mut stream = StreamLogBuffer::new(100, 10);
+    let lines = vec![
+        "Match 1".to_string(),
+        "Ignore 2".to_string(),
+        "Match 3".to_string(),
+        "Ignore 4".to_string(),
+        "Match 5".to_string(),
+    ];
+    stream.append_chunk(lines);
+
+    let rule = FilterRule {
+        text: "Match".to_string(),
+        active: true,
+        ..Default::default()
+    };
+    let rules = vec![rule];
+
+    // Filter all 5 lines initially with show_only_filtered = true
+    let mut res = FilterResult::default();
+    append_streaming_batch(&mut res, &stream, 0..5, 0, &rules, true);
+
+    assert_eq!(res.visible_indices, vec![0, 2, 4]);
+    assert_eq!(res.total_matched_lines, 3);
+
+    // Simulate trimming 3 lines from the front (lines 0, 1, 2 trimmed)
+    // Matches dropped: line 0 and line 2 (2 matches dropped)
+    append_streaming_batch(&mut res, &stream, 5..5, 3, &rules, true);
+
+    // Only line 4 remains, shifted down by 3 -> new index 1
+    assert_eq!(res.visible_indices, vec![1]);
+    assert_eq!(res.total_matched_lines, 1);
+
+    // Test with show_only_filtered = false
+    let mut res_unfiltered = FilterResult::default();
+    append_streaming_batch(&mut res_unfiltered, &stream, 0..5, 0, &rules, false);
+    assert_eq!(res_unfiltered.total_matched_lines, 3);
+    assert_eq!(res_unfiltered.visible_indices.len(), 5);
+
+    // Trim 3 lines
+    append_streaming_batch(&mut res_unfiltered, &stream, 5..5, 3, &rules, false);
+    assert_eq!(res_unfiltered.total_matched_lines, 1);
+    assert_eq!(res_unfiltered.visible_indices.len(), 2);
+}

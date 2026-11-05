@@ -352,6 +352,15 @@ pub fn append_streaming_batch(
     if trimmed_count > 0 && !result.visible_indices.is_empty() {
         let drop_count = result.visible_indices.partition_point(|&idx| idx < trimmed_count);
         if drop_count > 0 {
+            if show_only_filtered {
+                result.total_matched_lines = result.total_matched_lines.saturating_sub(drop_count);
+            } else {
+                let dropped_matches = result.visible_styles[0..drop_count]
+                    .iter()
+                    .filter(|s| s.bg_hex.is_some() || s.fg_hex != Some(0x808080))
+                    .count();
+                result.total_matched_lines = result.total_matched_lines.saturating_sub(dropped_matches);
+            }
             result.visible_indices.drain(0..drop_count);
             result.visible_styles.drain(0..drop_count);
         }
