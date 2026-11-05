@@ -1,6 +1,7 @@
 #![recursion_limit = "512"]
 
 mod actions;
+mod cli;
 mod components;
 mod logging;
 mod modals;
@@ -12,6 +13,7 @@ mod workspace;
 use gpui::*;
 
 use actions::*;
+use cli::handle_cli_version_flag;
 use components::filter_dock::render_filter_dock;
 use components::log_view::render_log_viewport;
 use components::status_bar::render_status_bar;
@@ -220,6 +222,11 @@ fn ensure_desktop_integration() {
 }
 
 fn main() {
+    // Intercept version flag early before desktop integration or GPU window creation
+    if handle_cli_version_flag(std::env::args().skip(1)) {
+        return;
+    }
+
     logging::init_crash_handler();
 
     #[cfg(target_os = "linux")]

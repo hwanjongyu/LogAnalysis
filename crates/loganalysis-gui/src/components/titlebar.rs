@@ -111,6 +111,20 @@ pub fn render_titlebar(
                         .text_size(px(10.0))
                         .text_color(theme.text_muted)
                         .child("GPU"),
+                )
+                // Version Badge
+                .child(
+                    div()
+                        .px_1p5()
+                        .py_0p5()
+                        .rounded_xs()
+                        .bg(theme.bg_badge)
+                        .border_1()
+                        .border_color(theme.border_subtle)
+                        .text_xs()
+                        .text_size(px(10.0))
+                        .text_color(theme.text_muted)
+                        .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
                 ),
         )
         // ==========================================
