@@ -225,6 +225,26 @@ fn test_three_json_formats_compatibility() {
 }
 
 #[test]
+fn test_automotive_preset_profile_parses() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/filters/automotive_main_log_profile.json");
+    if path.exists() {
+        let content = std::fs::read_to_string(&path).expect("read automotive profile");
+        let tabs = parse_filters_json(&content).expect("parse automotive profile");
+        assert_eq!(tabs.len(), 3);
+        assert_eq!(tabs[0].name, "🚨 Issue Triage");
+        assert!(tabs[0].filters.iter().any(|f| f.text == " F "));
+        assert!(tabs[0].filters.iter().any(|f| f.exclude && f.text == "ACCGYROCALIBRATION"));
+        assert_eq!(tabs[1].name, "🚗 Vehicle & Subsystems");
+        assert_eq!(tabs[2].name, "⏱️ Performance & Latency");
+    }
+}
+
+#[test]
 fn test_wcag_contrast_ratio() {
     // Black on White: ~21:1
     let ratio_bw = contrast_ratio(0xFFFFFF, 0x000000);

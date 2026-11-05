@@ -3,6 +3,7 @@
 mod actions;
 mod cli;
 mod components;
+mod dialogs;
 mod logging;
 mod modals;
 mod selection;

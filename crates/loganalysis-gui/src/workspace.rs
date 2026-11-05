@@ -75,100 +75,6 @@ fn delete_previous_word(s: &mut String) {
     }
 }
 
-#[cfg(target_os = "linux")]
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct CustomX11WindowHandle(pub(crate) std::os::raw::c_ulong);
-
-#[cfg(target_os = "linux")]
-impl raw_window_handle::HasWindowHandle for CustomX11WindowHandle {
-    fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
-        let handle = raw_window_handle::XlibWindowHandle::new(self.0);
-        let raw = raw_window_handle::RawWindowHandle::Xlib(handle);
-        unsafe { Ok(raw_window_handle::WindowHandle::borrow_raw(raw)) }
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl raw_window_handle::HasDisplayHandle for CustomX11WindowHandle {
-    fn display_handle(&self) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
-        let handle = raw_window_handle::XlibDisplayHandle::new(None, 0);
-        let raw = raw_window_handle::RawDisplayHandle::Xlib(handle);
-        unsafe { Ok(raw_window_handle::DisplayHandle::borrow_raw(raw)) }
-    }
-}
-
-#[cfg(target_os = "linux")]
-pub(crate) fn get_active_x11_window_id() -> Option<std::os::raw::c_ulong> {
-    // 1. Try xprop -root _NET_ACTIVE_WINDOW
-    if let Ok(output) = std::process::Command::new("xprop")
-        .args(["-root", "_NET_ACTIVE_WINDOW"])
-        .output()
-    {
-        if output.status.success() {
-            let s = String::from_utf8_lossy(&output.stdout);
-            if let Some(pos) = s.find("0x") {
-                let hex_str: String = s[pos + 2..]
-                    .chars()
-                    .take_while(|c| c.is_ascii_hexdigit())
-                    .collect();
-                if let Ok(id) = std::os::raw::c_ulong::from_str_radix(&hex_str, 16) {
-                    if id > 0 {
-                        return Some(id);
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. Try xdotool getactivewindow
-    if let Ok(output) = std::process::Command::new("xdotool")
-        .arg("getactivewindow")
-        .output()
-    {
-        if output.status.success() {
-            let s = String::from_utf8_lossy(&output.stdout);
-            if let Ok(id) = s.trim().parse::<std::os::raw::c_ulong>() {
-                if id > 0 {
-                    return Some(id);
-                }
-            }
-        }
-    }
-
-    None
-}
-
-fn attach_dialog_parent(mut dialog: rfd::AsyncFileDialog, parent: Option<&Window>) -> rfd::AsyncFileDialog {
-    #[cfg(target_os = "linux")]
-    {
-        let is_wayland = std::env::var_os("WAYLAND_DISPLAY")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-
-        if is_wayland {
-            if let Some(w) = parent {
-                dialog = dialog.set_parent(w);
-            }
-        } else {
-            // Under X11, GPUI 0.2.2's X11Window::window_handle panics with unimplemented!().
-            // We safely query the active X11 window ID and supply a custom raw window handle.
-            if let Some(xid) = get_active_x11_window_id() {
-                let handle = CustomX11WindowHandle(xid);
-                dialog = dialog.set_parent(&handle);
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        if let Some(w) = parent {
-            dialog = dialog.set_parent(w);
-        }
-    }
-
-    dialog
-}
-
 impl LogAnalysisWorkspace {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let default_tab = FilterTabData {
@@ -280,12 +186,7 @@ impl LogAnalysisWorkspace {
 
     /// Prompts user to select a log file using native OS file dialog attached to window
     pub fn prompt_open_file(&mut self, parent: Option<&Window>, cx: &mut Context<Self>) {
-        let mut dialog = rfd::AsyncFileDialog::new()
-            .set_title("Open Log File")
-            .add_filter("Log Files (*.log, *.txt)", &["log", "txt"])
-            .add_filter("All Files (*.*)", &["*"]);
-
-        dialog = attach_dialog_parent(dialog, parent);
+        let dialog = crate::dialogs::build_open_log_dialog(parent);
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut async_cx = cx.clone();
@@ -1356,13 +1257,7 @@ impl LogAnalysisWorkspace {
             return;
         };
 
-        let mut dialog = rfd::AsyncFileDialog::new()
-            .set_title("Save Filter Profile")
-            .set_file_name("filters.json")
-            .add_filter("JSON Profile (*.json)", &["json"])
-            .add_filter("All Files (*.*)", &["*"]);
-
-        dialog = attach_dialog_parent(dialog, parent);
+        let dialog = crate::dialogs::build_save_filters_dialog(parent);
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut async_cx = cx.clone();
@@ -1450,12 +1345,7 @@ impl LogAnalysisWorkspace {
 
     /// Prompts user to select and load a filter profile JSON file with modal file dialog
     pub fn prompt_load_filters(&mut self, parent: Option<&Window>, cx: &mut Context<Self>) {
-        let mut dialog = rfd::AsyncFileDialog::new()
-            .set_title("Load Filter Profile")
-            .add_filter("JSON Profile (*.json)", &["json"])
-            .add_filter("All Files (*.*)", &["*"]);
-
-        dialog = attach_dialog_parent(dialog, parent);
+        let dialog = crate::dialogs::build_load_filters_dialog(parent);
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut async_cx = cx.clone();
