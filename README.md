@@ -3,9 +3,22 @@
 [![Rust](https://img.shields.io/badge/Rust-1.80+-orange.svg)](https://www.rust-lang.org/)
 [![UI: GPUI](https://img.shields.io/badge/UI-GPUI%20(Zed)-blueviolet.svg)](https://gpui.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests: Passing](https://img.shields.io/badge/Tests-17%2F17%20Passing-brightgreen.svg)](docs/qa-loganalysis-rust-gpui.md)
+[![Tests: Passing](https://img.shields.io/badge/Tests-43%2F43%20Passing-brightgreen.svg)](docs/qa-fix-p0-v5.md)
 
 **LogAnalysis** is a surgical, ultra-fast desktop log analysis and real-time Android `adb logcat` exploration tool. Inspired by the classic [TextAnalysisTool](https://textanalysistool.github.io/) and evolved from [loganalysis_gui](https://github.com/hwanjongyu/loganalysis_gui), it is re-engineered from the ground up in **pure Rust** using Zed Industries' GPU-accelerated **GPUI** framework.
+
+---
+
+## 📸 Screenshots
+
+### High-Performance Log Viewer & Multi-Layer Highlighting
+![Active Log View](assets/screenshots/active-log-view.png)
+
+<br/>
+
+| Filter Rule Editor & WCAG 2.1 Contrast Checker | Studio Welcome Screen & ADB Connect |
+| :---: | :---: |
+| ![Filter Rule Dialog](assets/screenshots/filter-rule-dialog.png) | ![Studio Welcome Screen](assets/screenshots/welcome-studio.png) |
 
 ---
 
