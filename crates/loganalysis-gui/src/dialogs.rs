@@ -108,35 +108,79 @@ pub fn attach_dialog_parent(mut dialog: rfd::AsyncFileDialog, parent: Option<&Wi
     dialog
 }
 
-/// Builds the Open Log File dialog with mandatory extensions (*.log, *.txt, and *.*) and safe parent attachment.
-pub fn build_open_log_dialog(parent: Option<&Window>) -> rfd::AsyncFileDialog {
-    let dialog = rfd::AsyncFileDialog::new()
-        .set_title("Open Log File")
-        .add_filter(LOG_FILTER_LABEL, LOG_FILTER_EXTENSIONS)
-        .add_filter(ALL_FILES_LABEL, ALL_FILES_EXTENSIONS);
-
-    attach_dialog_parent(dialog, parent)
+/// Checks if the current desktop session is running on Linux X11
+#[inline]
+pub fn is_x11_session() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let is_wayland = std::env::var_os("WAYLAND_DISPLAY")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        !is_wayland
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
 }
 
-/// Builds the Save Filter Profile dialog with mandatory extensions (*.json and *.*) and safe parent attachment.
-pub fn build_save_filters_dialog(parent: Option<&Window>) -> rfd::AsyncFileDialog {
-    let dialog = rfd::AsyncFileDialog::new()
+/// Attaches an optional X11 window ID to an AsyncFileDialog via CustomX11WindowHandle.
+pub fn attach_dialog_x11_id(mut dialog: rfd::AsyncFileDialog, xid: Option<std::os::raw::c_ulong>) -> rfd::AsyncFileDialog {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(id) = xid {
+            let handle = CustomX11WindowHandle(id);
+            dialog = dialog.set_parent(&handle);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = xid;
+    }
+    dialog
+}
+
+/// Builds the base Open Log File dialog with mandatory extensions (*.log, *.txt, and *.*).
+pub fn build_open_log_dialog_base() -> rfd::AsyncFileDialog {
+    rfd::AsyncFileDialog::new()
+        .set_title("Open Log File")
+        .add_filter(LOG_FILTER_LABEL, LOG_FILTER_EXTENSIONS)
+        .add_filter(ALL_FILES_LABEL, ALL_FILES_EXTENSIONS)
+}
+
+/// Builds the base Save Filter Profile dialog with mandatory extensions (*.json and *.*).
+pub fn build_save_filters_dialog_base() -> rfd::AsyncFileDialog {
+    rfd::AsyncFileDialog::new()
         .set_title("Save Filter Profile")
         .set_file_name("filters.json")
         .add_filter(PROFILE_FILTER_LABEL, PROFILE_FILTER_EXTENSIONS)
-        .add_filter(ALL_FILES_LABEL, ALL_FILES_EXTENSIONS);
+        .add_filter(ALL_FILES_LABEL, ALL_FILES_EXTENSIONS)
+}
 
-    attach_dialog_parent(dialog, parent)
+/// Builds the base Load Filter Profile dialog with mandatory extensions (*.json and *.*).
+pub fn build_load_filters_dialog_base() -> rfd::AsyncFileDialog {
+    rfd::AsyncFileDialog::new()
+        .set_title("Load Filter Profile")
+        .add_filter(PROFILE_FILTER_LABEL, PROFILE_FILTER_EXTENSIONS)
+        .add_filter(ALL_FILES_LABEL, ALL_FILES_EXTENSIONS)
+}
+
+/// Builds the Open Log File dialog with mandatory extensions (*.log, *.txt, and *.*) and safe parent attachment.
+#[allow(dead_code)]
+pub fn build_open_log_dialog(parent: Option<&Window>) -> rfd::AsyncFileDialog {
+    attach_dialog_parent(build_open_log_dialog_base(), parent)
+}
+
+/// Builds the Save Filter Profile dialog with mandatory extensions (*.json and *.*) and safe parent attachment.
+#[allow(dead_code)]
+pub fn build_save_filters_dialog(parent: Option<&Window>) -> rfd::AsyncFileDialog {
+    attach_dialog_parent(build_save_filters_dialog_base(), parent)
 }
 
 /// Builds the Load Filter Profile dialog with mandatory extensions (*.json and *.*) and safe parent attachment.
+#[allow(dead_code)]
 pub fn build_load_filters_dialog(parent: Option<&Window>) -> rfd::AsyncFileDialog {
-    let dialog = rfd::AsyncFileDialog::new()
-        .set_title("Load Filter Profile")
-        .add_filter(PROFILE_FILTER_LABEL, PROFILE_FILTER_EXTENSIONS)
-        .add_filter(ALL_FILES_LABEL, ALL_FILES_EXTENSIONS);
-
-    attach_dialog_parent(dialog, parent)
+    attach_dialog_parent(build_load_filters_dialog_base(), parent)
 }
 
 #[cfg(test)]
@@ -160,6 +204,23 @@ mod tests {
         let _open_dlg = build_open_log_dialog(None);
         let _save_dlg = build_save_filters_dialog(None);
         let _load_dlg = build_load_filters_dialog(None);
+
+        // Test base dialogs and X11 ID attachment without panic
+        let base_open = build_open_log_dialog_base();
+        let _ = attach_dialog_x11_id(base_open, Some(0x12345));
+        let base_save = build_save_filters_dialog_base();
+        let _ = attach_dialog_x11_id(base_save, None);
+        let _base_load = build_load_filters_dialog_base();
+        let _ = is_x11_session();
+    }
+
+    #[test]
+    fn test_async_x11_id_attachment_nonblocking() {
+        // Verify that attach_dialog_x11_id safely attaches XID or gracefully skips on None
+        let dlg = build_open_log_dialog_base();
+        let dlg = attach_dialog_x11_id(dlg, None);
+        let dlg = attach_dialog_x11_id(dlg, Some(0xDEADBEEF));
+        let _ = dlg;
     }
 
     #[cfg(target_os = "linux")]

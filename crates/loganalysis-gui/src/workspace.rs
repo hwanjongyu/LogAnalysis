@@ -186,11 +186,36 @@ impl LogAnalysisWorkspace {
 
     /// Prompts user to select a log file using native OS file dialog attached to window
     pub fn prompt_open_file(&mut self, parent: Option<&Window>, cx: &mut Context<Self>) {
-        let dialog = crate::dialogs::build_open_log_dialog(parent);
+        let base_dialog = crate::dialogs::build_open_log_dialog_base();
+        let is_x11 = crate::dialogs::is_x11_session();
+        let dialog = if !is_x11 {
+            crate::dialogs::attach_dialog_parent(base_dialog, parent)
+        } else {
+            base_dialog
+        };
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
             async move {
+                let dialog = if is_x11 {
+                    let xid = bg_executor
+                        .spawn(async move {
+                            #[cfg(target_os = "linux")]
+                            {
+                                crate::dialogs::get_active_x11_window_id()
+                            }
+                            #[cfg(not(target_os = "linux"))]
+                            {
+                                None
+                            }
+                        })
+                        .await;
+                    crate::dialogs::attach_dialog_x11_id(dialog, xid)
+                } else {
+                    dialog
+                };
+
                 let file = dialog.pick_file().await;
                 if let Some(handle) = file {
                     let path = handle.path().to_path_buf();
@@ -766,50 +791,26 @@ impl LogAnalysisWorkspace {
         // Support common text box shortcuts (Ctrl+V paste, Ctrl+Backspace delete word, Ctrl+U / Ctrl+A clear)
         if m.control && !m.alt && !m.platform {
             if key == "backspace" || key == "delete" {
-                match self.input_focus {
-                    InputFocusTarget::SearchBar => {
-                        delete_previous_word(&mut self.search_query);
-                        self.update_cached_search_matcher();
-                        cx.notify();
-                    }
-                    InputFocusTarget::FilterRuleSearch => {
-                        delete_previous_word(&mut self.filter_search_query);
-                        cx.notify();
-                    }
-                    _ => {}
+                if self.input_focus == InputFocusTarget::FilterRuleSearch {
+                    delete_previous_word(&mut self.filter_search_query);
+                    cx.notify();
                 }
                 return;
             } else if key == "v" || key == "V" {
                 if let Some(clipboard) = cx.read_from_clipboard() {
                     if let Some(text) = clipboard.text() {
                         let clean = text.replace(['\r', '\n'], "");
-                        match self.input_focus {
-                            InputFocusTarget::SearchBar => {
-                                self.search_query.push_str(&clean);
-                                self.update_cached_search_matcher();
-                                cx.notify();
-                            }
-                            InputFocusTarget::FilterRuleSearch => {
-                                self.filter_search_query.push_str(&clean);
-                                cx.notify();
-                            }
-                            _ => {}
+                        if self.input_focus == InputFocusTarget::FilterRuleSearch {
+                            self.filter_search_query.push_str(&clean);
+                            cx.notify();
                         }
                     }
                 }
                 return;
             } else if key == "u" || key == "U" || key == "a" || key == "A" {
-                match self.input_focus {
-                    InputFocusTarget::SearchBar => {
-                        self.search_query.clear();
-                        self.update_cached_search_matcher();
-                        cx.notify();
-                    }
-                    InputFocusTarget::FilterRuleSearch => {
-                        self.filter_search_query.clear();
-                        cx.notify();
-                    }
-                    _ => {}
+                if self.input_focus == InputFocusTarget::FilterRuleSearch {
+                    self.filter_search_query.clear();
+                    cx.notify();
                 }
                 return;
             }
@@ -821,82 +822,46 @@ impl LogAnalysisWorkspace {
         }
 
         match key {
-            "escape" => match self.input_focus {
-                InputFocusTarget::SearchBar => {
-                    self.is_search_visible = false;
-                    self.input_focus = InputFocusTarget::None;
-                    self.update_cached_search_matcher();
-                    cx.notify();
-                }
-                InputFocusTarget::FilterRuleSearch => {
+            "escape" => {
+                if self.input_focus == InputFocusTarget::FilterRuleSearch {
                     self.filter_search_query.clear();
                     self.input_focus = InputFocusTarget::None;
                     cx.notify();
                 }
-                _ => {}
-            },
-            "enter" => match self.input_focus {
-                InputFocusTarget::SearchBar => {
-                    self.search(true, cx);
-                }
-                InputFocusTarget::FilterRuleSearch => {
+            }
+            "enter" => {
+                if self.input_focus == InputFocusTarget::FilterRuleSearch {
                     self.input_focus = InputFocusTarget::None;
                     cx.notify();
                 }
-                _ => {}
-            },
-            "backspace" => match self.input_focus {
-                InputFocusTarget::SearchBar => {
-                    self.search_query.pop();
-                    self.update_cached_search_matcher();
-                    cx.notify();
-                }
-                InputFocusTarget::FilterRuleSearch => {
+            }
+            "backspace" => {
+                if self.input_focus == InputFocusTarget::FilterRuleSearch {
                     self.filter_search_query.pop();
                     cx.notify();
                 }
-                _ => {}
-            },
-            "delete" => match self.input_focus {
-                InputFocusTarget::SearchBar => {
-                    self.search_query.pop();
-                    self.update_cached_search_matcher();
-                    cx.notify();
-                }
-                InputFocusTarget::FilterRuleSearch => {
+            }
+            "delete" => {
+                if self.input_focus == InputFocusTarget::FilterRuleSearch {
                     self.filter_search_query.pop();
                     cx.notify();
                 }
-                _ => {}
-            },
-            "space" => match self.input_focus {
-                InputFocusTarget::SearchBar => {
-                    self.search_query.push(' ');
-                    self.update_cached_search_matcher();
-                    cx.notify();
-                }
-                InputFocusTarget::FilterRuleSearch => {
+            }
+            "space" => {
+                if self.input_focus == InputFocusTarget::FilterRuleSearch {
                     self.filter_search_query.push(' ');
                     cx.notify();
                 }
-                _ => {}
-            },
+            }
             _ => {
                 if let Some(ch) = &event.keystroke.key_char {
-                    if !ch.is_empty() && !ch.chars().any(|c| c.is_control()) {
-                        match self.input_focus {
-                            InputFocusTarget::SearchBar => {
-                                self.search_query.push_str(ch);
-                                cx.notify();
-                            }
-                            InputFocusTarget::FilterRuleSearch => {
-                                self.filter_search_query.push_str(ch);
-                                cx.notify();
-                            }
-                            _ => {}
-                        }
+                    if !ch.is_empty() && !ch.chars().any(|c| c.is_control())
+                        && self.input_focus == InputFocusTarget::FilterRuleSearch
+                    {
+                        self.filter_search_query.push_str(ch);
+                        cx.notify();
                     }
-                } else if key.len() == 1 {
+                } else if key.len() == 1 && self.input_focus == InputFocusTarget::FilterRuleSearch {
                     let c = if m.shift {
                         match key {
                             "1" => "!".to_string(),
@@ -925,18 +890,8 @@ impl LogAnalysisWorkspace {
                     } else {
                         key.to_string()
                     };
-                    match self.input_focus {
-                        InputFocusTarget::SearchBar => {
-                            self.search_query.push_str(&c);
-                            self.update_cached_search_matcher();
-                            cx.notify();
-                        }
-                        InputFocusTarget::FilterRuleSearch => {
-                            self.filter_search_query.push_str(&c);
-                            cx.notify();
-                        }
-                        _ => {}
-                    }
+                    self.filter_search_query.push_str(&c);
+                    cx.notify();
                 }
             }
         }
@@ -1257,18 +1212,49 @@ impl LogAnalysisWorkspace {
             return;
         };
 
-        let dialog = crate::dialogs::build_save_filters_dialog(parent);
+        let base_dialog = crate::dialogs::build_save_filters_dialog_base();
+        let is_x11 = crate::dialogs::is_x11_session();
+        let dialog = if !is_x11 {
+            crate::dialogs::attach_dialog_parent(base_dialog, parent)
+        } else {
+            base_dialog
+        };
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
             async move {
+                let dialog = if is_x11 {
+                    let xid = bg_executor
+                        .spawn(async move {
+                            #[cfg(target_os = "linux")]
+                            {
+                                crate::dialogs::get_active_x11_window_id()
+                            }
+                            #[cfg(not(target_os = "linux"))]
+                            {
+                                None
+                            }
+                        })
+                        .await;
+                    crate::dialogs::attach_dialog_x11_id(dialog, xid)
+                } else {
+                    dialog
+                };
+
                 let file = dialog.save_file().await;
 
                 if let Some(handle) = file {
                     let path = handle.path().to_path_buf();
-                    let tmp_path = path.with_extension("tmp");
-                    let write_res = std::fs::write(&tmp_path, json_str.as_bytes())
-                        .and_then(|_| std::fs::rename(&tmp_path, &path));
+                    let path_for_bg = path.clone();
+                    let json_bytes = json_str.into_bytes();
+                    let write_res = bg_executor
+                        .spawn(async move {
+                            let tmp_path = path_for_bg.with_extension("tmp");
+                            std::fs::write(&tmp_path, &json_bytes)
+                                .and_then(|_| std::fs::rename(&tmp_path, &path_for_bg))
+                        })
+                        .await;
 
                     let _ = this.update(&mut async_cx, |workspace, cx| {
                         match write_res {
@@ -1345,11 +1331,36 @@ impl LogAnalysisWorkspace {
 
     /// Prompts user to select and load a filter profile JSON file with modal file dialog
     pub fn prompt_load_filters(&mut self, parent: Option<&Window>, cx: &mut Context<Self>) {
-        let dialog = crate::dialogs::build_load_filters_dialog(parent);
+        let base_dialog = crate::dialogs::build_load_filters_dialog_base();
+        let is_x11 = crate::dialogs::is_x11_session();
+        let dialog = if !is_x11 {
+            crate::dialogs::attach_dialog_parent(base_dialog, parent)
+        } else {
+            base_dialog
+        };
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
             async move {
+                let dialog = if is_x11 {
+                    let xid = bg_executor
+                        .spawn(async move {
+                            #[cfg(target_os = "linux")]
+                            {
+                                crate::dialogs::get_active_x11_window_id()
+                            }
+                            #[cfg(not(target_os = "linux"))]
+                            {
+                                None
+                            }
+                        })
+                        .await;
+                    crate::dialogs::attach_dialog_x11_id(dialog, xid)
+                } else {
+                    dialog
+                };
+
                 let file = dialog.pick_file().await;
 
                 if let Some(handle) = file {
