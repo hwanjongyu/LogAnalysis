@@ -4,7 +4,7 @@ use rayon::prelude::*;
 use smallvec::SmallVec;
 
 use crate::buffer::LogSource;
-use super::matcher::PreparedFilter;
+use super::matcher::{MultiFilterMatcher, PreparedFilter};
 use super::model::FilterRule;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -31,39 +31,13 @@ impl FilterResult {
     }
 }
 
-/// Evaluates a single line against prepared filters according to LogAnalysis specifications.
-/// Returns `(is_visible, style, is_matched)`.
+/// Resolves visibility and final background/foreground style from a list of matched filter indices.
 #[inline]
-pub fn evaluate_and_style_line(
-    raw_line: &[u8],
+pub fn resolve_style_from_matches(
     prepared_filters: &[PreparedFilter],
+    matched_indices: &[usize],
     show_only_filtered: bool,
-    mut filter_counts: Option<&mut [usize]>,
 ) -> (bool, ResolvedStyle, bool) {
-    // 1. Edge Case: If there are no active filters, display all lines with default styling
-    if prepared_filters.is_empty() {
-        return (
-            true,
-            ResolvedStyle {
-                bg_hex: None,
-                fg_hex: Some(0x808080),
-            },
-            false,
-        );
-    }
-
-    let mut matched_indices = SmallVec::<[usize; 8]>::new();
-    for (idx, pf) in prepared_filters.iter().enumerate() {
-        if pf.matches(raw_line) {
-            if let Some(counts) = filter_counts.as_deref_mut() {
-                if pf.flat_index < counts.len() {
-                    counts[pf.flat_index] += 1; // Pure local non-atomic addition, zero false sharing
-                }
-            }
-            matched_indices.push(idx);
-        }
-    }
-
     // 2. No matching filters
     if matched_indices.is_empty() {
         let is_visible = !show_only_filtered;
@@ -111,6 +85,78 @@ pub fn evaluate_and_style_line(
     (true, ResolvedStyle { bg_hex, fg_hex }, true)
 }
 
+/// Evaluates a single line using a single-pass `MultiFilterMatcher` (Aho-Corasick SIMD).
+/// Returns `(is_visible, style, is_matched)`.
+#[inline]
+pub fn evaluate_and_style_line_with_matcher(
+    raw_line: &[u8],
+    prepared_filters: &[PreparedFilter],
+    matcher: &MultiFilterMatcher,
+    show_only_filtered: bool,
+    filter_counts: Option<&mut [usize]>,
+) -> (bool, ResolvedStyle, bool) {
+    if prepared_filters.is_empty() {
+        return (
+            true,
+            ResolvedStyle {
+                bg_hex: None,
+                fg_hex: Some(0x808080),
+            },
+            false,
+        );
+    }
+
+    let mut matched_indices = SmallVec::<[usize; 8]>::new();
+    matcher.find_matches(raw_line, prepared_filters, &mut matched_indices);
+
+    if let Some(counts) = filter_counts {
+        for &idx in &matched_indices {
+            let pf = &prepared_filters[idx];
+            if pf.flat_index < counts.len() {
+                counts[pf.flat_index] += 1;
+            }
+        }
+    }
+
+    resolve_style_from_matches(prepared_filters, &matched_indices, show_only_filtered)
+}
+
+/// Evaluates a single line against prepared filters according to LogAnalysis specifications.
+/// Returns `(is_visible, style, is_matched)`.
+#[inline]
+pub fn evaluate_and_style_line(
+    raw_line: &[u8],
+    prepared_filters: &[PreparedFilter],
+    show_only_filtered: bool,
+    mut filter_counts: Option<&mut [usize]>,
+) -> (bool, ResolvedStyle, bool) {
+    // 1. Edge Case: If there are no active filters, display all lines with default styling
+    if prepared_filters.is_empty() {
+        return (
+            true,
+            ResolvedStyle {
+                bg_hex: None,
+                fg_hex: Some(0x808080),
+            },
+            false,
+        );
+    }
+
+    let mut matched_indices = SmallVec::<[usize; 8]>::new();
+    for (idx, pf) in prepared_filters.iter().enumerate() {
+        if pf.matches(raw_line) {
+            if let Some(counts) = filter_counts.as_deref_mut() {
+                if pf.flat_index < counts.len() {
+                    counts[pf.flat_index] += 1; // Pure local non-atomic addition, zero false sharing
+                }
+            }
+            matched_indices.push(idx);
+        }
+    }
+
+    resolve_style_from_matches(prepared_filters, &matched_indices, show_only_filtered)
+}
+
 /// Executes parallel filtering across a log source using Rayon.
 pub fn execute_filtering(
     source: &(dyn LogSource + Sync),
@@ -122,7 +168,7 @@ pub fn execute_filtering(
     let line_count = source.line_count();
     let filter_count = filters.len();
 
-    // Prepare filter matchers
+    // Prepare filter matchers and compile SIMD multi-pattern automaton
     let mut prepared = Vec::new();
     for (idx, rule) in filters.iter().enumerate() {
         if rule.active && !rule.text.is_empty() {
@@ -131,6 +177,7 @@ pub fn execute_filtering(
             }
         }
     }
+    let multi_matcher = MultiFilterMatcher::new(&prepared);
 
     if line_count == 0 {
         let mut rule_counts = std::collections::HashMap::with_capacity(filters.len());
@@ -173,9 +220,10 @@ pub fn execute_filtering(
 
             for line_idx in start..end {
                 let raw_line = source.get_raw_line(line_idx).unwrap_or(b"");
-                let (is_visible, style, is_matched) = evaluate_and_style_line(
+                let (is_visible, style, is_matched) = evaluate_and_style_line_with_matcher(
                     raw_line,
                     &prepared,
+                    &multi_matcher,
                     show_only_filtered,
                     Some(&mut local_counts),
                 );
@@ -284,5 +332,81 @@ pub fn find_nearest_anchor_row(visible_indices: &[usize], target_idx: usize) -> 
                 }
             }
         }
+    }
+}
+
+/// Incrementally updates a `FilterResult` when a new batch of lines is appended to a streaming log buffer.
+///
+/// If `trimmed_count > 0` (head of rolling buffer was trimmed), removes visible lines that fell off
+/// and shifts remaining indices down by `trimmed_count`.
+/// Evaluates only the newly added lines (`new_lines_range`) against the active filters,
+/// appending matches directly to `visible_indices` and `visible_styles`.
+pub fn append_streaming_batch(
+    result: &mut FilterResult,
+    source: &(dyn LogSource + Sync),
+    new_lines_range: std::ops::Range<usize>,
+    trimmed_count: usize,
+    filters: &[FilterRule],
+    show_only_filtered: bool,
+) {
+    if trimmed_count > 0 && !result.visible_indices.is_empty() {
+        let drop_count = result.visible_indices.partition_point(|&idx| idx < trimmed_count);
+        if drop_count > 0 {
+            result.visible_indices.drain(0..drop_count);
+            result.visible_styles.drain(0..drop_count);
+        }
+        for idx in &mut result.visible_indices {
+            *idx = idx.saturating_sub(trimmed_count);
+        }
+    }
+
+    if new_lines_range.is_empty() {
+        return;
+    }
+
+    let filter_count = filters.len();
+    let mut prepared = Vec::new();
+    for (idx, rule) in filters.iter().enumerate() {
+        if rule.active && !rule.text.is_empty() {
+            if let Ok(pf) = PreparedFilter::new(rule.clone(), idx, 0) {
+                prepared.push(pf);
+            }
+        }
+    }
+    let multi_matcher = MultiFilterMatcher::new(&prepared);
+
+    if result.filter_counts.len() < filter_count {
+        result.filter_counts.resize(filter_count, 0);
+    }
+
+    for line_idx in new_lines_range {
+        let raw_line = source.get_raw_line(line_idx).unwrap_or(b"");
+        let (is_visible, style, is_matched) = evaluate_and_style_line_with_matcher(
+            raw_line,
+            &prepared,
+            &multi_matcher,
+            show_only_filtered,
+            Some(&mut result.filter_counts),
+        );
+
+        if is_matched && is_visible {
+            result.total_matched_lines += 1;
+        }
+
+        if is_visible {
+            let line_len = source.get_measured_length(line_idx);
+            if line_len > result.widest_visible_length {
+                result.widest_visible_length = line_len;
+                if let Some(cow) = source.get_line(line_idx) {
+                    result.widest_visible_text = cow.into_owned();
+                }
+            }
+            result.visible_indices.push(line_idx);
+            result.visible_styles.push(style);
+        }
+    }
+
+    for (rule, &cnt) in filters.iter().zip(result.filter_counts.iter()) {
+        result.rule_counts.insert(rule.id, cnt);
     }
 }

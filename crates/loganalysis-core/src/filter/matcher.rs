@@ -1,5 +1,7 @@
 use super::model::FilterRule;
 use crate::error::FilterError;
+use aho_corasick::{AhoCorasick, MatchKind};
+use smallvec::SmallVec;
 
 pub enum CompiledMatcher {
     /// Case-sensitive literal search using SIMD memmem
@@ -201,6 +203,104 @@ impl PreparedFilter {
         match &self.matcher {
             Some(m) => m.matches(raw_line),
             None => false,
+        }
+    }
+}
+
+/// Single-pass multi-pattern filter matcher powered by Aho-Corasick SIMD.
+///
+/// Combines multiple literal filter rules into case-sensitive and case-insensitive
+/// automatons, scanning each line in a single pass ($O(N)$) instead of sequentially testing
+/// each rule ($O(N \cdot K)$).
+pub struct MultiFilterMatcher {
+    cs_automaton: Option<(AhoCorasick, Vec<usize>)>,
+    ci_automaton: Option<(AhoCorasick, Vec<usize>)>,
+    individual_filters: Vec<usize>,
+}
+
+impl MultiFilterMatcher {
+    pub fn new(filters: &[PreparedFilter]) -> Self {
+        let mut cs_patterns = Vec::new();
+        let mut cs_indices = Vec::new();
+
+        let mut ci_patterns = Vec::new();
+        let mut ci_indices = Vec::new();
+
+        let mut individual_filters = Vec::new();
+
+        for (idx, pf) in filters.iter().enumerate() {
+            if pf.matcher.is_none() {
+                continue;
+            }
+            if pf.rule.regex {
+                individual_filters.push(idx);
+            } else if pf.rule.case_sensitive {
+                cs_patterns.push(pf.rule.text.as_bytes());
+                cs_indices.push(idx);
+            } else {
+                ci_patterns.push(pf.rule.text.as_bytes());
+                ci_indices.push(idx);
+            }
+        }
+
+        let cs_automaton = if !cs_patterns.is_empty() {
+            AhoCorasick::builder()
+                .match_kind(MatchKind::Standard)
+                .build(&cs_patterns)
+                .ok()
+                .map(|ac| (ac, cs_indices))
+        } else {
+            None
+        };
+
+        let ci_automaton = if !ci_patterns.is_empty() {
+            AhoCorasick::builder()
+                .ascii_case_insensitive(true)
+                .match_kind(MatchKind::Standard)
+                .build(&ci_patterns)
+                .ok()
+                .map(|ac| (ac, ci_indices))
+        } else {
+            None
+        };
+
+        Self {
+            cs_automaton,
+            ci_automaton,
+            individual_filters,
+        }
+    }
+
+    #[inline]
+    pub fn find_matches(
+        &self,
+        raw_line: &[u8],
+        filters: &[PreparedFilter],
+        out: &mut SmallVec<[usize; 8]>,
+    ) {
+        out.clear();
+
+        if let Some((ac, map)) = &self.ci_automaton {
+            for m in ac.find_overlapping_iter(raw_line) {
+                out.push(map[m.pattern().as_usize()]);
+            }
+        }
+
+        if let Some((ac, map)) = &self.cs_automaton {
+            for m in ac.find_overlapping_iter(raw_line) {
+                out.push(map[m.pattern().as_usize()]);
+            }
+        }
+
+        for &idx in &self.individual_filters {
+            if filters[idx].matches(raw_line) {
+                out.push(idx);
+            }
+        }
+
+        if out.len() > 1 {
+            out.sort_unstable();
+            out.dedup();
         }
     }
 }

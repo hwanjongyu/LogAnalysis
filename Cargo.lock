@@ -3006,6 +3006,7 @@ dependencies = [
 name = "loganalysis-core"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "crossbeam-channel",
  "fancy-regex",
  "memchr",

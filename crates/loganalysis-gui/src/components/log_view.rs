@@ -70,8 +70,8 @@ pub fn render_log_viewport(
                             if let (Some(res), Some(src)) = (&filter_res, &source) {
                                 let r_idx = res.visible_indices.get(idx).copied().unwrap_or(0);
                                 let t: SharedString = src
-                                    .get_line(r_idx)
-                                    .map(|s| s.into_owned().into())
+                                    .get_line_arc(r_idx)
+                                    .map(SharedString::new)
                                     .unwrap_or_default();
                                 (r_idx, t)
                             } else {

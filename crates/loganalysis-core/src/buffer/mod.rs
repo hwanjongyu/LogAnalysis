@@ -2,6 +2,7 @@ pub mod file_buffer;
 pub mod stream_buffer;
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 pub use file_buffer::FileLogBuffer;
 pub use stream_buffer::StreamLogBuffer;
@@ -47,6 +48,14 @@ impl LogSource for ActiveLogSource {
     }
 
     #[inline]
+    fn get_line_arc(&self, idx: usize) -> Option<Arc<str>> {
+        match self {
+            Self::File(f) => f.get_line_arc(idx),
+            Self::Stream(s) => s.get_line_arc(idx),
+        }
+    }
+
+    #[inline]
     fn get_measured_length(&self, idx: usize) -> usize {
         match self {
             Self::File(f) => f.get_measured_length(idx),
@@ -66,6 +75,11 @@ pub trait LogSource: Send + Sync {
     /// Retrieve the line as a UTF-8 string with lossy replacement
     fn get_line(&self, idx: usize) -> Option<Cow<'_, str>> {
         self.get_raw_line(idx).map(|bytes| String::from_utf8_lossy(bytes))
+    }
+
+    /// Retrieve the line as an Arc<str>, reusing existing Arc when available to eliminate copying
+    fn get_line_arc(&self, idx: usize) -> Option<Arc<str>> {
+        self.get_line(idx).map(|s| Arc::from(s.as_ref()))
     }
 
     /// Retrieve the measured character length of the line (excluding trailing whitespace/newlines).

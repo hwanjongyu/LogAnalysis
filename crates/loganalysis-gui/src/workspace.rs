@@ -417,26 +417,65 @@ impl LogAnalysisWorkspace {
                                                 }
                                             }
                                         } else if let Some(src) = &mut workspace.log_source {
-                                            // Zero-copy in-place mutation when unique; fallback to clone only if filter task holds Arc
-                                            if let Some(active_src) = Arc::get_mut(src) {
-                                                if let ActiveLogSource::Stream(ref mut stream) = active_src {
-                                                    stream.append_chunk(batch);
-                                                    stream.trim_if_needed();
-                                                }
-                                            } else if let ActiveLogSource::Stream(ref stream) = **src {
-                                                let mut new_stream = stream.clone();
-                                                new_stream.append_chunk(batch);
-                                                new_stream.trim_if_needed();
-                                                *src = Arc::new(ActiveLogSource::Stream(new_stream));
-                                            }
+                                            let batch_len = batch.len();
+                                            let (new_total_len, new_lines_range, trimmed) = {
+                                                // Zero-copy in-place mutation when unique; fallback to clone only if filter task holds Arc
+                                                let (len, tr) = if let Some(active_src) = Arc::get_mut(src) {
+                                                    if let ActiveLogSource::Stream(ref mut stream) = active_src {
+                                                        stream.append_chunk(batch);
+                                                        let tr = stream.trim_if_needed().unwrap_or(0);
+                                                        (stream.line_count(), tr)
+                                                    } else {
+                                                        (0, 0)
+                                                    }
+                                                } else if let ActiveLogSource::Stream(ref stream) = **src {
+                                                    let mut new_stream = stream.clone();
+                                                    new_stream.append_chunk(batch);
+                                                    let tr = new_stream.trim_if_needed().unwrap_or(0);
+                                                    let len = new_stream.line_count();
+                                                    *src = Arc::new(ActiveLogSource::Stream(new_stream));
+                                                    (len, tr)
+                                                } else {
+                                                    (0, 0)
+                                                };
+                                                let start = len.saturating_sub(batch_len);
+                                                (len, start..len, tr)
+                                            };
 
-                                            // Throttle filter reapplication to at most once per 60ms
-                                            if last_reapply.elapsed() >= Duration::from_millis(60) {
-                                                workspace.reapply_filters(cx);
-                                                last_reapply = std::time::Instant::now();
-                                                pending_filter_reapply = false;
+                                            // Incremental filtering: evaluate only newly arrived lines without full buffer Rayon pass
+                                            if let (Some(filter_res), Some(src_ref)) = (&mut workspace.filter_result, &workspace.log_source) {
+                                                let show_only = workspace.show_only_filtered;
+                                                let mut active_filters = Vec::new();
+                                                for tab in &workspace.filter_tabs {
+                                                    if tab.enabled {
+                                                        for rule in &tab.filters {
+                                                            if rule.active {
+                                                                active_filters.push(rule.clone());
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                let res_mut = Arc::make_mut(filter_res);
+                                                append_streaming_batch(
+                                                    res_mut,
+                                                    &**src_ref,
+                                                    new_lines_range,
+                                                    trimmed,
+                                                    &active_filters,
+                                                    show_only,
+                                                );
+
+                                                let visible_count = res_mut.visible_indices.len();
+                                                workspace.status_text = format!(
+                                                    "Visible: {} / {} lines ({} matched)",
+                                                    visible_count,
+                                                    new_total_len,
+                                                    res_mut.total_matched_lines
+                                                ).into();
                                             } else {
-                                                pending_filter_reapply = true;
+                                                // Initial pass if filter_result was not yet computed
+                                                workspace.reapply_filters(cx);
                                             }
 
                                             // Smart Auto-Scroll to bottom if enabled
@@ -544,8 +583,9 @@ impl LogAnalysisWorkspace {
             self.status_text = "Searching in background...".into();
             cx.notify();
 
+            // Advance generation to invalidate and cancel any previous in-flight background searches
+            let generation = self.cancel_generation.fetch_add(1, Ordering::SeqCst) + 1;
             let cancel_token = self.cancel_generation.clone();
-            let generation = self.cancel_generation.load(Ordering::SeqCst);
 
             cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                 let bg_executor = cx.background_executor().clone();
@@ -567,6 +607,11 @@ impl LogAnalysisWorkspace {
                         .await;
 
                     let _ = this.update(&mut async_cx, |workspace, cx| {
+                        // Discard results if superseded by a newer search or filter operation
+                        if workspace.cancel_generation.load(Ordering::SeqCst) != generation {
+                            return;
+                        }
+
                         if let Ok(Some(found)) = search_res {
                             workspace.selection.select(found.visible_row, found.real_idx);
                             workspace
@@ -660,15 +705,10 @@ impl LogAnalysisWorkspace {
     pub fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
 
-        // If the filter modal is open, always handle Escape (cancel) and Enter (save) immediately
-        if self.filter_edit_modal.is_open {
-            if key == "escape" {
-                self.close_filter_modal(cx);
-                return;
-            } else if key == "enter" {
-                self.save_modal_filter(cx);
-                return;
-            }
+        // If the filter modal is open, handle Escape fallback when focus is on non-input elements
+        if self.filter_edit_modal.is_open && key == "escape" {
+            self.close_filter_modal(cx);
+            return;
         }
 
         if self.input_focus == InputFocusTarget::None {

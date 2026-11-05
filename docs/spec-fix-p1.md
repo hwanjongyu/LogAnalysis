@@ -1,61 +1,103 @@
-# ⚡ P1 Optimization Specification: Hot-Loop Filtering & Ring Buffer
+# Specification: P1 Critical Performance & Concurrency Hotfixes
 
-- **Version:** 1.0.0
-- **Scope:** Priority 1 Performance Optimizations (`loganalysis-core`)
-- **Status:** Approved for Implementation
-
----
-
-## 1. Problem Statement
-
-1. **Redundant 2x Filter Evaluation**:
-   `execute_filtering` evaluated filters inside `evaluate_and_style_line`, and then immediately executed `prepared.iter().any(|p| p.matches(raw_line))` a second time per line, doubling CPU regex operations.
-2. **Rayon False Sharing (Cache Line Bouncing)**:
-   All Rayon threads called `fetch_add` on adjacent `AtomicUsize` elements inside a shared `filter_counts` vector, triggering continuous L1/L2 cache line invalidations.
-3. **`StreamLogBuffer` $O(N)$ Memory Shifting & Stale Lengths**:
-   `StreamLogBuffer` was backed by `Vec<String>`. Draining lines copied 200,000 fat pointers ($4.8\text{MB}$) per trim and failed to recalculate `max_line_len` if the longest line was drained.
-4. **Repeated Dynamic String Color Lookups**:
-   `COLOR_MAP` linear string searches and hex parsing were executed on every matching line instead of being pre-cached at filter preparation time.
-5. **Slow Case-Insensitive Literal Matching**:
-   Case-insensitive literal matching used an unvectorized byte-by-byte sliding window.
+**Target Codebase:** [`/home/drew/github/hwanjongyu/loganalysis`](file:///home/drew/github/hwanjongyu/loganalysis)  
+**Author:** Software Architect & Concurrency Specialist  
+**Status:** Approved for Implementation (Autonomous `/goal` Mode)  
+**Date:** 2026-11-04  
 
 ---
 
-## 2. Technical Architecture & Solutions
+## 1. Problem Statements & Technical Root Causes
 
-### 2.1 Single-Pass Line Evaluation & Pre-cached Colors
-- Modify `PreparedFilter` to pre-calculate `resolved_bg_hex: Option<u32>` and `resolved_fg_hex: Option<u32>` during compilation.
-- Update `evaluate_and_style_line` signature:
+### P1-1: CJK IME Preemption in `TextInput` & Duplicate Modal Key Handlers
+- **Location:**  
+  - [`crates/loganalysis-gui/src/components/text_input.rs:702-711`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/components/text_input.rs#L702-L711)
+  - [`crates/loganalysis-gui/src/modals/filter_edit_modal.rs:64-73`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/modals/filter_edit_modal.rs#L64-L73)
+  - [`crates/loganalysis-gui/src/workspace.rs:664-672`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/workspace.rs#L664-L672)
+- **Root Cause:**  
+  1. In `TextInput`, `on_action(Submit)` and `on_action(Cancel)` do not check whether `self.marked_range.is_some()`. During active Korean/CJK syllable composition, pressing `Enter` to commit the preedit block prematurely triggers `cx.emit(TextInputEvent::Submit)`, closing the modal before the user has finished typing.
+  2. `modal-card-filter-edit` attaches an `.on_key_down` handler that intercepts `escape` and `enter` during event bubbling, bypassing `TextInput`'s action handlers.
+  3. `LogAnalysisWorkspace::handle_key_down` unconditionally intercepts `escape` and `enter` when `filter_edit_modal.is_open`.
+- **Target Fix:**  
+  1. In `TextInput::on_action(Submit)`: if `self.marked_range.is_some()`, ignore the submit action so the IME can commit the preedit text cleanly.
+  2. In `TextInput::on_action(Cancel)`: if `self.marked_range.is_some()`, clear `self.marked_range` without emitting `Cancel`, aborting the IME preedit without closing the modal.
+  3. Remove the redundant `.on_key_down` listener from `modal-card-filter-edit`.
+  4. In `workspace.rs::handle_key_down`, do not preempt `enter` when the filter modal is open, allowing `TextInput` to handle submission deterministically.
+
+---
+
+### P1-2: Stale Search Result Race Condition in `workspace.search()`
+- **Location:** [`crates/loganalysis-gui/src/workspace.rs:547-581`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/workspace.rs#L547-L581)
+- **Root Cause:**  
+  1. `search()` passes `self.cancel_generation.load(Ordering::SeqCst)` into the background search task without calling `fetch_add(1, Ordering::SeqCst) + 1`. Subsequent searches never invalidate earlier in-flight searches.
+  2. In the async callback (`this.update(&mut async_cx, |workspace, cx| ...)`), there is no check comparing `workspace.cancel_generation` against `generation`. If an older, slower search task completes after a faster new search, the stale result overwrites the selection and viewport scroll position.
+- **Target Fix:**  
+  1. Atomically advance `let generation = self.cancel_generation.fetch_add(1, Ordering::SeqCst) + 1;` at the entry of `search()`.
+  2. Inside `this.update`, verify `if workspace.cancel_generation.load(Ordering::SeqCst) != generation { return; }` before applying search results.
+
+---
+
+### P1-3: Viewport Line Rendering String Allocation Churn
+- **Location:** [`crates/loganalysis-gui/src/components/log_view.rs:72-76`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/components/log_view.rs#L72-L76)
+- **Root Cause:**  
   ```rust
-  pub fn evaluate_and_style_line(
-      raw_line: &[u8],
-      prepared_filters: &[PreparedFilter],
-      show_only_filtered: bool,
-      filter_counts: Option<&mut [usize]>,
-  ) -> (bool, ResolvedStyle, bool) // (is_visible, style, is_matched)
+  let t: SharedString = src
+      .get_line(r_idx)
+      .map(|s| s.into_owned().into())
+      .unwrap_or_default();
   ```
-- Eliminate the second matching loop in `execute_filtering`.
-
-### 2.2 Chunk-Local Counter Reduction (Zero False Sharing)
-- Each Rayon chunk allocates a local `vec![0usize; filter_count]` and passes `Some(&mut local_counts)` to `evaluate_and_style_line`.
-- Local counts are accumulated via simple non-atomic addition (`local_counts[flat_index] += 1`).
-- Chunks merge their counts into `combined_counts` sequentially during chunk reduction.
-
-### 2.3 `VecDeque` Ring Buffer & Dynamic Length Resync
-- Switch `StreamLogBuffer.lines` to `std::collections::VecDeque<String>`.
-- `drain(0..excess)` executes in $O(1)$ head pointer displacement without pointer shifting.
-- If any drained line matches `max_line_len`, trigger a resync scan across the remaining deque items to keep horizontal scroll boundaries accurate.
-
-### 2.4 SIMD-Accelerated Regex Builder for Literals
-- In `CompiledMatcher::new`, build case-insensitive literals using `regex::bytes::RegexBuilder` with `case_insensitive(true)`, leveraging AVX2/Teddy SIMD vectorization.
-- For `FancyRegex`, check `std::str::from_utf8` first to avoid `String::from_utf8_lossy` heap allocations on valid UTF-8 lines.
+  Calling `s.into_owned()` allocates a brand new heap `String` for every visible line on every 60Hz frame render or scroll event. For a 60-row viewport, this performs 3,600 heap allocations/sec.
+- **Target Fix:**  
+  Convert directly from `s.as_ref()` into `SharedString::from(s.as_ref())`, bypassing the intermediate owned `String` allocation.
 
 ---
 
-## 3. Verification Plan
+### P1-4: Incremental Streaming Filtering (Eliminating Full Buffer Rayon Passes)
+- **Location:**  
+  - [`crates/loganalysis-core/src/filter/engine.rs`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-core/src/filter/engine.rs)
+  - [`crates/loganalysis-gui/src/workspace.rs:430-445`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/workspace.rs#L430-L445)
+- **Root Cause:**  
+  Currently, live streaming invokes `reapply_filters` every 60ms. `reapply_filters` executes a full Rayon multi-threaded pass across all 200,000 lines in the buffer, allocating new `visible_indices` and `visible_styles` vectors every 60ms. This saturates all CPU cores during ADB streaming.
+- **Target Fix:**  
+  1. Implement `append_streaming_chunk` in `loganalysis-core`:
+     - Given a previous `FilterResult` and newly appended lines (`start_idx..end_idx`), evaluate only the newly added lines against the active filters.
+     - Append newly matched visible indices and resolved styles directly to the existing `FilterResult`.
+     - Increment filter counts and match metrics incrementally.
+  2. If `StreamLogBuffer::trim_if_needed()` trimmed lines from the head (which only occurs once every 10,000 lines):
+     - Slice off trimmed indices and decrement remaining visible indices by `trimmed_count`.
+  3. In `workspace.rs`: When new stream chunks arrive, use the incremental append path when filters have not changed, reducing CPU utilization during live streaming from ~80% to <1%.
 
-1. Run `cargo test --workspace` and verify all tests pass.
-2. Add dedicated tests for:
-   - `test_stream_buffer_recalculates_max_len_on_drain`
-   - `test_single_pass_filtering_and_match_flag`
-3. Update `docs/qa-loganalysis-rust-gpui.md` with P1 benchmarks and verification.
+---
+
+### P1-5: Single-Pass Multi-Pattern Aho-Corasick SIMD Automaton
+- **Location:**  
+  - [`crates/loganalysis-core/Cargo.toml`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-core/Cargo.toml)
+  - [`crates/loganalysis-core/src/filter/matcher.rs`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-core/src/filter/matcher.rs)
+  - [`crates/loganalysis-core/src/filter/engine.rs`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-core/src/filter/engine.rs)
+- **Root Cause:**  
+  When multiple literal filters are active, `evaluate_and_style_line` loops through all $K$ filters sequentially ($O(N \cdot K)$).
+- **Target Fix:**  
+  1. Add `aho-corasick = "1.1"` to `loganalysis-core`.
+  2. When multiple literal filters share the same case-sensitivity mode, compile them into an `AhoCorasick` multi-pattern automaton with Teddy SIMD acceleration, scanning each line in a single pass ($O(N)$).
+
+---
+
+## 2. Implementation Schedule & Verification Matrix
+
+| Task | Target Files | Verification Method |
+| :--- | :--- | :--- |
+| **P1-1** | `crates/loganalysis-gui/src/components/text_input.rs`<br>`crates/loganalysis-gui/src/modals/filter_edit_modal.rs`<br>`crates/loganalysis-gui/src/workspace.rs` | Unit test: Enter/Cancel while `marked_range.is_some()` must NOT emit submit/cancel event. |
+| **P1-2** | `crates/loganalysis-gui/src/workspace.rs` | Test: Stale search generation aborts and does not overwrite updated search result. |
+| **P1-3** | `crates/loganalysis-gui/src/components/log_view.rs` | Build & benchmark: Zero heap `String` allocation in virtual row loop. |
+| **P1-4** | `crates/loganalysis-core/src/filter/engine.rs`<br>`crates/loganalysis-gui/src/workspace.rs` | Integration test: Incremental chunk append produces identical `FilterResult` to full pass. |
+| **P1-5** | `crates/loganalysis-core/Cargo.toml`<br>`crates/loganalysis-core/src/filter/matcher.rs` | Benchmark & test: Multi-literal pattern matching produces identical hit counts to sequential finder. |
+
+---
+
+## 3. Acceptance Criteria
+
+- `cargo test --workspace`: 100% test pass rate with zero regressions.
+- `cargo clippy --all-targets`: Clean with zero warnings.
+- IME composition test: Typing Hangul with active preedit does not dismiss modal on Enter.
+- Search cancellation test: Stale generation results are rejected cleanly.
+- Incremental filtering test: Streaming throughput scales without full-buffer recomputation.

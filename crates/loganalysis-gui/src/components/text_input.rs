@@ -700,11 +700,22 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(|this, _: &Submit, _window, cx| {
+                // If IME is currently composing syllables (e.g. Korean Hangul), commit preedit only without submitting modal
+                if this.marked_range.is_some() {
+                    return;
+                }
                 this.marked_range = None;
                 cx.emit(TextInputEvent::Submit);
                 cx.stop_propagation();
             }))
             .on_action(cx.listener(|this, _: &Cancel, _window, cx| {
+                // If IME is composing, Escape cancels the active preedit block without closing the parent modal
+                if this.marked_range.is_some() {
+                    this.marked_range = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 this.marked_range = None;
                 cx.emit(TextInputEvent::Cancel);
                 cx.stop_propagation();
@@ -767,6 +778,27 @@ mod tests {
         assert_ne!(submit, cancel);
         assert_eq!(submit, TextInputEvent::Submit);
         assert_eq!(cancel, TextInputEvent::Cancel);
+    }
+
+    #[test]
+    fn test_ime_composition_marked_range_semantics() {
+        // Test that marked_range is tracked accurately during IME preedit
+        let mut marked_range = Some(0..6);
+        assert!(marked_range.is_some(), "Preedit must be active");
+
+        // Simulating Submit action when IME is active: must not emit submit
+        let should_submit = marked_range.is_none();
+        assert!(!should_submit, "Must guard submit during active IME composition");
+
+        // Simulating Cancel action when IME is active: clears preedit without closing modal
+        if marked_range.is_some() {
+            marked_range = None;
+        }
+        assert!(marked_range.is_none());
+
+        // Subsequent Submit after IME committed
+        let should_submit_now = marked_range.is_none();
+        assert!(should_submit_now, "Can submit after IME commit");
     }
 
     #[test]

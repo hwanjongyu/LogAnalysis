@@ -61,16 +61,6 @@ pub fn render_filter_edit_modal(
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                        let key = event.keystroke.key.as_str();
-                        if key == "escape" {
-                            this.close_filter_modal(cx);
-                            cx.stop_propagation();
-                        } else if key == "enter" {
-                            this.save_modal_filter(cx);
-                            cx.stop_propagation();
-                        }
-                    }))
                     // Modal Header
                     .child(
                         div()

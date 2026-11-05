@@ -19,8 +19,9 @@ pub use constants::{
 pub use error::{AdbError, FilterError, SearchError};
 pub use uuid;
 pub use filter::{
-    contrast_ratio, evaluate_and_style_line, evaluate_contrast, execute_filtering,
-    find_nearest_anchor_row, parse_filters_json, CompiledMatcher, ContrastLevel,
-    FilterResult, FilterRule, FilterTabData, PreparedFilter, ResolvedStyle,
+    append_streaming_batch, contrast_ratio, evaluate_and_style_line,
+    evaluate_and_style_line_with_matcher, evaluate_contrast, execute_filtering,
+    find_nearest_anchor_row, parse_filters_json, CompiledMatcher, ContrastLevel, FilterResult,
+    FilterRule, FilterTabData, MultiFilterMatcher, PreparedFilter, ResolvedStyle,
 };
 pub use search::{search_in_log, SearchQuery, SearchResult};

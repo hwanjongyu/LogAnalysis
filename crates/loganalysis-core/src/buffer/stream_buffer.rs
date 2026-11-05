@@ -132,4 +132,9 @@ impl LogSource for StreamLogBuffer {
     fn get_line(&self, idx: usize) -> Option<Cow<'_, str>> {
         self.lines.get(idx).map(|s| Cow::Borrowed(trim_line_end_str(s.as_ref())))
     }
+
+    #[inline]
+    fn get_line_arc(&self, idx: usize) -> Option<Arc<str>> {
+        self.lines.get(idx).cloned()
+    }
 }

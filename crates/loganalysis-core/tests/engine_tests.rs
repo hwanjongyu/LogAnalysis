@@ -782,3 +782,184 @@ fn test_bounded_channel_disconnect_semantics() {
     assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     assert!(is_disconnected, "Loop must have detected disconnection after draining");
 }
+
+#[test]
+fn test_multi_filter_matcher_aho_corasick_consistency() {
+    let r1 = FilterRule {
+        text: "FATAL".to_string(),
+        bg_color: "red".to_string(),
+        case_sensitive: true,
+        active: true,
+        ..Default::default()
+    };
+    let r2 = FilterRule {
+        text: "exception".to_string(),
+        bg_color: "orange".to_string(),
+        case_sensitive: false, // Case-insensitive
+        active: true,
+        ..Default::default()
+    };
+    let r3 = FilterRule {
+        text: "FATAL EXCEPTION".to_string(), // Overlapping substring with r1 and r2
+        bg_color: "darkred".to_string(),
+        case_sensitive: true,
+        active: true,
+        ..Default::default()
+    };
+    let r4 = FilterRule {
+        text: r"code=\d+".to_string(), // Regex rule
+        bg_color: "blue".to_string(),
+        regex: true,
+        case_sensitive: true,
+        active: true,
+        ..Default::default()
+    };
+
+    let rules = [r1, r2, r3, r4];
+    let prepared: Vec<PreparedFilter> = rules
+        .iter()
+        .enumerate()
+        .map(|(i, r)| PreparedFilter::new(r.clone(), i, 0).unwrap())
+        .collect();
+
+    let multi_matcher = MultiFilterMatcher::new(&prepared);
+
+    let test_lines = vec![
+        b"11-04 12:00:00.000 I Normal: Normal log line with no matches".as_slice(),
+        b"11-04 12:00:01.000 E Crash: FATAL EXCEPTION occurred with code=42".as_slice(),
+        b"11-04 12:00:02.000 W Warn: Java NullPointerException thrown".as_slice(),
+        b"11-04 12:00:03.000 D Debug: Only fatal in lowercase (not matched by r1, but matched by r2 if it were fatal)".as_slice(),
+        b"11-04 12:00:04.000 E Tag: error code=999 received".as_slice(),
+    ];
+
+    for raw in test_lines {
+        let mut counts_seq = vec![0; 4];
+        let (vis_seq, style_seq, mat_seq) =
+            evaluate_and_style_line(raw, &prepared, true, Some(&mut counts_seq));
+
+        let mut counts_multi = vec![0; 4];
+        let (vis_multi, style_multi, mat_multi) = evaluate_and_style_line_with_matcher(
+            raw,
+            &prepared,
+            &multi_matcher,
+            true,
+            Some(&mut counts_multi),
+        );
+
+        assert_eq!(vis_seq, vis_multi, "Visibility mismatch on line: {:?}", String::from_utf8_lossy(raw));
+        assert_eq!(style_seq, style_multi, "Style mismatch on line: {:?}", String::from_utf8_lossy(raw));
+        assert_eq!(mat_seq, mat_multi, "Matched mismatch on line: {:?}", String::from_utf8_lossy(raw));
+        assert_eq!(counts_seq, counts_multi, "Hit counts mismatch on line: {:?}", String::from_utf8_lossy(raw));
+    }
+}
+
+#[test]
+fn test_append_streaming_batch_incremental_vs_full() {
+    let r1 = FilterRule {
+        text: "ERROR".to_string(),
+        bg_color: "red".to_string(),
+        case_sensitive: true,
+        active: true,
+        ..Default::default()
+    };
+    let r2 = FilterRule {
+        text: "noise".to_string(),
+        bg_color: "gray".to_string(),
+        case_sensitive: false,
+        exclude: true, // Exclude rule
+        active: true,
+        ..Default::default()
+    };
+    let rules = vec![r1, r2];
+
+    let mut stream = StreamLogBuffer::new(100, 20);
+
+    // Initial batch of 10 lines
+    let batch1: Vec<String> = (0..10)
+        .map(|i| {
+            if i % 3 == 0 {
+                format!("Line {}: An ERROR occurred", i)
+            } else {
+                format!("Line {}: Info message", i)
+            }
+        })
+        .collect();
+
+    stream.append_chunk(batch1);
+
+    // Initial full filter pass
+    let mut incremental_res = execute_filtering(&stream, &rules, true, None, 1).unwrap();
+    assert_eq!(incremental_res.visible_indices.len(), 4); // i = 0, 3, 6, 9
+
+    // Second batch of 10 lines
+    let batch2: Vec<String> = (10..20)
+        .map(|i| {
+            if i == 12 {
+                format!("Line {}: An ERROR but noise excluded", i)
+            } else if i % 2 == 0 {
+                format!("Line {}: Another ERROR occurred", i)
+            } else {
+                format!("Line {}: Info message", i)
+            }
+        })
+        .collect();
+
+    let start_idx = stream.line_count();
+    stream.append_chunk(batch2);
+    let end_idx = stream.line_count();
+
+    // Perform incremental append
+    append_streaming_batch(
+        &mut incremental_res,
+        &stream,
+        start_idx..end_idx,
+        0,
+        &rules,
+        true,
+    );
+
+    // Compare with full re-execution from scratch
+    let full_res = execute_filtering(&stream, &rules, true, None, 2).unwrap();
+
+    assert_eq!(incremental_res.visible_indices, full_res.visible_indices);
+    assert_eq!(incremental_res.visible_styles, full_res.visible_styles);
+    assert_eq!(incremental_res.filter_counts, full_res.filter_counts);
+    assert_eq!(incremental_res.total_matched_lines, full_res.total_matched_lines);
+    for rule in &rules {
+        assert_eq!(
+            incremental_res.count_for_rule(&rule.id),
+            full_res.count_for_rule(&rule.id)
+        );
+    }
+
+    // Now test trimming semantics: simulate buffer trimmed by 5 lines
+    let trimmed_count = 5;
+    append_streaming_batch(
+        &mut incremental_res,
+        &stream,
+        end_idx..end_idx, // no new lines, only trim
+        trimmed_count,
+        &rules,
+        true,
+    );
+
+    // All visible indices should be shifted down by 5, and any index < 5 removed
+    for &idx in &incremental_res.visible_indices {
+        assert!(idx < stream.line_count());
+    }
+}
+
+#[test]
+fn test_log_source_get_line_arc_zero_copy() {
+    use std::sync::Arc;
+
+    let mut stream = StreamLogBuffer::new(50, 10);
+    stream.append_chunk(vec!["Test Line 1".to_string(), "Test Line 2".to_string()]);
+
+    let arc1 = stream.get_line_arc(0).expect("Line 0 must exist");
+    let arc2 = stream.get_line_arc(0).expect("Line 0 must exist again");
+
+    // Both returned Arcs must point to the identical heap allocation (zero-copy clone)
+    assert!(Arc::ptr_eq(&arc1, &arc2));
+    assert_eq!(&*arc1, "Test Line 1");
+}
