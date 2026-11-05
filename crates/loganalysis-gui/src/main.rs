@@ -225,6 +225,39 @@ fn ensure_desktop_integration() {
     }
 }
 
+/// Detects initial window decoration mode based on compositor session and explicit overrides.
+/// On Linux Wayland (e.g. GNOME Mutter), Client-Side Decorations (CSD) must be explicitly requested
+/// because the compositor does not provide server-side window decorations.
+pub fn detect_initial_window_decorations() -> Option<WindowDecorations> {
+    if std::env::var("LOGANALYSIS_DISABLE_CSD").is_ok() {
+        return Some(WindowDecorations::Server);
+    }
+    if std::env::var("LOGANALYSIS_FORCE_CSD").is_ok() {
+        return Some(WindowDecorations::Client);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let is_wayland = std::env::var_os("WAYLAND_DISPLAY")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+            || std::env::var("XDG_SESSION_TYPE")
+                .map(|v| v.eq_ignore_ascii_case("wayland"))
+                .unwrap_or(false);
+
+        if is_wayland {
+            Some(WindowDecorations::Client)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 fn main() {
     // Intercept version flag early before desktop integration or GPU window creation
     if handle_cli_version_flag(std::env::args().skip(1)) {
@@ -281,11 +314,7 @@ fn main() {
         // Register Scoped TextInput Key Bindings (Cut, Copy, Paste, Arrows, Selection, etc.)
         components::text_input::register_keybindings(cx);
 
-        let window_decorations = if std::env::var("LOGANALYSIS_FORCE_CSD").is_ok() {
-            Some(WindowDecorations::Client)
-        } else {
-            None
-        };
+        let window_decorations = detect_initial_window_decorations();
 
         let bounds = Bounds::centered(None, size(px(1200.0), px(850.0)), cx);
         let options = WindowOptions {
@@ -309,6 +338,11 @@ fn main() {
             if let Some(path) = initial_path {
                 entity.update(cx, |workspace, cx| {
                     workspace.open_file(&path, cx);
+                });
+            } else {
+                // Auto-scan ADB devices on startup in background when no initial file argument is provided
+                entity.update(cx, |workspace, cx| {
+                    workspace.refresh_adb_devices(cx);
                 });
             }
             entity
@@ -354,5 +388,27 @@ mod tests {
                 label
             );
         }
+    }
+
+    #[test]
+    fn test_detect_initial_window_decorations_overrides() {
+        use super::*;
+
+        // Test explicit force CSD
+        std::env::set_var("LOGANALYSIS_FORCE_CSD", "1");
+        std::env::remove_var("LOGANALYSIS_DISABLE_CSD");
+        assert_eq!(
+            detect_initial_window_decorations(),
+            Some(WindowDecorations::Client)
+        );
+        std::env::remove_var("LOGANALYSIS_FORCE_CSD");
+
+        // Test explicit disable CSD
+        std::env::set_var("LOGANALYSIS_DISABLE_CSD", "1");
+        assert_eq!(
+            detect_initial_window_decorations(),
+            Some(WindowDecorations::Server)
+        );
+        std::env::remove_var("LOGANALYSIS_DISABLE_CSD");
     }
 }

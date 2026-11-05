@@ -1064,3 +1064,41 @@ fn test_append_streaming_batch_trims_adjust_total_matched() {
     assert_eq!(res_unfiltered.total_matched_lines, 1);
     assert_eq!(res_unfiltered.visible_indices.len(), 2);
 }
+
+#[test]
+fn test_resolve_adb_path_home_auto_detection() {
+    let adb_path = resolve_adb_path();
+    // Must return a valid non-empty path ending in "adb" (or "adb.exe" on Windows)
+    let file_name = adb_path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+    assert!(file_name.starts_with("adb"), "ADB binary name must start with adb, got: {:?}", adb_path);
+
+    // Test with temporary mock HOME directory
+    let temp_home = tempfile::tempdir().expect("tempdir");
+    let mock_platform_tools = temp_home.path().join("Android/Sdk/platform-tools");
+    std::fs::create_dir_all(&mock_platform_tools).expect("create mock platform-tools");
+    let mock_adb_file = mock_platform_tools.join(if cfg!(windows) { "adb.exe" } else { "adb" });
+    std::fs::write(&mock_adb_file, b"#!/bin/sh\nexit 0\n").expect("write mock adb");
+
+    // Preserve real env
+    let old_home = std::env::var("HOME").ok();
+    let old_android_home = std::env::var("ANDROID_HOME").ok();
+    let old_android_sdk_root = std::env::var("ANDROID_SDK_ROOT").ok();
+
+    std::env::remove_var("ANDROID_HOME");
+    std::env::remove_var("ANDROID_SDK_ROOT");
+    std::env::set_var("HOME", temp_home.path());
+
+    let resolved = resolve_adb_path();
+    assert_eq!(resolved, mock_adb_file, "Must resolve mock adb inside user home Android SDK directory");
+
+    // Restore env
+    if let Some(h) = old_home {
+        std::env::set_var("HOME", h);
+    }
+    if let Some(a) = old_android_home {
+        std::env::set_var("ANDROID_HOME", a);
+    }
+    if let Some(s) = old_android_sdk_root {
+        std::env::set_var("ANDROID_SDK_ROOT", s);
+    }
+}

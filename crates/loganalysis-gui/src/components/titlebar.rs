@@ -11,7 +11,25 @@ pub fn should_render_csd(window: &Window) -> bool {
     if std::env::var("LOGANALYSIS_FORCE_CSD").is_ok() {
         return true;
     }
-    matches!(window.window_decorations(), Decorations::Client { .. })
+    if matches!(window.window_decorations(), Decorations::Client { .. }) {
+        return true;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Fail-safe defense-in-depth: If running under Wayland, ensure CSD titlebar is always rendered
+        std::env::var_os("WAYLAND_DISPLAY")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+            || std::env::var("XDG_SESSION_TYPE")
+                .map(|v| v.eq_ignore_ascii_case("wayland"))
+                .unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
 }
 
 /// Renders the polished CSD titlebar with centered document breadcrumb and micro-control buttons
