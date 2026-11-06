@@ -287,100 +287,316 @@ pub fn render_log_viewport(
                 .child(scrollbar_track)
                 .into_any_element()
         } else {
-            // Modern Onboarding Empty State Card
+            // Modern Dual-Pillar Onboarding Layout (Local File vs Live Android ADB)
+            let selected_dev_info = workspace.get_selected_device_info();
+            let has_devices = !workspace.adb_device_details.is_empty();
+            let is_scanning = workspace.is_scanning_adb;
+
             div()
                 .flex_1()
                 .h_full()
                 .flex()
+                .flex_col()
                 .items_center()
                 .justify_center()
+                .p(px(24.0))
                 .child(
                     div()
-                        .w(px(460.0))
-                        .p(px(28.0))
-                        .rounded_xl()
-                        .bg(theme.bg_panel)
-                        .border_1()
-                        .border_color(theme.border)
+                        .w(px(740.0))
                         .flex()
                         .flex_col()
                         .items_center()
-                        .gap_4()
-                        .child(
-                            div()
-                                .text_size(px(18.0))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(theme.text_primary)
-                                .child("LogAnalysis Studio"),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(theme.text_muted)
-                                .child(
-                                    "Drop any log or filter JSON file here, or start a live ADB logcat stream.",
-                                ),
-                        )
+                        .gap_6()
+                        // Title Header
                         .child(
                             div()
                                 .flex()
+                                .flex_col()
                                 .items_center()
-                                .gap_3()
-                                .pt(px(4.0))
+                                .gap_1()
                                 .child(
                                     div()
-                                        .id("btn-empty-state-open")
-                                        .px(px(16.0))
-                                        .py(px(8.0))
-                                        .rounded_md()
-                                        .bg(theme.accent)
-                                        .text_color(rgb(0xffffff))
-                                        .text_size(px(12.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.prompt_open_file(Some(window), cx);
-                                        }))
-                                        .child("📂 Open Log File (Ctrl+O)"),
+                                        .text_size(px(22.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme.text_primary)
+                                        .child("LogAnalysis Studio"),
                                 )
                                 .child(
                                     div()
-                                        .id("btn-empty-state-adb")
-                                        .px(px(16.0))
-                                        .py(px(8.0))
-                                        .rounded_md()
-                                        .bg(theme.bg_card)
+                                        .text_size(px(12.5))
+                                        .text_color(theme.text_muted)
+                                        .child("GPU-Accelerated High-Performance Exploration for Android & System Logs"),
+                                ),
+                        )
+                        // Dual-Pillar Ingestion Grid
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .gap_4()
+                                // Left Pillar: Local File Ingestion
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .p(px(22.0))
+                                        .rounded_xl()
+                                        .bg(theme.bg_panel)
                                         .border_1()
                                         .border_color(theme.border)
-                                        .hover(move |s| s.bg(theme.btn_hover))
-                                        .text_size(px(12.0))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, _window, cx| {
-                                            this.start_adb_stream(cx);
-                                        }))
-                                        .child("⚡ Start ADB Stream"),
+                                        .flex()
+                                        .flex_col()
+                                        .justify_between()
+                                        .gap_4()
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap_2()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(15.0))
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .text_color(theme.text_primary)
+                                                        .child("📂 Local Log File"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(11.5))
+                                                        .text_color(theme.text_muted)
+                                                        .child("Drop any .log, .txt, or filter profile .json file directly into this window."),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .mt(px(4.0))
+                                                        .p(px(12.0))
+                                                        .rounded_md()
+                                                        .border_1()
+                                                        .border_dashed()
+                                                        .border_color(theme.border_subtle)
+                                                        .bg(theme.bg_card)
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .text_size(px(11.0))
+                                                        .text_color(theme.text_muted)
+                                                        .child("Drop file here to open instantly"),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("btn-empty-state-open")
+                                                .w_full()
+                                                .py(px(8.0))
+                                                .rounded_md()
+                                                .bg(theme.accent)
+                                                .hover(move |s| s.bg(theme.btn_hover))
+                                                .text_color(rgb(0xffffff))
+                                                .text_size(px(12.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.prompt_open_file(Some(window), cx);
+                                                }))
+                                                .child("📂 Open File (Ctrl+O)"),
+                                        ),
+                                )
+                                // Right Pillar: Live Android ADB Stream
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .p(px(22.0))
+                                        .rounded_xl()
+                                        .bg(theme.bg_panel)
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .flex()
+                                        .flex_col()
+                                        .justify_between()
+                                        .gap_4()
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap_2()
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_between()
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(15.0))
+                                                                .font_weight(FontWeight::SEMIBOLD)
+                                                                .text_color(theme.text_primary)
+                                                                .child("📱 Live Android ADB"),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .id("btn-welcome-rescan-adb")
+                                                                .px(px(6.0))
+                                                                .py(px(2.0))
+                                                                .rounded_sm()
+                                                                .bg(theme.bg_card)
+                                                                .hover(move |s| s.bg(theme.btn_hover))
+                                                                .text_size(px(10.0))
+                                                                .text_color(theme.accent)
+                                                                .cursor_pointer()
+                                                                .on_click(cx.listener(|this, _, _window, cx| {
+                                                                    this.refresh_adb_devices(cx);
+                                                                }))
+                                                                .child("🔄 Rescan"),
+                                                        ),
+                                                )
+                                                .child(
+                                                    if is_scanning {
+                                                        div()
+                                                            .p(px(10.0))
+                                                            .rounded_md()
+                                                            .bg(theme.bg_card)
+                                                            .text_size(px(11.0))
+                                                            .text_color(theme.text_muted)
+                                                            .child("Scanning for connected devices...")
+                                                    } else if has_devices {
+                                                        let dev_info = selected_dev_info;
+                                                        let dev_name = dev_info.map(|d| d.short_name()).unwrap_or_else(|| "Connected Device".to_string());
+                                                        let dev_serial = dev_info.map(|d| d.serial.clone()).unwrap_or_default();
+                                                        let is_ready = dev_info.map(|d| d.is_ready()).unwrap_or(false);
+
+                                                        div()
+                                                            .p(px(10.0))
+                                                            .rounded_md()
+                                                            .bg(theme.bg_card)
+                                                            .border_1()
+                                                            .border_color(theme.border_subtle)
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap_1p5()
+                                                            .child(
+                                                                div()
+                                                                    .flex()
+                                                                    .items_center()
+                                                                    .justify_between()
+                                                                    .child(
+                                                                        div()
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .gap_2()
+                                                                            .child(
+                                                                                div()
+                                                                                    .w(px(7.0))
+                                                                                    .h(px(7.0))
+                                                                                    .rounded_full()
+                                                                                    .bg(if is_ready { theme.success_green } else { theme.warning_amber }),
+                                                                            )
+                                                                            .child(
+                                                                                div()
+                                                                                    .text_size(px(12.0))
+                                                                                    .font_weight(FontWeight::BOLD)
+                                                                                    .text_color(theme.text_primary)
+                                                                                    .child(dev_name),
+                                                                            ),
+                                                                    )
+                                                                    .child(
+                                                                        div()
+                                                                            .text_size(px(10.0))
+                                                                            .text_color(if is_ready { theme.success_green } else { theme.warning_amber })
+                                                                            .child(if is_ready { "Ready" } else { "Unauthorized" }),
+                                                                    ),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(10.0))
+                                                                    .font_family("monospace")
+                                                                    .text_color(theme.text_muted)
+                                                                    .child(format!("Serial: {} • {} found", dev_serial, workspace.adb_device_details.len())),
+                                                            )
+                                                    } else {
+                                                        div()
+                                                            .p(px(10.0))
+                                                            .rounded_md()
+                                                            .bg(theme.bg_card)
+                                                            .border_1()
+                                                            .border_color(theme.border_subtle)
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap_1()
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(11.5))
+                                                                    .font_weight(FontWeight::MEDIUM)
+                                                                    .text_color(theme.warning_amber)
+                                                                    .child("No Android devices detected"),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(10.0))
+                                                                    .text_color(theme.text_muted)
+                                                                    .child("Enable USB Debugging in Developer Options & connect USB"),
+                                                            )
+                                                    },
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("btn-empty-state-adb")
+                                                .w_full()
+                                                .py(px(8.0))
+                                                .rounded_md()
+                                                .bg(if has_devices { theme.success_green } else { theme.bg_card })
+                                                .hover(move |s| {
+                                                    if has_devices {
+                                                        s.bg(rgb(0x16a34a))
+                                                    } else {
+                                                        s.bg(theme.btn_hover)
+                                                    }
+                                                })
+                                                .text_color(if has_devices { rgb(0xffffff) } else { theme.text_muted })
+                                                .text_size(px(12.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .on_click(cx.listener(|this, _, _window, cx| {
+                                                    if !this.adb_device_details.is_empty() {
+                                                        this.start_adb_stream(cx);
+                                                    } else {
+                                                        this.refresh_adb_devices(cx);
+                                                    }
+                                                }))
+                                                .child(
+                                                    if is_scanning {
+                                                        "📱 Scanning ADB...".to_string()
+                                                    } else if let Some(info) = selected_dev_info {
+                                                        format!("⚡ Stream from {}", info.short_name())
+                                                    } else if has_devices {
+                                                        "⚡ Start Live ADB Stream".to_string()
+                                                    } else {
+                                                        "🔄 Scan for Devices".to_string()
+                                                    },
+                                                ),
+                                        ),
                                 ),
                         )
                         // Shortcut Cheat Sheet
                         .child(
                             div()
                                 .w_full()
-                                .mt(px(8.0))
                                 .pt(px(12.0))
                                 .border_t_1()
                                 .border_color(theme.border_subtle)
                                 .flex()
                                 .flex_col()
+                                .items_center()
                                 .gap_1p5()
                                 .text_size(px(11.0))
                                 .font_family("monospace")
                                 .text_color(theme.text_muted)
-                                .child("Ctrl+F       Search in logs (F3 / Shift+F3)")
-                                .child("Ctrl+Shift+F Add new highlight/exclude rule")
-                                .child("Ctrl+H       Toggle Filtered Only view")
-                                .child("Ctrl+Shift+L Toggle Filter Panel (Left / Bottom)")
-                                .child("Ctrl+T / D   New / Delete filter tab"),
+                                .child("Ctrl+F: Search  •  Ctrl+Shift+F: Add Filter  •  Ctrl+H: Filtered Only  •  Ctrl+Space: Pause Stream"),
                         ),
                 )
                 .into_any_element()

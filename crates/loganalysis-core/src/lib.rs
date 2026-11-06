@@ -6,8 +6,8 @@ pub mod filter;
 pub mod search;
 
 pub use adb::{
-    is_valid_device_serial, resolve_adb_path, scan_adb_devices, start_logcat_stream,
-    stream_log_lines, LogcatStreamHandle,
+    is_valid_device_serial, parse_adb_devices_output, resolve_adb_path, scan_adb_device_details,
+    scan_adb_devices, start_logcat_stream, stream_log_lines, AdbDeviceInfo, LogcatStreamHandle,
 };
 pub use buffer::{
     file_buffer::FileLogBuffer, stream_buffer::StreamLogBuffer, ActiveLogSource, LogSource,

@@ -1102,3 +1102,50 @@ fn test_resolve_adb_path_home_auto_detection() {
         std::env::set_var("ANDROID_SDK_ROOT", s);
     }
 }
+
+#[test]
+fn test_parse_adb_devices_output_rich_metadata() {
+    let output = "\
+List of devices attached
+* daemon not running; starting now at tcp:5037
+* daemon started successfully
+44190DLJH0010R         device usb:1-2.1 product:shiba model:Pixel_8 device:shiba transport_id:1
+emulator-5554          device product:sdk_gphone64_x86_64 model:sdk_gphone64_x86_64 device:emu64x transport_id:2
+192.168.1.50:5555      device product:bramble model:Pixel_4a_5G device:bramble transport_id:3
+UNAUTH123456          unauthorized usb:1-1 transport_id:4
+OFFLINE99999          offline transport_id:5
+";
+
+    let devices = parse_adb_devices_output(output);
+    assert_eq!(devices.len(), 5);
+
+    // Pixel 8
+    assert_eq!(devices[0].serial, "44190DLJH0010R");
+    assert_eq!(devices[0].state, "device");
+    assert_eq!(devices[0].model.as_deref(), Some("Pixel_8"));
+    assert_eq!(devices[0].short_name(), "Pixel 8");
+    assert_eq!(devices[0].display_name(), "Pixel 8 (44190DLJH0010R)");
+    assert!(devices[0].is_ready());
+
+    // Emulator
+    assert_eq!(devices[1].serial, "emulator-5554");
+    assert_eq!(devices[1].short_name(), "sdk gphone64 x86 64");
+    assert!(devices[1].is_ready());
+
+    // WiFi device
+    assert_eq!(devices[2].serial, "192.168.1.50:5555");
+    assert_eq!(devices[2].short_name(), "Pixel 4a 5G");
+    assert!(devices[2].is_ready());
+
+    // Unauthorized
+    assert_eq!(devices[3].serial, "UNAUTH123456");
+    assert_eq!(devices[3].state, "unauthorized");
+    assert_eq!(devices[3].display_name(), "UNAUTH123456 [unauthorized]");
+    assert!(!devices[3].is_ready());
+
+    // Offline
+    assert_eq!(devices[4].serial, "OFFLINE99999");
+    assert_eq!(devices[4].state, "offline");
+    assert_eq!(devices[4].display_name(), "OFFLINE99999 [offline]");
+    assert!(!devices[4].is_ready());
+}

@@ -473,28 +473,75 @@ pub fn render_toolbar(
                 } else {
                     None
                 })
-                // ADB Device Selector / Scan Button
+                // ADB Device Selector with Floating Dropdown Menu
                 .child(
                     div()
-                        .id("btn-toolbar-adb-devices")
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .rounded_md()
-                        .bg(theme.bg_panel)
-                        .border_1()
-                        .border_color(theme.border_subtle)
-                        .hover(move |s| s.bg(theme.btn_hover))
-                        .text_size(px(11.0))
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            this.refresh_adb_devices(cx);
-                        }))
-                        .child(if let Some(dev) = &workspace.selected_device {
-                            format!("📱 {}", dev)
-                        } else if !workspace.adb_devices.is_empty() {
-                            format!("📱 ({} found)", workspace.adb_devices.len())
+                        .relative()
+                        .child(
+                            div()
+                                .id("btn-toolbar-adb-devices")
+                                .px(px(8.0))
+                                .py(px(4.0))
+                                .rounded_md()
+                                .bg(if workspace.is_device_selector_open {
+                                    theme.btn_hover
+                                } else {
+                                    theme.bg_panel
+                                })
+                                .border_1()
+                                .border_color(if workspace.is_device_selector_open {
+                                    theme.accent
+                                } else {
+                                    theme.border_subtle
+                                })
+                                .hover(move |s| s.bg(theme.btn_hover))
+                                .text_size(px(11.0))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.toggle_device_selector(cx);
+                                }))
+                                .child(
+                                    div()
+                                        .w(px(6.5))
+                                        .h(px(6.5))
+                                        .rounded_full()
+                                        .bg(
+                                            if let Some(info) = workspace.get_selected_device_info() {
+                                                if info.is_ready() {
+                                                    theme.success_green
+                                                } else {
+                                                    theme.warning_amber
+                                                }
+                                            } else if !workspace.adb_devices.is_empty() {
+                                                theme.success_green
+                                            } else {
+                                                theme.text_muted
+                                            },
+                                        ),
+                                )
+                                .child(
+                                    div().child(
+                                        if workspace.is_scanning_adb {
+                                            "📱 Scanning...".to_string()
+                                        } else if let Some(info) = workspace.get_selected_device_info() {
+                                            format!("📱 {} ▾", info.short_name())
+                                        } else if let Some(dev) = &workspace.selected_device {
+                                            format!("📱 {} ▾", dev)
+                                        } else if !workspace.adb_devices.is_empty() {
+                                            format!("📱 ({} found) ▾", workspace.adb_devices.len())
+                                        } else {
+                                            "📱 No Device ▾".to_string()
+                                        },
+                                    ),
+                                ),
+                        )
+                        .children(if workspace.is_device_selector_open {
+                            Some(render_device_dropdown(workspace, cx))
                         } else {
-                            "📱 Scan ADB".to_string()
+                            None
                         }),
                 )
                 // Start / Stop ADB Stream Pill
@@ -534,4 +581,180 @@ pub fn render_toolbar(
                         }),
                 ),
         )
+}
+
+/// Renders the floating ADB device selector popover menu
+fn render_device_dropdown(
+    workspace: &LogAnalysisWorkspace,
+    cx: &mut Context<LogAnalysisWorkspace>,
+) -> impl IntoElement {
+    let theme = workspace.theme;
+    let selected_serial = workspace.selected_device.clone();
+
+    div()
+        .id("dropdown-adb-devices")
+        .absolute()
+        .top(px(30.0))
+        .right(px(0.0))
+        .w(px(290.0))
+        .bg(theme.bg_panel)
+        .border_1()
+        .border_color(theme.border)
+        .rounded_lg()
+        .shadow_lg()
+        .p(px(6.0))
+        .flex()
+        .flex_col()
+        .gap_1()
+        // Header
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .px(px(6.0))
+                .py(px(4.0))
+                .border_b_1()
+                .border_color(theme.border_subtle)
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.text_muted)
+                        .child(format!(
+                            "CONNECTED DEVICES ({})",
+                            workspace.adb_device_details.len()
+                        )),
+                )
+                .child(
+                    div()
+                        .id("btn-dropdown-rescan")
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .rounded_sm()
+                        .bg(theme.bg_card)
+                        .hover(move |s| s.bg(theme.btn_hover))
+                        .text_size(px(10.0))
+                        .text_color(theme.accent)
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            this.refresh_adb_devices(cx);
+                        }))
+                        .child("🔄 Rescan"),
+                ),
+        )
+        // Device Items List
+        .children(if workspace.adb_device_details.is_empty() {
+            vec![
+                div()
+                    .px(px(8.0))
+                    .py(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_1()
+                    .text_size(px(11.0))
+                    .text_color(theme.text_muted)
+                    .child(if workspace.is_scanning_adb {
+                        "Scanning for devices..."
+                    } else {
+                        "No Android devices detected"
+                    })
+                    .child(
+                        div()
+                            .text_size(px(9.5))
+                            .text_color(theme.text_muted)
+                            .child("Check USB cable & Developer Options"),
+                    )
+                    .into_any_element(),
+            ]
+        } else {
+            workspace
+                .adb_device_details
+                .iter()
+                .map(|dev| {
+                    let serial = dev.serial.clone();
+                    let is_selected = selected_serial.as_ref() == Some(&serial);
+                    let is_ready = dev.is_ready();
+
+                    div()
+                        .id(ElementId::Name(format!("device-item-{}", serial).into()))
+                        .px(px(8.0))
+                        .py(px(6.0))
+                        .rounded_md()
+                        .bg(if is_selected {
+                            theme.bg_card
+                        } else {
+                            theme.bg_panel
+                        })
+                        .border_1()
+                        .border_color(if is_selected {
+                            theme.border
+                        } else {
+                            rgba(0x00000000)
+                        })
+                        .hover(move |s| s.bg(theme.btn_hover))
+                        .cursor_pointer()
+                        .on_click(cx.listener({
+                            let s = serial.clone();
+                            move |this, _, _window, cx| {
+                                this.select_adb_device(s.clone(), cx);
+                            }
+                        }))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .w(px(6.5))
+                                        .h(px(6.5))
+                                        .rounded_full()
+                                        .bg(if is_ready {
+                                            theme.success_green
+                                        } else {
+                                            theme.warning_amber
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .child(
+                                            div()
+                                                .text_size(px(11.5))
+                                                .font_weight(if is_selected {
+                                                    FontWeight::BOLD
+                                                } else {
+                                                    FontWeight::MEDIUM
+                                                })
+                                                .text_color(theme.text_primary)
+                                                .child(dev.short_name()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(9.5))
+                                                .font_family("monospace")
+                                                .text_color(theme.text_muted)
+                                                .child(format!("{} • {}", dev.serial, dev.state)),
+                                        ),
+                                ),
+                        )
+                        .child(if is_selected {
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(theme.accent)
+                                .font_weight(FontWeight::BOLD)
+                                .child("✓")
+                        } else {
+                            div()
+                        })
+                        .into_any_element()
+                })
+                .collect()
+        })
 }

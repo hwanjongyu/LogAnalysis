@@ -42,7 +42,10 @@ pub struct LogAnalysisWorkspace {
 
     // ADB state
     pub(crate) adb_devices: Vec<String>,
+    pub(crate) adb_device_details: Vec<loganalysis_core::AdbDeviceInfo>,
     pub(crate) selected_device: Option<String>,
+    pub(crate) is_device_selector_open: bool,
+    pub(crate) is_scanning_adb: bool,
     pub(crate) adb_stream_handle: Option<LogcatStreamHandle>,
     pub(crate) is_streaming: bool,
     pub(crate) is_stream_paused: bool,
@@ -179,7 +182,10 @@ impl LogAnalysisWorkspace {
             search_match_status: None,
 
             adb_devices: Vec::new(),
+            adb_device_details: Vec::new(),
             selected_device: None,
+            is_device_selector_open: false,
+            is_scanning_adb: false,
             adb_stream_handle: None,
             is_streaming: false,
             is_stream_paused: false,
@@ -384,8 +390,33 @@ impl LogAnalysisWorkspace {
         self.reapply_filters(cx);
     }
 
-    /// Scans for connected ADB devices asynchronously
+    /// Returns the active selected device info, if available
+    pub fn get_selected_device_info(&self) -> Option<&loganalysis_core::AdbDeviceInfo> {
+        let serial = self.selected_device.as_ref()?;
+        self.adb_device_details.iter().find(|d| &d.serial == serial)
+    }
+
+    /// Selects an ADB device by serial and updates state
+    pub fn select_adb_device(&mut self, serial: String, cx: &mut Context<Self>) {
+        self.selected_device = Some(serial.clone());
+        self.is_device_selector_open = false;
+        if let Some(dev) = self.adb_device_details.iter().find(|d| d.serial == serial) {
+            self.status_text = format!("Selected ADB device: {}", dev.display_name()).into();
+        } else {
+            self.status_text = format!("Selected ADB device: {}", serial).into();
+        }
+        cx.notify();
+    }
+
+    /// Toggles the floating device selector dropdown
+    pub fn toggle_device_selector(&mut self, cx: &mut Context<Self>) {
+        self.is_device_selector_open = !self.is_device_selector_open;
+        cx.notify();
+    }
+
+    /// Scans for connected ADB devices asynchronously with rich metadata
     pub fn refresh_adb_devices(&mut self, cx: &mut Context<Self>) {
+        self.is_scanning_adb = true;
         self.status_text = "Scanning ADB devices...".into();
         cx.notify();
 
@@ -395,16 +426,47 @@ impl LogAnalysisWorkspace {
 
             async move {
                 let res = bg_executor
-                    .spawn(async move { scan_adb_devices(Duration::from_secs(2)) })
+                    .spawn(async move { loganalysis_core::scan_adb_device_details(Duration::from_secs(2)) })
                     .await;
 
                 let _ = this.update(&mut async_cx, |workspace, cx| {
+                    workspace.is_scanning_adb = false;
                     match res {
                         Ok(devices) => {
-                            workspace.selected_device = devices.first().cloned();
-                            workspace.adb_devices = devices;
-                            workspace.status_text =
-                                format!("Found {} ADB devices", workspace.adb_devices.len()).into();
+                            let ready_devices: Vec<String> = devices
+                                .iter()
+                                .filter(|d| d.is_ready())
+                                .map(|d| d.serial.clone())
+                                .collect();
+
+                            // Preserve existing selection if still available and ready
+                            if let Some(curr) = &workspace.selected_device {
+                                if !ready_devices.contains(curr) {
+                                    workspace.selected_device = ready_devices.first().cloned();
+                                }
+                            } else {
+                                workspace.selected_device = ready_devices.first().cloned();
+                            }
+
+                            workspace.adb_devices = ready_devices;
+                            workspace.adb_device_details = devices;
+
+                            if let Some(info) = workspace.get_selected_device_info() {
+                                workspace.status_text = format!(
+                                    "ADB connected: {} ({} found)",
+                                    info.short_name(),
+                                    workspace.adb_device_details.len()
+                                )
+                                .into();
+                            } else if !workspace.adb_device_details.is_empty() {
+                                workspace.status_text = format!(
+                                    "Found {} ADB devices (none authorized)",
+                                    workspace.adb_device_details.len()
+                                )
+                                .into();
+                            } else {
+                                workspace.status_text = "No ADB devices connected".into();
+                            }
                         }
                         Err(e) => {
                             workspace.status_text = format!("ADB scan error: {}", e).into();
@@ -423,10 +485,28 @@ impl LogAnalysisWorkspace {
             return;
         }
 
+        // Close device selector dropdown if open
+        self.is_device_selector_open = false;
+
+        // Auto-select first available ready device if none selected
+        if self.selected_device.is_none() {
+            if let Some(first) = self.adb_devices.first() {
+                self.selected_device = Some(first.clone());
+            }
+        }
+
+        let serial = self.selected_device.as_deref();
+        let target_display = if let Some(info) = self.get_selected_device_info() {
+            info.display_name()
+        } else if let Some(s) = serial {
+            s.to_string()
+        } else {
+            "Default Device".to_string()
+        };
+
         // Bounded ingestion channel (256 chunks) prevents unbounded memory blowup on bursts
         let (tx, rx) = bounded(256);
         let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let serial = self.selected_device.as_deref();
 
         match start_logcat_stream(serial, tx, stop_flag.clone()) {
             Ok(handle) => {
@@ -435,7 +515,7 @@ impl LogAnalysisWorkspace {
 
                 let stream_buf = StreamLogBuffer::default();
                 self.log_source = Some(Arc::new(ActiveLogSource::Stream(stream_buf)));
-                self.status_text = "Streaming adb logcat...".into();
+                self.status_text = format!("Streaming live ADB: {}", target_display).into();
 
                 // Non-blocking async loop with batching, throttling & bounded buffers to avoid starving GPUI executor
                 cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {

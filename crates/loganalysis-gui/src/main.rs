@@ -61,6 +61,11 @@ impl Render for LogAnalysisWorkspace {
             .id("workspace-container")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                if event.keystroke.key == "escape" && this.is_device_selector_open {
+                    this.is_device_selector_open = false;
+                    cx.notify();
+                    return;
+                }
                 this.handle_key_down(event, cx);
             }))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {

@@ -48,9 +48,10 @@ pub fn render_titlebar(
     // Determine center status badge content
     let (center_icon, center_label, is_live) = if workspace.is_streaming {
         let dev_name = workspace
-            .selected_device
-            .as_deref()
-            .unwrap_or("Android Device");
+            .get_selected_device_info()
+            .map(|i| i.short_name())
+            .or_else(|| workspace.selected_device.clone())
+            .unwrap_or_else(|| "Android Device".to_string());
         let status = if workspace.is_stream_paused {
             "Paused"
         } else {
