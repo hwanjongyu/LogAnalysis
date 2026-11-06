@@ -1,4 +1,5 @@
 #![recursion_limit = "512"]
+#![windows_subsystem = "windows"]
 
 mod actions;
 mod cli;
@@ -11,12 +12,14 @@ mod theme;
 mod types;
 mod workspace;
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use actions::*;
 use cli::handle_cli_version_flag;
 use components::filter_dock::render_filter_dock;
 use components::log_view::render_log_viewport;
+use components::resize_border::render_window_resize_borders;
 use components::status_bar::render_status_bar;
 use components::titlebar::render_titlebar;
 use components::toolbar::render_toolbar;
@@ -37,6 +40,8 @@ impl Render for LogAnalysisWorkspace {
 
         let theme = self.theme;
         let is_bottom_dock = self.filter_panel_position == FilterPanelPosition::Bottom;
+        let is_csd = components::titlebar::should_render_csd(window);
+        let is_floating = !window.is_maximized();
 
         let titlebar_el = render_titlebar(self, window, cx);
         let toolbar_el = render_toolbar(self, cx);
@@ -44,6 +49,7 @@ impl Render for LogAnalysisWorkspace {
         let log_viewport_el = render_log_viewport(self, cx);
         let status_bar_el = render_status_bar(self, cx);
         let modal_el = render_filter_edit_modal(self, cx);
+        let resize_borders = render_window_resize_borders(window, cx);
 
         let mut body = div()
             .flex_1()
@@ -166,16 +172,19 @@ impl Render for LogAnalysisWorkspace {
             .on_action(cx.listener(|this, _: &ToggleFilterPanelPosition, _window, cx| {
                 this.toggle_filter_panel_position(cx);
             }))
+            .relative()
             .flex()
             .flex_col()
             .size_full()
             .bg(theme.bg_dark)
             .text_color(theme.text_primary)
+            .when(is_csd && is_floating, |s| s.border_1().border_color(theme.border))
             .child(titlebar_el)
             .child(toolbar_el)
             .child(body)
             .child(status_bar_el)
             .children(modal_el)
+            .children(resize_borders)
     }
 }
 
