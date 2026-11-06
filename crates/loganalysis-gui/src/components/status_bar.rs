@@ -29,6 +29,7 @@ pub fn render_status_bar(
         .as_ref()
         .map(|h| (h.total_errors, h.total_warnings))
         .unwrap_or((0, 0));
+    let selected_dt = workspace.get_selected_delta_time();
     let font_size = workspace.font_size;
     let font_size_f32: f32 = font_size.into();
     let selected_real_line = workspace.selection.anchor_source_idx;
@@ -143,6 +144,35 @@ pub fn render_status_bar(
                     format!("Line: {}", line_idx + 1)
                 } else {
                     "Line: -".to_string()
+                })
+                .when(selected_dt.is_some(), |parent| {
+                    let (dt_str, latency, _) = selected_dt.as_ref().unwrap();
+                    let (badge_bg, badge_fg, icon) = match latency {
+                        loganalysis_core::LatencyLevel::Normal => {
+                            (theme.bg_card, theme.text_muted, "⏱️")
+                        }
+                        loganalysis_core::LatencyLevel::Warning => {
+                            (rgba(0xf59e0b25), rgb(0xf59e0b), "▲")
+                        }
+                        loganalysis_core::LatencyLevel::Critical => {
+                            (rgba(0xef444425), rgb(0xef4444), "⚠️")
+                        }
+                    };
+                    parent.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded_xs()
+                            .bg(badge_bg)
+                            .border_1()
+                            .border_color(theme.border)
+                            .text_color(badge_fg)
+                            .child(icon)
+                            .child(format!("Δt: {dt_str}")),
+                    )
                 })
                 // Interactive Zoom Controls
                 .child(

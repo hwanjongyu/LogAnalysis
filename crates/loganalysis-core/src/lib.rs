@@ -10,7 +10,9 @@ pub use adb::{
     scan_adb_devices, start_logcat_stream, stream_log_lines, AdbDeviceInfo, LogcatStreamHandle,
 };
 pub use buffer::{
-    file_buffer::FileLogBuffer, stream_buffer::StreamLogBuffer, ActiveLogSource, LogSource,
+    file_buffer::FileLogBuffer, stream_buffer::StreamLogBuffer, timestamp::compute_delta_micros,
+    timestamp::extract_timestamp, timestamp::format_delta_micros, timestamp::LatencyLevel,
+    timestamp::LogTimestamp, ActiveLogSource, LogSource,
 };
 pub use constants::{
     parse_color_spec, ASYNC_SEARCH_THRESHOLD, COLOR_MAP, MAX_MONITOR_LINES, MONITOR_TRIM_BATCH,

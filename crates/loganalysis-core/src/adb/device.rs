@@ -108,6 +108,7 @@ pub fn parse_adb_devices_output(stdout: &str) -> Vec<AdbDeviceInfo> {
 
 /// Scans connected ADB devices via `adb devices -l` with an enforced timeout and RAII subprocess cleanup.
 pub fn scan_adb_device_details(timeout: Duration) -> Result<Vec<AdbDeviceInfo>, AdbError> {
+    let start_time = std::time::Instant::now();
     let adb_path = super::resolve_adb_path();
     let mut cmd = Command::new(adb_path);
     cmd.args(["devices", "-l"]);
@@ -115,6 +116,16 @@ pub fn scan_adb_device_details(timeout: Duration) -> Result<Vec<AdbDeviceInfo>, 
     cmd.stderr(Stdio::null());
 
     let mut child = cmd.spawn().map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
+
+    // If timeout already elapsed during spawn
+    let elapsed = start_time.elapsed();
+    if elapsed >= timeout {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(AdbError::Timeout(timeout));
+    }
+    let remaining = timeout - elapsed;
+
     let mut stdout_pipe = child.stdout.take().ok_or(AdbError::IoCaptureFailed)?;
     let child_arc = Arc::new(Mutex::new(Some(child)));
     let child_clone = Arc::clone(&child_arc);
@@ -165,8 +176,13 @@ pub fn scan_adb_device_details(timeout: Duration) -> Result<Vec<AdbDeviceInfo>, 
         }
     });
 
-    let (status, stdout) = match rx.recv_timeout(timeout) {
-        Ok(res) => res?,
+    let (status, stdout) = match rx.recv_timeout(remaining) {
+        Ok(res) => {
+            if start_time.elapsed() > timeout {
+                return Err(AdbError::Timeout(timeout));
+            }
+            res?
+        }
         Err(_) => {
             // Reap child process on timeout without deadlock risk
             let mut lock = match child_arc.lock() {

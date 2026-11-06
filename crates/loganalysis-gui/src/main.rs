@@ -425,4 +425,25 @@ mod tests {
         );
         std::env::remove_var("LOGANALYSIS_DISABLE_CSD");
     }
+
+    #[test]
+    fn test_delta_time_integration_and_formatting() {
+        use loganalysis_core::*;
+
+        let line1 = b"11-06 18:32:00.000 1 1 I Tag: Step 1";
+        let line2 = b"11-06 18:32:00.045 1 1 I Tag: Step 2"; // +45ms
+        let line3 = b"11-06 18:32:01.200 1 1 I Tag: Step 3"; // +1.155s
+
+        let t1 = extract_timestamp(line1).unwrap();
+        let t2 = extract_timestamp(line2).unwrap();
+        let t3 = extract_timestamp(line3).unwrap();
+
+        let dt1 = compute_delta_micros(t1, t2);
+        assert_eq!(format_delta_micros(dt1), "+45.0ms");
+        assert_eq!(LatencyLevel::from_micros(dt1), LatencyLevel::Normal);
+
+        let dt2 = compute_delta_micros(t2, t3);
+        assert_eq!(format_delta_micros(dt2), "+1.16s");
+        assert_eq!(LatencyLevel::from_micros(dt2), LatencyLevel::Critical);
+    }
 }

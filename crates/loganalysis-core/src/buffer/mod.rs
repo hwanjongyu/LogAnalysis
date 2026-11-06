@@ -1,11 +1,15 @@
 pub mod file_buffer;
 pub mod stream_buffer;
+pub mod timestamp;
 
 use std::borrow::Cow;
 use std::sync::Arc;
 
 pub use file_buffer::FileLogBuffer;
 pub use stream_buffer::StreamLogBuffer;
+pub use timestamp::{
+    compute_delta_micros, extract_timestamp, format_delta_micros, LatencyLevel, LogTimestamp,
+};
 
 /// Unified log source enum representing either a file-backed mmap buffer or a streaming ring buffer.
 pub enum ActiveLogSource {

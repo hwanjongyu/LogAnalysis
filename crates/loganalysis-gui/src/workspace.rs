@@ -1402,6 +1402,34 @@ impl LogAnalysisWorkspace {
         cx.notify();
     }
 
+    /// Computes the delta time (Δt) between the selected visible row and its nearest preceding timestamped line.
+    pub fn get_selected_delta_time(&self) -> Option<(String, loganalysis_core::LatencyLevel, i64)> {
+        let selected_row = self.selection.selected_row?;
+        let filter_res = self.filter_result.as_ref()?;
+        let source = self.log_source.as_ref()?;
+
+        let curr_src_idx = *filter_res.visible_indices.get(selected_row)?;
+        let curr_raw = source.get_raw_line(curr_src_idx)?;
+        let t_curr = loganalysis_core::extract_timestamp(curr_raw)?;
+
+        for back_step in 1..=10 {
+            if selected_row < back_step {
+                break;
+            }
+            let prev_src_idx = *filter_res.visible_indices.get(selected_row - back_step)?;
+            if let Some(prev_raw) = source.get_raw_line(prev_src_idx) {
+                if let Some(t_prev) = loganalysis_core::extract_timestamp(prev_raw) {
+                    let diff = loganalysis_core::compute_delta_micros(t_prev, t_curr);
+                    let formatted = loganalysis_core::format_delta_micros(diff);
+                    let latency = loganalysis_core::LatencyLevel::from_micros(diff);
+                    return Some((formatted, latency, diff));
+                }
+            }
+        }
+
+        None
+    }
+
     /// Scrolls the log viewport based on mouse vertical position in the scrollbar track
     pub fn scroll_to_ratio_from_mouse_y(&mut self, mouse_y: Pixels, cx: &mut Context<Self>) {
         let row_count = self
