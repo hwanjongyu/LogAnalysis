@@ -27,4 +27,6 @@ pub use filter::{
     FilterRule, FilterTabData, HeatmapBucket, HeatmapData, LineSeverity, MultiFilterMatcher,
     PreparedFilter, ResolvedStyle,
 };
-pub use search::{search_in_log, SearchQuery, SearchResult};
+pub use search::{
+    fuzzy_match, fuzzy_match_detailed, search_in_log, FuzzyMatchResult, SearchQuery, SearchResult,
+};

@@ -13,6 +13,7 @@ pub enum InputFocusTarget {
     None,
     SearchBar,
     ModalPattern,
+    CommandPalette,
 }
 
 /// Transient state for the Filter Add/Edit Modal Dialog.

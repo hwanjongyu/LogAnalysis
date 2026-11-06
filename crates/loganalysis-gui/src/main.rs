@@ -23,6 +23,7 @@ use components::resize_border::render_window_resize_borders;
 use components::status_bar::render_status_bar;
 use components::titlebar::render_titlebar;
 use components::toolbar::render_toolbar;
+use modals::command_palette::render_command_palette;
 use modals::filter_edit_modal::render_filter_edit_modal;
 use types::{FilterPanelPosition, InputFocusTarget};
 pub use workspace::LogAnalysisWorkspace;
@@ -49,6 +50,7 @@ impl Render for LogAnalysisWorkspace {
         let log_viewport_el = render_log_viewport(self, cx);
         let status_bar_el = render_status_bar(self, cx);
         let modal_el = render_filter_edit_modal(self, cx);
+        let palette_el = render_command_palette(self, cx);
         let resize_borders = render_window_resize_borders(window, cx);
 
         let mut body = div()
@@ -172,6 +174,12 @@ impl Render for LogAnalysisWorkspace {
             .on_action(cx.listener(|this, _: &ToggleFilterPanelPosition, _window, cx| {
                 this.toggle_filter_panel_position(cx);
             }))
+            .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
+                this.toggle_command_palette(cx);
+                if this.is_command_palette_open {
+                    window.focus(&this.palette_input.read(cx).focus_handle);
+                }
+            }))
             .relative()
             .flex()
             .flex_col()
@@ -184,6 +192,7 @@ impl Render for LogAnalysisWorkspace {
             .child(body)
             .child(status_bar_el)
             .children(modal_el)
+            .children(palette_el)
             .children(resize_borders)
     }
 }
@@ -323,6 +332,10 @@ fn main() {
             KeyBinding::new("ctrl-d", DeleteFilterTab, None),
             KeyBinding::new("ctrl-r", RenameFilterTab, None),
             KeyBinding::new("ctrl-shift-l", ToggleFilterPanelPosition, None),
+            KeyBinding::new("ctrl-p", ToggleCommandPalette, None),
+            KeyBinding::new("cmd-p", ToggleCommandPalette, None),
+            KeyBinding::new("ctrl-shift-p", ToggleCommandPalette, None),
+            KeyBinding::new("cmd-shift-p", ToggleCommandPalette, None),
         ]);
 
         // Register Scoped TextInput Key Bindings (Cut, Copy, Paste, Arrows, Selection, etc.)
@@ -445,5 +458,54 @@ mod tests {
         let dt2 = compute_delta_micros(t2, t3);
         assert_eq!(format_delta_micros(dt2), "+1.16s");
         assert_eq!(LatencyLevel::from_micros(dt2), LatencyLevel::Critical);
+    }
+
+    #[test]
+    fn test_command_palette_catalog_and_fuzzy_search() {
+        use crate::modals::command_palette::{get_palette_commands, PaletteCommandId};
+        use loganalysis_core::fuzzy_match;
+
+        let commands = get_palette_commands();
+        assert!(commands.len() >= 20, "Should have at least 20 registered commands");
+
+        // Category sanity check
+        let categories: Vec<&str> = commands.iter().map(|c| c.category).collect();
+        assert!(categories.contains(&"FILE"));
+        assert!(categories.contains(&"LOG"));
+        assert!(categories.contains(&"FILTER"));
+        assert!(categories.contains(&"ADB"));
+        assert!(categories.contains(&"VIEW"));
+
+        // Fuzzy search for "open" -> "File: Open Log File..." must rank #1
+        let mut open_matches: Vec<_> = commands
+            .iter()
+            .filter_map(|c| fuzzy_match("open", c.title).map(|score| (c, score)))
+            .collect();
+        open_matches.sort_by(|a, b| b.1.cmp(&a.1));
+        assert!(!open_matches.is_empty());
+        assert_eq!(open_matches[0].0.id, PaletteCommandId::OpenFile);
+
+        // Fuzzy search for "theme" -> "View: Toggle Dark / Light Theme"
+        let mut theme_matches: Vec<_> = commands
+            .iter()
+            .filter_map(|c| fuzzy_match("theme", c.title).map(|score| (c, score)))
+            .collect();
+        theme_matches.sort_by(|a, b| b.1.cmp(&a.1));
+        assert!(!theme_matches.is_empty());
+        assert_eq!(theme_matches[0].0.id, PaletteCommandId::ToggleTheme);
+
+        // Subsequence acronym search: "vtp" -> "View: Toggle Filter Dock Position"
+        let vtp_matches: Vec<_> = commands
+            .iter()
+            .filter_map(|c| fuzzy_match("vtp", c.title).map(|score| (c, score)))
+            .collect();
+        assert!(!vtp_matches.is_empty());
+
+        // Non-matching query returns empty
+        let none_matches: Vec<_> = commands
+            .iter()
+            .filter_map(|c| fuzzy_match("nonexistent123xyz", c.title).map(|score| (c, score)))
+            .collect();
+        assert!(none_matches.is_empty());
     }
 }

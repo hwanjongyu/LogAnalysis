@@ -30,5 +30,6 @@ actions!(
         ToggleFullLineDisplay,
         ToggleAutoScroll,
         ToggleFilterPanelPosition,
+        ToggleCommandPalette,
     ]
 );
