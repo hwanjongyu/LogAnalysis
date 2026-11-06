@@ -1,5 +1,5 @@
 use gpui::*;
-use loganalysis_core::LogSource;
+use loganalysis_core::{LineSeverity, LogSource};
 
 use crate::components::find_bar::render_find_bar;
 use crate::workspace::LogAnalysisWorkspace;
@@ -204,8 +204,8 @@ pub fn render_log_viewport(
                 .track_scroll(workspace.scroll_handle.clone())
                 .flex_1();
 
-            // Compute scrollbar thumb position
-            let (thumb_top, thumb_height) = {
+            // Compute scrollbar thumb position and track dimensions
+            let (thumb_top, thumb_height, track_height) = {
                 let scroll_state = workspace.scroll_handle.0.borrow();
                 let bounds = scroll_state.base_handle.bounds();
                 let track_height: f32 = bounds.size.height.into();
@@ -222,24 +222,64 @@ pub fn render_log_viewport(
                     let max_scroll = (total_content_height - track_height).max(1.0);
                     let ratio = (scroll_y / max_scroll).clamp(0.0, 1.0);
                     let top = ratio * (track_height - h);
-                    (top, h)
+                    (top, h, track_height)
                 } else {
-                    (0.0, track_height)
+                    (0.0, track_height, track_height)
                 }
+            };
+
+            let heatmap_ticks = if let Some(heatmap) = &workspace.heatmap_data {
+                let total_buckets = heatmap.buckets.len() as f32;
+                if track_height > 0.0 && total_buckets > 0.0 {
+                    let bucket_step = track_height / total_buckets;
+                    heatmap
+                        .buckets
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, bucket)| {
+                            let severity = bucket.dominant_severity()?;
+                            let (color, opacity) = match severity {
+                                LineSeverity::Error => (rgb(0xef4444), 0.95),
+                                LineSeverity::Warning => (rgb(0xf59e0b), 0.90),
+                                LineSeverity::RuleMatch => (rgb(0x3b82f6), 0.75),
+                                LineSeverity::Normal => (rgb(0x000000), 0.0),
+                            };
+                            let top_pos = (idx as f32) * bucket_step;
+                            let tick_h = bucket_step.max(2.5);
+
+                            Some(
+                                div()
+                                    .absolute()
+                                    .left(px(1.5))
+                                    .right(px(1.5))
+                                    .top(px(top_pos))
+                                    .h(px(tick_h))
+                                    .rounded_xs()
+                                    .bg(color)
+                                    .opacity(opacity),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
             };
 
             let is_dragging = workspace.is_dragging_scrollbar;
             let scrollbar_thumb_color = if is_dragging {
                 theme.accent
             } else if workspace.is_dark_theme {
-                rgba(0xffffff40)
+                rgba(0xffffff38)
             } else {
-                rgba(0x00000040)
+                rgba(0x00000038)
             };
 
             let scrollbar_track = div()
                 .id("log-scrollbar-track")
-                .w(px(14.0))
+                .relative()
+                .w(px(15.0))
                 .h_full()
                 .bg(theme.bg_gutter)
                 .border_l_1()
@@ -264,6 +304,7 @@ pub fn render_log_viewport(
                         cx.notify();
                     }),
                 )
+                .children(heatmap_ticks)
                 .child(
                     div()
                         .id("log-scrollbar-thumb")

@@ -19,9 +19,10 @@ pub use constants::{
 pub use error::{AdbError, FilterError, SearchError};
 pub use uuid;
 pub use filter::{
-    append_streaming_batch, contrast_ratio, evaluate_and_style_line,
+    append_streaming_batch, contrast_ratio, detect_line_severity, evaluate_and_style_line,
     evaluate_and_style_line_with_matcher, evaluate_contrast, execute_filtering,
     find_nearest_anchor_row, parse_filters_json, CompiledMatcher, ContrastLevel, FilterResult,
-    FilterRule, FilterTabData, MultiFilterMatcher, PreparedFilter, ResolvedStyle,
+    FilterRule, FilterTabData, HeatmapBucket, HeatmapData, LineSeverity, MultiFilterMatcher,
+    PreparedFilter, ResolvedStyle,
 };
 pub use search::{search_in_log, SearchQuery, SearchResult};

@@ -15,6 +15,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) log_source: Option<Arc<ActiveLogSource>>,
     pub(crate) filter_result: Option<Arc<FilterResult>>,
+    pub(crate) heatmap_data: Option<Arc<HeatmapData>>,
     pub(crate) scroll_handle: UniformListScrollHandle,
     pub(crate) selection: SelectionModel,
     pub(crate) theme: Theme,
@@ -158,6 +159,7 @@ impl LogAnalysisWorkspace {
             focus_handle: cx.focus_handle(),
             log_source: None,
             filter_result: None,
+            heatmap_data: None,
             scroll_handle: UniformListScrollHandle::new(),
             selection: SelectionModel::new(),
             theme: Theme::default(),
@@ -327,17 +329,24 @@ impl LogAnalysisWorkspace {
             async move {
                 let result = bg_executor
                     .spawn(async move {
-                        execute_filtering(
+                        let res = execute_filtering(
                             &*source_for_bg,
                             &active_filters,
                             show_only,
                             Some(&token),
                             generation,
-                        )
+                        )?;
+                        let heatmap = HeatmapData::compute(
+                            &*source_for_bg,
+                            &res.visible_indices,
+                            &res.visible_styles,
+                            200,
+                        );
+                        Some((res, heatmap))
                     })
                     .await;
 
-                if let Some(res) = result {
+                if let Some((res, heatmap)) = result {
                     let _ = this.update(&mut async_cx, |workspace, cx| {
                         // Check if a newer generation superseded this task
                         if workspace.filter_cancel_gen.load(Ordering::SeqCst) != generation {
@@ -346,6 +355,7 @@ impl LogAnalysisWorkspace {
 
                         let prev_anchor = workspace.selection.anchor_source_idx;
                         workspace.filter_result = Some(Arc::new(res));
+                        workspace.heatmap_data = Some(Arc::new(heatmap));
 
                         // Viewport anchor preservation
                         if let (Some(anchor), Some(res)) = (prev_anchor, &workspace.filter_result) {
@@ -617,6 +627,12 @@ impl LogAnalysisWorkspace {
                                                 );
 
                                                 let visible_count = res_mut.visible_indices.len();
+                                                workspace.heatmap_data = Some(Arc::new(HeatmapData::compute(
+                                                    &**src_ref,
+                                                    &res_mut.visible_indices,
+                                                    &res_mut.visible_styles,
+                                                    200,
+                                                )));
                                                 workspace.status_text = format!(
                                                     "Visible: {} / {} lines ({} matched)",
                                                     visible_count,
@@ -1370,6 +1386,7 @@ impl LogAnalysisWorkspace {
         }
         self.log_source = None;
         self.filter_result = None;
+        self.heatmap_data = None;
         self.selection.clear();
         self.active_file_name = None;
         self.status_text = "Logs cleared".into();

@@ -1,3 +1,4 @@
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use loganalysis_core::LogSource;
 
@@ -23,6 +24,11 @@ pub fn render_status_bar(
         .as_ref()
         .map(|r| r.total_matched_lines)
         .unwrap_or(0);
+    let (total_errors, total_warnings) = workspace
+        .heatmap_data
+        .as_ref()
+        .map(|h| (h.total_errors, h.total_warnings))
+        .unwrap_or((0, 0));
     let font_size = workspace.font_size;
     let font_size_f32: f32 = font_size.into();
     let selected_real_line = workspace.selection.anchor_source_idx;
@@ -85,6 +91,54 @@ pub fn render_status_bar(
                     row_count, total_lines, visible_pct
                 ))
                 .child(format!("Matched: {}", total_matched))
+                .when(total_errors > 0 || total_warnings > 0, |parent| {
+                    parent.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded_xs()
+                            .bg(theme.bg_card)
+                            .border_1()
+                            .border_color(theme.border)
+                            .when(total_errors > 0, |s| {
+                                s.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .text_color(rgb(0xef4444))
+                                        .child(
+                                            div()
+                                                .w(px(6.0))
+                                                .h(px(6.0))
+                                                .rounded_full()
+                                                .bg(rgb(0xef4444)),
+                                        )
+                                        .child(format!("{} err", total_errors)),
+                                )
+                            })
+                            .when(total_warnings > 0, |s| {
+                                s.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .text_color(rgb(0xf59e0b))
+                                        .child(
+                                            div()
+                                                .w(px(6.0))
+                                                .h(px(6.0))
+                                                .rounded_full()
+                                                .bg(rgb(0xf59e0b)),
+                                        )
+                                        .child(format!("{} warn", total_warnings)),
+                                )
+                            }),
+                    )
+                })
                 .child(if let Some(line_idx) = selected_real_line {
                     format!("Line: {}", line_idx + 1)
                 } else {
