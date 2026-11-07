@@ -299,21 +299,24 @@ fn ensure_desktop_integration() {
         .or_else(|| std::env::current_exe().ok());
 
     if let Some(exec) = exec_path {
-        let content = format!(
-            "[Desktop Entry]\n\
-            Name=LogAnalysis\n\
-            Comment=GPU-Accelerated High Performance Log Analysis Tool\n\
-            Exec=\"{}\" %F\n\
-            Icon={}\n\
-            Terminal=false\n\
-            Type=Application\n\
-            Categories=Development;Utility;System;\n\
-            MimeType=text/plain;application/json;\n\
-            StartupWMClass=loganalysis\n",
-            exec.display(),
-            icon_file.display()
-        );
-        let _ = std::fs::write(&desktop_file, content);
+        let safe_exec = exec.to_string_lossy().replace(['\n', '\r', '"', '\\'], "");
+        if !safe_exec.is_empty() {
+            let content = format!(
+                "[Desktop Entry]\n\
+                Name=LogAnalysis\n\
+                Comment=GPU-Accelerated High Performance Log Analysis Tool\n\
+                Exec=\"{}\" %F\n\
+                Icon={}\n\
+                Terminal=false\n\
+                Type=Application\n\
+                Categories=Development;Utility;System;\n\
+                MimeType=text/plain;application/json;\n\
+                StartupWMClass=loganalysis\n",
+                safe_exec,
+                icon_file.display()
+            );
+            let _ = std::fs::write(&desktop_file, content);
+        }
 
         let _ = std::process::Command::new("update-desktop-database")
             .arg(&apps_dir)

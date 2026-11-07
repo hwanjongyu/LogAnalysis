@@ -1036,7 +1036,7 @@ fn test_append_streaming_batch_trims_adjust_total_matched() {
         active: true,
         ..Default::default()
     };
-    let rules = vec![rule];
+    let rules = vec![rule.clone()];
 
     // Filter all 5 lines initially with show_only_filtered = true
     let mut res = FilterResult::default();
@@ -1044,6 +1044,8 @@ fn test_append_streaming_batch_trims_adjust_total_matched() {
 
     assert_eq!(res.visible_indices, vec![0, 2, 4]);
     assert_eq!(res.total_matched_lines, 3);
+    assert_eq!(res.count_for_rule(&rule.id), 3);
+    assert_eq!(res.filter_counts[0], 3);
 
     // Simulate trimming 3 lines from the front (lines 0, 1, 2 trimmed)
     // Matches dropped: line 0 and line 2 (2 matches dropped)
@@ -1052,16 +1054,22 @@ fn test_append_streaming_batch_trims_adjust_total_matched() {
     // Only line 4 remains, shifted down by 3 -> new index 1
     assert_eq!(res.visible_indices, vec![1]);
     assert_eq!(res.total_matched_lines, 1);
+    assert_eq!(res.count_for_rule(&rule.id), 1);
+    assert_eq!(res.filter_counts[0], 1);
 
     // Test with show_only_filtered = false
     let mut res_unfiltered = FilterResult::default();
     append_streaming_batch(&mut res_unfiltered, &stream, 0..5, 0, &rules, false);
     assert_eq!(res_unfiltered.total_matched_lines, 3);
+    assert_eq!(res_unfiltered.count_for_rule(&rule.id), 3);
+    assert_eq!(res_unfiltered.filter_counts[0], 3);
     assert_eq!(res_unfiltered.visible_indices.len(), 5);
 
     // Trim 3 lines
     append_streaming_batch(&mut res_unfiltered, &stream, 5..5, 3, &rules, false);
     assert_eq!(res_unfiltered.total_matched_lines, 1);
+    assert_eq!(res_unfiltered.count_for_rule(&rule.id), 1);
+    assert_eq!(res_unfiltered.filter_counts[0], 1);
     assert_eq!(res_unfiltered.visible_indices.len(), 2);
 }
 

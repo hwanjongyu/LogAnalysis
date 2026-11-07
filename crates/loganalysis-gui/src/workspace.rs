@@ -730,12 +730,14 @@ impl LogAnalysisWorkspace {
                                                     &res_mut.visible_styles,
                                                     200,
                                                 )));
-                                                workspace.timeline_data = Some(Arc::new(EpsTimelineData::compute(
-                                                    &**src_ref,
-                                                    &res_mut.visible_indices,
-                                                    &res_mut.visible_styles,
-                                                    80,
-                                                )));
+                                                if workspace.is_timeline_visible {
+                                                    workspace.timeline_data = Some(Arc::new(EpsTimelineData::compute(
+                                                        &**src_ref,
+                                                        &res_mut.visible_indices,
+                                                        &res_mut.visible_styles,
+                                                        80,
+                                                    )));
+                                                }
                                                 workspace.status_text = format!(
                                                     "Visible: {} / {} lines ({} matched)",
                                                     visible_count,
@@ -2329,6 +2331,16 @@ impl LogAnalysisWorkspace {
     /// Toggles the Throughput & EPS Timeline Sparkline ribbon (Ctrl+Shift+T)
     pub fn toggle_eps_timeline(&mut self, cx: &mut Context<Self>) {
         self.is_timeline_visible = !self.is_timeline_visible;
+        if self.is_timeline_visible && self.timeline_data.is_none() {
+            if let (Some(src_ref), Some(filter_res)) = (&self.log_source, &self.filter_result) {
+                self.timeline_data = Some(Arc::new(EpsTimelineData::compute(
+                    &**src_ref,
+                    &filter_res.visible_indices,
+                    &filter_res.visible_styles,
+                    80,
+                )));
+            }
+        }
         self.status_text = if self.is_timeline_visible {
             "Throughput Timeline Ribbon: ON".into()
         } else {

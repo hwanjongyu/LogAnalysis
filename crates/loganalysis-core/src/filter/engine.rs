@@ -17,6 +17,7 @@ pub struct ResolvedStyle {
 pub struct FilterResult {
     pub visible_indices: Vec<usize>,
     pub visible_styles: Vec<ResolvedStyle>,
+    pub visible_filter_matches: Vec<SmallVec<[usize; 2]>>,
     pub filter_counts: Vec<usize>,
     pub rule_counts: std::collections::HashMap<uuid::Uuid, usize>,
     pub total_matched_lines: usize,
@@ -86,6 +87,50 @@ pub fn resolve_style_from_matches(
 }
 
 /// Evaluates a single line using a single-pass `MultiFilterMatcher` (Aho-Corasick SIMD).
+/// Returns `(is_visible, style, is_matched, matched_filter_flat_indices)`.
+#[inline]
+pub fn evaluate_and_style_line_with_matcher_full(
+    raw_line: &[u8],
+    prepared_filters: &[PreparedFilter],
+    matcher: &MultiFilterMatcher,
+    show_only_filtered: bool,
+    filter_counts: Option<&mut [usize]>,
+) -> (bool, ResolvedStyle, bool, SmallVec<[usize; 2]>) {
+    if prepared_filters.is_empty() {
+        return (
+            true,
+            ResolvedStyle {
+                bg_hex: None,
+                fg_hex: Some(0x808080),
+            },
+            false,
+            SmallVec::new(),
+        );
+    }
+
+    let mut matched_indices = SmallVec::<[usize; 8]>::new();
+    matcher.find_matches(raw_line, prepared_filters, &mut matched_indices);
+
+    let mut flat_matches = SmallVec::<[usize; 2]>::new();
+    for &idx in &matched_indices {
+        let pf = &prepared_filters[idx];
+        flat_matches.push(pf.flat_index);
+    }
+
+    if let Some(counts) = filter_counts {
+        for &flat_idx in &flat_matches {
+            if flat_idx < counts.len() {
+                counts[flat_idx] += 1;
+            }
+        }
+    }
+
+    let (visible, style, matched) =
+        resolve_style_from_matches(prepared_filters, &matched_indices, show_only_filtered);
+    (visible, style, matched, flat_matches)
+}
+
+/// Evaluates a single line using a single-pass `MultiFilterMatcher` (Aho-Corasick SIMD).
 /// Returns `(is_visible, style, is_matched)`.
 #[inline]
 pub fn evaluate_and_style_line_with_matcher(
@@ -95,30 +140,14 @@ pub fn evaluate_and_style_line_with_matcher(
     show_only_filtered: bool,
     filter_counts: Option<&mut [usize]>,
 ) -> (bool, ResolvedStyle, bool) {
-    if prepared_filters.is_empty() {
-        return (
-            true,
-            ResolvedStyle {
-                bg_hex: None,
-                fg_hex: Some(0x808080),
-            },
-            false,
-        );
-    }
-
-    let mut matched_indices = SmallVec::<[usize; 8]>::new();
-    matcher.find_matches(raw_line, prepared_filters, &mut matched_indices);
-
-    if let Some(counts) = filter_counts {
-        for &idx in &matched_indices {
-            let pf = &prepared_filters[idx];
-            if pf.flat_index < counts.len() {
-                counts[pf.flat_index] += 1;
-            }
-        }
-    }
-
-    resolve_style_from_matches(prepared_filters, &matched_indices, show_only_filtered)
+    let (v, s, m, _) = evaluate_and_style_line_with_matcher_full(
+        raw_line,
+        prepared_filters,
+        matcher,
+        show_only_filtered,
+        filter_counts,
+    );
+    (v, s, m)
 }
 
 /// Evaluates a single line against prepared filters according to LogAnalysis specifications.
@@ -187,6 +216,7 @@ pub fn execute_filtering(
         return Some(FilterResult {
             visible_indices: Vec::new(),
             visible_styles: Vec::new(),
+            visible_filter_matches: Vec::new(),
             filter_counts: vec![0; filter_count],
             rule_counts,
             total_matched_lines: 0,
@@ -213,6 +243,7 @@ pub fn execute_filtering(
 
             let mut visible_indices = Vec::with_capacity(end - start);
             let mut visible_styles = Vec::with_capacity(end - start);
+            let mut visible_filter_matches = Vec::with_capacity(end - start);
             let mut chunk_matched_count = 0;
             let mut local_max_len = 0;
             let mut local_longest_idx = None;
@@ -220,7 +251,7 @@ pub fn execute_filtering(
 
             for line_idx in start..end {
                 let raw_line = source.get_raw_line(line_idx).unwrap_or(b"");
-                let (is_visible, style, is_matched) = evaluate_and_style_line_with_matcher(
+                let (is_visible, style, is_matched, flat_matches) = evaluate_and_style_line_with_matcher_full(
                     raw_line,
                     &prepared,
                     &multi_matcher,
@@ -231,6 +262,7 @@ pub fn execute_filtering(
                 if is_visible {
                     visible_indices.push(line_idx);
                     visible_styles.push(style);
+                    visible_filter_matches.push(flat_matches);
 
                     let len = raw_line.len();
                     if len > local_max_len {
@@ -248,6 +280,7 @@ pub fn execute_filtering(
             Some((
                 visible_indices,
                 visible_styles,
+                visible_filter_matches,
                 chunk_matched_count,
                 local_max_len,
                 local_longest_idx,
@@ -262,14 +295,16 @@ pub fn execute_filtering(
     let total_visible: usize = chunks.iter().map(|c| c.0.len()).sum();
     let mut combined_indices = Vec::with_capacity(total_visible);
     let mut combined_styles = Vec::with_capacity(total_visible);
+    let mut combined_filter_matches = Vec::with_capacity(total_visible);
     let mut combined_counts = vec![0usize; filter_count];
     let mut total_matched_lines = 0;
     let mut max_len = 0;
     let mut longest_idx = None;
 
-    for (indices, styles, matched_count, local_max, local_idx, local_counts) in chunks {
+    for (indices, styles, matches, matched_count, local_max, local_idx, local_counts) in chunks {
         combined_indices.extend(indices);
         combined_styles.extend(styles);
+        combined_filter_matches.extend(matches);
         total_matched_lines += matched_count;
         for (i, &cnt) in local_counts.iter().enumerate() {
             combined_counts[i] += cnt;
@@ -299,6 +334,7 @@ pub fn execute_filtering(
     Some(FilterResult {
         visible_indices: combined_indices,
         visible_styles: combined_styles,
+        visible_filter_matches: combined_filter_matches,
         filter_counts: combined_counts,
         rule_counts,
         total_matched_lines,
@@ -361,8 +397,26 @@ pub fn append_streaming_batch(
                     .count();
                 result.total_matched_lines = result.total_matched_lines.saturating_sub(dropped_matches);
             }
+
+            // Exact per-rule counter decrement on buffer trim [INV-09]
+            if drop_count <= result.visible_filter_matches.len() {
+                for matches in result.visible_filter_matches.drain(0..drop_count) {
+                    for flat_idx in matches {
+                        if flat_idx < result.filter_counts.len() {
+                            result.filter_counts[flat_idx] = result.filter_counts[flat_idx].saturating_sub(1);
+                        }
+                    }
+                }
+            } else {
+                result.visible_filter_matches.clear();
+            }
+
             result.visible_indices.drain(0..drop_count);
             result.visible_styles.drain(0..drop_count);
+
+            for (rule, &cnt) in filters.iter().zip(result.filter_counts.iter()) {
+                result.rule_counts.insert(rule.id, cnt);
+            }
         }
         for idx in &mut result.visible_indices {
             *idx = idx.saturating_sub(trimmed_count);
@@ -390,7 +444,7 @@ pub fn append_streaming_batch(
 
     for line_idx in new_lines_range {
         let raw_line = source.get_raw_line(line_idx).unwrap_or(b"");
-        let (is_visible, style, is_matched) = evaluate_and_style_line_with_matcher(
+        let (is_visible, style, is_matched, flat_matches) = evaluate_and_style_line_with_matcher_full(
             raw_line,
             &prepared,
             &multi_matcher,
@@ -412,6 +466,7 @@ pub fn append_streaming_batch(
             }
             result.visible_indices.push(line_idx);
             result.visible_styles.push(style);
+            result.visible_filter_matches.push(flat_matches);
         }
     }
 

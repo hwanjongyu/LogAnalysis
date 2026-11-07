@@ -954,34 +954,67 @@ fn render_log_list(
             let total_buckets = heatmap.buckets.len() as f32;
             if track_height > 0.0 && total_buckets > 0.0 {
                 let bucket_step = track_height / total_buckets;
-                heatmap
-                    .buckets
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, bucket)| {
-                        let severity = bucket.dominant_severity()?;
-                        let (color, opacity) = match severity {
-                            LineSeverity::Error => (rgb(0xef4444), 0.95),
-                            LineSeverity::Warning => (rgb(0xf59e0b), 0.90),
-                            LineSeverity::RuleMatch => (rgb(0x3b82f6), 0.75),
-                            LineSeverity::Normal => (rgb(0x000000), 0.0),
-                        };
-                        let top_pos = (idx as f32) * bucket_step;
-                        let tick_h = bucket_step.max(2.5);
+                let mut ticks = Vec::new();
+                let mut current_run: Option<(usize, usize, LineSeverity)> = None; // (start_idx, count, severity)
 
-                        Some(
-                            div()
-                                .absolute()
-                                .left(px(1.5))
-                                .right(px(1.5))
-                                .top(px(top_pos))
-                                .h(px(tick_h))
-                                .rounded_xs()
-                                .bg(color)
-                                .opacity(opacity),
-                        )
-                    })
-                    .collect::<Vec<_>>()
+                for (idx, bucket) in heatmap.buckets.iter().enumerate() {
+                    let severity = bucket.dominant_severity().filter(|&s| s != LineSeverity::Normal);
+                    match (current_run, severity) {
+                        (Some((start, count, run_sev)), Some(sev)) if run_sev == sev => {
+                            current_run = Some((start, count + 1, run_sev));
+                        }
+                        (Some((start, count, run_sev)), other) => {
+                            let (color, opacity) = match run_sev {
+                                LineSeverity::Error => (rgb(0xef4444), 0.95),
+                                LineSeverity::Warning => (rgb(0xf59e0b), 0.90),
+                                LineSeverity::RuleMatch => (rgb(0x3b82f6), 0.75),
+                                LineSeverity::Normal => (rgb(0x000000), 0.0),
+                            };
+                            let top_pos = (start as f32) * bucket_step;
+                            let tick_h = ((count as f32) * bucket_step).max(2.5);
+                            ticks.push(
+                                div()
+                                    .absolute()
+                                    .left(px(1.5))
+                                    .right(px(1.5))
+                                    .top(px(top_pos))
+                                    .h(px(tick_h))
+                                    .rounded_xs()
+                                    .bg(color)
+                                    .opacity(opacity),
+                            );
+                            current_run = other.map(|sev| (idx, 1, sev));
+                        }
+                        (None, Some(sev)) => {
+                            current_run = Some((idx, 1, sev));
+                        }
+                        (None, None) => {}
+                    }
+                }
+
+                if let Some((start, count, run_sev)) = current_run {
+                    let (color, opacity) = match run_sev {
+                        LineSeverity::Error => (rgb(0xef4444), 0.95),
+                        LineSeverity::Warning => (rgb(0xf59e0b), 0.90),
+                        LineSeverity::RuleMatch => (rgb(0x3b82f6), 0.75),
+                        LineSeverity::Normal => (rgb(0x000000), 0.0),
+                    };
+                    let top_pos = (start as f32) * bucket_step;
+                    let tick_h = ((count as f32) * bucket_step).max(2.5);
+                    ticks.push(
+                        div()
+                            .absolute()
+                            .left(px(1.5))
+                            .right(px(1.5))
+                            .top(px(top_pos))
+                            .h(px(tick_h))
+                            .rounded_xs()
+                            .bg(color)
+                            .opacity(opacity),
+                    );
+                }
+
+                ticks
             } else {
                 Vec::new()
             }

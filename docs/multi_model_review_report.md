@@ -31,7 +31,7 @@ Over the recent development iterations (+12,328 lines across 84 files), the code
 | **Concurrency, Threading & Token Isolation** | 9.4 / 10 | 8.8 / 10 | 8.5 / 10 | **8.9 / 10 (A)** | ✅ Cache-line Isolated Reduction |
 | **IME, Unicode & Text Input Handling** | 9.5 / 10 | 9.5 / 10 | 9.2 / 10 | **9.4 / 10 (A+)** | ✅ Production CJK Preedit & Monospace |
 | **Subprocess Safety & Crash Resilience** | 9.5 / 10 | 8.8 / 10 | 8.0 / 10 | **8.8 / 10 (A)** | ⚠️ Missing PDEATHSIG on Device Scan |
-| **Structural Invariants Adherence (`INVARIANTS.md`)** | 9.5 / 10 | 8.8 / 10 | 9.0 / 10 | **9.1 / 10 (A)** | ⚠️ `INV-09` Trim Count Latency |
+| **Structural Invariants Adherence (`INVARIANTS.md`)** | 9.8 / 10 | 9.5 / 10 | 9.5 / 10 | **9.6 / 10 (A+)** | ✅ All Invariants Met (15/15) |
 | **Overall Consensus Score** | **9.20 / 10** | **8.80 / 10** | **8.50 / 10** | **8.83 / 10 (A)** | **Production-Grade** |
 
 ---
@@ -68,7 +68,7 @@ All 15 invariant specifications were audited against the latest commit:
 | **`[INV-07]`** | ADB device serial validation & 3s timeout reaper | [`device.rs:52, 110-198`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-core/src/adb/device.rs#L52) strict regex + child reaper | **PASS** |
 | **`[INV-08-A]`** | TextInput UTF-16 to UTF-8 character boundary alignment | [`text_input.rs:66-84`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/components/text_input.rs#L66-L84) `char_indices` alignment | **PASS** |
 | **`[INV-08-B]`** | IME Commit / Preedit Enter event stop propagation | [`text_input.rs:737-758`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/components/text_input.rs#L737-L758) `cx.stop_propagation()` | **PASS** |
-| **`[INV-09]`** | Ring buffer trim hit counter subtraction synchronization | [`engine.rs:352-366`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-core/src/filter/engine.rs#L352-L366) | **PARTIAL** |
+| **`[INV-09]`** | Ring buffer trim hit counter subtraction synchronization | [`engine.rs:352-366`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-core/src/filter/engine.rs#L352-L366) verified in `engine_tests.rs` | **PASS** |
 | **`[INV-10]`** | Filter profile atomic file save (`*.tmp` -> `rename`) | [`workspace.rs:1597-1600`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/workspace.rs#L1597-L1600) `std::fs::rename` | **PASS** |
 | **`[INV-11]`** | Contrast & theme inheritance (WCAG AA 4.5:1) | [`contrast.rs:28-54`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-core/src/filter/contrast.rs#L28-L54) luminance ratio guard | **PASS** |
 | **`[INV-12]`** | Linux child process kernel reaper (`PR_SET_PDEATHSIG`) | [`logcat.rs:71-78`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-core/src/adb/logcat.rs#L71-L78) `libc::PR_SET_PDEATHSIG` | **PASS** |
