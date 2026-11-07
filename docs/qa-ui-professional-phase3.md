@@ -19,13 +19,13 @@ Phase 3 elevates LogAnalysis into a modern, professional engineering workstation
 - **Dimensions & Layout**: Fixed 42px width, vertical rail on the far left of the workspace body with a subtle 1px border divider (`theme.border_subtle`).
 - **Interactive Buttons**:
   1. `📁 Files`: Quick file ingestion & recent files shelf (`Ctrl+O`).
-  2. `🔍 Filters`: Toggles filter dock visibility with active rule count badge (`Shift+F`).
+  2. `🔍 Filters`: Toggles filter dock visibility with active rule count badge (`Ctrl+J`).
   3. `🏷️ Facets`: Toggles forensic tag facets bar (`Alt+F`).
   4. `🔖 Bookmarks`: Toggles slide-over bookmarks drawer with count badge (`Ctrl+B`).
-  5. `📈 Timeline`: Toggles anomaly timeline sparkline ribbon (`Ctrl+T`).
-  6. `📱 ADB`: Live streaming status dot (green=active, amber=paused, blue=idle connected) & device selector toggle (`Ctrl+R`).
-  7. `🪟 Split View`: Toggles dual-pane split comparison (`Ctrl+D`).
-  8. `📋 Column View`: Toggles tabular structured logcat view (`Ctrl+L`).
+  5. `📈 Timeline`: Toggles anomaly timeline sparkline ribbon (`Ctrl+Shift+T`).
+  6. `📱 ADB`: Live streaming status dot (green=active, amber=paused, blue=idle connected) & device selector toggle (`Ctrl+Shift+R`).
+  7. `🪟 Split View`: Toggles dual-pane split comparison (`Ctrl+\`).
+  8. `📋 Column View`: Toggles tabular structured logcat view (`Ctrl+G`).
   9. `⌨️ Palette`: Command palette and shortcut trigger (`Ctrl+P`).
   10. `☀️ / 🌙 Theme`: One-click Dark/Light theme switcher (`Ctrl+U`).
 - **Visual Polish**: Left 2px accent indicator stripe on active modes, subtle hover surfaces, and `SimpleTooltip` micro-badges.

@@ -65,6 +65,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) full_line_display: bool,
     pub(crate) filter_panel_position: FilterPanelPosition,
     pub(crate) is_dragging_scrollbar: bool,
+    pub(crate) is_dragging_secondary_scrollbar: bool,
 
     // Command Palette state
     pub(crate) is_command_palette_open: bool,
@@ -83,6 +84,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) is_split_view: bool,
     pub(crate) is_split_vertical: bool,
     pub(crate) is_scroll_synced: bool,
+    pub(crate) active_split_pane_is_secondary: bool,
     pub(crate) secondary_log_source: Option<Arc<ActiveLogSource>>,
     pub(crate) secondary_file_name: Option<SharedString>,
     pub(crate) secondary_filter_result: Option<Arc<FilterResult>>,
@@ -274,6 +276,7 @@ impl LogAnalysisWorkspace {
             full_line_display: false,
             filter_panel_position: FilterPanelPosition::Bottom,
             is_dragging_scrollbar: false,
+            is_dragging_secondary_scrollbar: false,
             is_command_palette_open: false,
             palette_input,
             palette_selected_index: 0,
@@ -287,6 +290,7 @@ impl LogAnalysisWorkspace {
             is_split_view: false,
             is_split_vertical: true,
             is_scroll_synced: true,
+            active_split_pane_is_secondary: false,
             secondary_log_source: None,
             secondary_file_name: None,
             secondary_filter_result: None,
@@ -634,6 +638,9 @@ impl LogAnalysisWorkspace {
 
                 let stream_buf = StreamLogBuffer::default();
                 self.log_source = Some(Arc::new(ActiveLogSource::Stream(stream_buf)));
+                self.active_file_name = None;
+                self.bookmarks.clear();
+                self.facet_tags.clear();
                 self.status_text = format!("Streaming live ADB: {}", target_display).into();
 
                 // Non-blocking async loop with batching, throttling & bounded buffers to avoid starving GPUI executor
@@ -759,6 +766,10 @@ impl LogAnalysisWorkspace {
                                             } else {
                                                 // Initial pass if filter_result was not yet computed
                                                 workspace.reapply_filters(cx);
+                                            }
+
+                                            if workspace.facet_tags.is_empty() && new_total_len >= 100 {
+                                                workspace.refresh_facet_tags();
                                             }
 
                                             // Smart Auto-Scroll to bottom if enabled
@@ -1074,27 +1085,52 @@ impl LogAnalysisWorkspace {
             && !self.is_bookmark_drawer_open
             && !self.is_command_palette_open
         {
+            let is_sec = self.is_split_view && self.active_split_pane_is_secondary;
             if key == "up" {
-                if let Some(res) = &self.filter_result {
+                if is_sec {
+                    if let Some(res) = &self.secondary_filter_result {
+                        let total_rows = res.visible_indices.len();
+                        if total_rows > 0 {
+                            let cur_row = self.secondary_selection.selected_row.unwrap_or(0);
+                            let new_row = cur_row.saturating_sub(1);
+                            if let Some(&src_idx) = res.visible_indices.get(new_row) {
+                                self.select_secondary_log_row(new_row, src_idx, cx);
+                                self.secondary_scroll_handle.scroll_to_item_strict(new_row, ScrollStrategy::Center);
+                            }
+                        }
+                    }
+                } else if let Some(res) = &self.filter_result {
                     let total_rows = res.visible_indices.len();
                     if total_rows > 0 {
                         let cur_row = self.selection.selected_row.unwrap_or(0);
                         let new_row = cur_row.saturating_sub(1);
                         if let Some(&src_idx) = res.visible_indices.get(new_row) {
                             self.select_log_row(new_row, src_idx, cx);
-                            self.scroll_handle.scroll_to_item(new_row, ScrollStrategy::Center);
+                            self.scroll_handle.scroll_to_item_strict(new_row, ScrollStrategy::Center);
                         }
                     }
                 }
             } else if key == "down" {
-                if let Some(res) = &self.filter_result {
+                if is_sec {
+                    if let Some(res) = &self.secondary_filter_result {
+                        let total_rows = res.visible_indices.len();
+                        if total_rows > 0 {
+                            let cur_row = self.secondary_selection.selected_row.map(|r| r + 1).unwrap_or(0);
+                            let new_row = cur_row.min(total_rows.saturating_sub(1));
+                            if let Some(&src_idx) = res.visible_indices.get(new_row) {
+                                self.select_secondary_log_row(new_row, src_idx, cx);
+                                self.secondary_scroll_handle.scroll_to_item_strict(new_row, ScrollStrategy::Center);
+                            }
+                        }
+                    }
+                } else if let Some(res) = &self.filter_result {
                     let total_rows = res.visible_indices.len();
                     if total_rows > 0 {
                         let cur_row = self.selection.selected_row.map(|r| r + 1).unwrap_or(0);
                         let new_row = cur_row.min(total_rows.saturating_sub(1));
                         if let Some(&src_idx) = res.visible_indices.get(new_row) {
                             self.select_log_row(new_row, src_idx, cx);
-                            self.scroll_handle.scroll_to_item(new_row, ScrollStrategy::Center);
+                            self.scroll_handle.scroll_to_item_strict(new_row, ScrollStrategy::Center);
                         }
                     }
                 }
@@ -1458,6 +1494,7 @@ impl LogAnalysisWorkspace {
     /// Selects a log row and updates status line attribution
     pub fn select_log_row(&mut self, visible_idx: usize, source_idx: usize, cx: &mut Context<Self>) {
         self.selection.select(visible_idx, source_idx);
+        self.active_split_pane_is_secondary = false;
         self.input_focus = InputFocusTarget::None;
         if self.is_split_view && self.is_scroll_synced {
             self.sync_scroll_to_secondary(source_idx, cx);
@@ -1468,6 +1505,7 @@ impl LogAnalysisWorkspace {
     /// Selects a log row in the secondary pane and syncs primary pane if lockstep is enabled
     pub fn select_secondary_log_row(&mut self, visible_idx: usize, source_idx: usize, cx: &mut Context<Self>) {
         self.secondary_selection.select(visible_idx, source_idx);
+        self.active_split_pane_is_secondary = true;
         self.input_focus = InputFocusTarget::None;
         if self.is_split_view && self.is_scroll_synced {
             self.sync_scroll_to_primary(source_idx, cx);
@@ -1745,6 +1783,7 @@ impl LogAnalysisWorkspace {
         self.timeline_data = None;
         self.selection.clear();
         self.bookmarks.clear();
+        self.facet_tags.clear();
         self.active_file_name = None;
         self.status_text = "Logs cleared".into();
         cx.notify();
@@ -1810,14 +1849,13 @@ impl LogAnalysisWorkspace {
 
         let relative_y = (mouse_y_f32 - track_top).clamp(0.0, track_height);
         let ratio = (relative_y / track_height).clamp(0.0, 1.0);
-        let max_idx = row_count.saturating_sub(1);
-        let target_idx = ((ratio * max_idx as f32).round() as usize).min(max_idx);
+        let font_size_f32: f32 = self.font_size.into();
+        let row_height_f32 = font_size_f32 * 1.55;
+        let visible_items = (track_height / row_height_f32).floor() as usize;
+        let max_top_idx = row_count.saturating_sub(visible_items.max(1));
+        let target_top_idx = ((ratio * max_top_idx as f32).round() as usize).min(max_top_idx);
 
-        if ratio >= 0.98 {
-            self.scroll_handle.scroll_to_item_strict(target_idx, ScrollStrategy::Bottom);
-        } else {
-            self.scroll_handle.scroll_to_item_strict(target_idx, ScrollStrategy::Top);
-        }
+        self.scroll_handle.scroll_to_item_strict(target_top_idx, ScrollStrategy::Top);
         cx.notify();
     }
 
@@ -1844,14 +1882,13 @@ impl LogAnalysisWorkspace {
 
         let relative_y = (mouse_y_f32 - track_top).clamp(0.0, track_height);
         let ratio = (relative_y / track_height).clamp(0.0, 1.0);
-        let max_idx = row_count.saturating_sub(1);
-        let target_idx = ((ratio * max_idx as f32).round() as usize).min(max_idx);
+        let font_size_f32: f32 = self.font_size.into();
+        let row_height_f32 = font_size_f32 * 1.55;
+        let visible_items = (track_height / row_height_f32).floor() as usize;
+        let max_top_idx = row_count.saturating_sub(visible_items.max(1));
+        let target_top_idx = ((ratio * max_top_idx as f32).round() as usize).min(max_top_idx);
 
-        if ratio >= 0.98 {
-            self.secondary_scroll_handle.scroll_to_item_strict(target_idx, ScrollStrategy::Bottom);
-        } else {
-            self.secondary_scroll_handle.scroll_to_item_strict(target_idx, ScrollStrategy::Top);
-        }
+        self.secondary_scroll_handle.scroll_to_item_strict(target_top_idx, ScrollStrategy::Top);
         cx.notify();
     }
 
@@ -2060,7 +2097,7 @@ impl LogAnalysisWorkspace {
         self.facet_tags = sorted;
     }
 
-    /// Adds a quick filter rule directly from a facet tag chip
+    /// Adds or toggles a quick filter rule directly from a facet tag chip
     pub fn add_facet_filter(&mut self, tag: &str, is_exclude: bool, cx: &mut Context<Self>) {
         let palette = ["Cyan", "Green", "Magenta", "Yellow", "Blue"];
         let color_idx = tag.bytes().map(|b| b as usize).sum::<usize>() % palette.len();
@@ -2074,6 +2111,27 @@ impl LogAnalysisWorkspace {
         } else {
             "Black".to_string()
         };
+
+        // Deduplicate: if a rule for this exact tag already exists in the active tab, toggle or update it
+        if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
+            if let Some(existing) = tab.filters.iter_mut().find(|r| r.text == tag && !r.regex) {
+                if existing.exclude == is_exclude {
+                    existing.active = !existing.active;
+                    let state_str = if existing.active { "Enabled" } else { "Disabled" };
+                    let mode_str = if is_exclude { "exclude" } else { "include" };
+                    self.status_text = format!("{state_str} {mode_str} facet filter for '{tag}'").into();
+                } else {
+                    existing.exclude = is_exclude;
+                    existing.bg_color = bg_color;
+                    existing.text_color = text_color;
+                    existing.active = true;
+                    let mode_str = if is_exclude { "exclude" } else { "include" };
+                    self.status_text = format!("Switched facet filter '{tag}' to {mode_str}").into();
+                }
+                self.reapply_filters(cx);
+                return;
+            }
+        }
 
         let rule = FilterRule {
             text: tag.to_string(),
@@ -2698,7 +2756,7 @@ impl LogAnalysisWorkspace {
         ) {
             let target_source_idx = secondary_res.visible_indices.get(target_vis_idx).copied().unwrap_or(0);
             self.secondary_selection.select(target_vis_idx, target_source_idx);
-            self.secondary_scroll_handle.scroll_to_item(target_vis_idx, ScrollStrategy::Center);
+            self.secondary_scroll_handle.scroll_to_item_strict(target_vis_idx, ScrollStrategy::Center);
             cx.notify();
         }
     }
@@ -2727,7 +2785,7 @@ impl LogAnalysisWorkspace {
         ) {
             let target_source_idx = primary_res.visible_indices.get(target_vis_idx).copied().unwrap_or(0);
             self.selection.select(target_vis_idx, target_source_idx);
-            self.scroll_handle.scroll_to_item(target_vis_idx, ScrollStrategy::Center);
+            self.scroll_handle.scroll_to_item_strict(target_vis_idx, ScrollStrategy::Center);
             cx.notify();
         }
     }
@@ -2869,10 +2927,11 @@ impl LogAnalysisWorkspace {
         .detach();
     }
 
-    /// Records a file in recent history, keeping up to 5 unique paths
+    /// Records a file in recent history, keeping up to 5 unique canonical paths
     pub fn add_recent_file(&mut self, path: std::path::PathBuf) {
-        self.recent_files.retain(|p| p != &path);
-        self.recent_files.insert(0, path);
+        let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+        self.recent_files.retain(|p| p != &canonical);
+        self.recent_files.insert(0, canonical);
         self.recent_files.truncate(5);
         save_recent_files(&self.recent_files);
     }

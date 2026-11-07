@@ -150,8 +150,8 @@ pub fn render_activity_bar(
             },
             theme,
             cx,
-            |this, _, cx| {
-                this.prompt_open_file(None, cx);
+            |this, window, cx| {
+                this.prompt_open_file(Some(window), cx);
             },
         ))
         // 2. Filter Rules Dock Toggle
@@ -160,7 +160,7 @@ pub fn render_activity_bar(
                 id: "act-filters",
                 icon: "🔍",
                 tooltip_title: "Toggle Filter Dock",
-                shortcut: Some("Shift+F"),
+                shortcut: Some("Ctrl+J"),
                 is_active: workspace.is_filter_dock_visible,
                 badge_count: if active_filter_count > 0 {
                     Some(active_filter_count)
@@ -223,7 +223,7 @@ pub fn render_activity_bar(
                 id: "act-timeline",
                 icon: "📈",
                 tooltip_title: "Toggle Anomaly Timeline Sparkline",
-                shortcut: Some("Ctrl+T"),
+                shortcut: Some("Ctrl+Shift+T"),
                 is_active: workspace.is_timeline_visible,
                 badge_count: None,
                 has_status_dot: None,
@@ -240,7 +240,7 @@ pub fn render_activity_bar(
                 id: "act-adb",
                 icon: "📱",
                 tooltip_title: "ADB Devices & Live Streaming",
-                shortcut: Some("Ctrl+R"),
+                shortcut: Some("Ctrl+Shift+R"),
                 is_active: workspace.is_streaming || workspace.is_device_selector_open,
                 badge_count: None,
                 has_status_dot: adb_dot_color,
@@ -257,7 +257,7 @@ pub fn render_activity_bar(
                 id: "act-split",
                 icon: "🪟",
                 tooltip_title: "Toggle Dual-Pane Split View",
-                shortcut: Some("Ctrl+D"),
+                shortcut: Some("Ctrl+\\"),
                 is_active: workspace.is_split_view,
                 badge_count: None,
                 has_status_dot: None,
@@ -274,7 +274,7 @@ pub fn render_activity_bar(
                 id: "act-column",
                 icon: "📋",
                 tooltip_title: "Toggle Structured Column View",
-                shortcut: Some("Ctrl+L"),
+                shortcut: Some("Ctrl+G"),
                 is_active: workspace.is_column_view,
                 badge_count: None,
                 has_status_dot: None,

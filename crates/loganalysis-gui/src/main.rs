@@ -283,10 +283,32 @@ impl Render for LogAnalysisWorkspace {
                 this.toggle_column_view(cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleFilterDock, _window, cx| {
+                if this.input_focus != InputFocusTarget::None {
+                    return;
+                }
                 this.toggle_filter_dock(cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleFacetsBar, _window, cx| {
+                if this.input_focus != InputFocusTarget::None {
+                    return;
+                }
                 this.toggle_facets_bar(cx);
+            }))
+            .on_action(cx.listener(|this, _: &StartAdb, _window, cx| {
+                if this.input_focus != InputFocusTarget::None {
+                    return;
+                }
+                if this.is_streaming {
+                    this.stop_adb_stream(cx);
+                } else {
+                    this.start_adb_stream(cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &StopAdb, _window, cx| {
+                this.stop_adb_stream(cx);
+            }))
+            .on_action(cx.listener(|this, _: &RefreshAdbDevices, _window, cx| {
+                this.refresh_adb_devices(cx);
             }))
             .relative()
             .flex()
@@ -467,8 +489,15 @@ fn main() {
             KeyBinding::new("cmd-g", ToggleColumnView, None),
             KeyBinding::new("ctrl-shift-m", OpenMergedLogs, None),
             KeyBinding::new("cmd-shift-m", OpenMergedLogs, None),
-            KeyBinding::new("shift-f", ToggleFilterDock, None),
+            KeyBinding::new("ctrl-j", ToggleFilterDock, None),
+            KeyBinding::new("cmd-j", ToggleFilterDock, None),
             KeyBinding::new("alt-f", ToggleFacetsBar, None),
+            KeyBinding::new("ctrl-shift-r", StartAdb, None),
+            KeyBinding::new("cmd-shift-r", StartAdb, None),
+            KeyBinding::new("ctrl-u", ToggleTheme, None),
+            KeyBinding::new("cmd-u", ToggleTheme, None),
+            KeyBinding::new("f10", ToggleTheme, None),
+            KeyBinding::new("alt-z", ToggleFullLineDisplay, None),
         ]);
 
         // Register Scoped TextInput Key Bindings (Cut, Copy, Paste, Arrows, Selection, etc.)
@@ -1073,5 +1102,19 @@ mod tests {
         assert_eq!(format_bytes(512 * 1024), "512.0 KB");
         assert_eq!(format_bytes(16 * 1024 * 1024), "16.0 MB");
         assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2.00 GB");
+
+        // 3. Verify Command Palette shortcut alignment (no Shift+F text input collision)
+        let cmds = crate::modals::command_palette::get_palette_commands();
+        let dock_cmd = cmds
+            .iter()
+            .find(|c| c.id == crate::modals::command_palette::PaletteCommandId::ToggleFilterDock)
+            .expect("ToggleFilterDock should exist");
+        assert_eq!(dock_cmd.shortcut, Some("Ctrl+J"));
+
+        let facets_cmd = cmds
+            .iter()
+            .find(|c| c.id == crate::modals::command_palette::PaletteCommandId::ToggleFacetsBar)
+            .expect("ToggleFacetsBar should exist");
+        assert_eq!(facets_cmd.shortcut, Some("Alt+F"));
     }
 }

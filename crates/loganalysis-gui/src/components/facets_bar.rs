@@ -9,6 +9,7 @@ use crate::workspace::LogAnalysisWorkspace;
 fn render_facet_chip(
     tag: String,
     count: usize,
+    filter_state: Option<bool>,
     theme: Theme,
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> impl IntoElement {
@@ -19,18 +20,25 @@ fn render_facet_chip(
     let inc_id: SharedString = format!("facet-inc-{}", tag).into();
     let exc_id: SharedString = format!("facet-exc-{}", tag).into();
 
+    let (chip_bg, chip_border, label_color) = match filter_state {
+        Some(false) => (theme.accent_muted, theme.accent, theme.accent),
+        Some(true) => (rgba(0xef444422), theme.error_red, theme.error_red),
+        None => (theme.bg_card, theme.border_subtle, theme.text_primary),
+    };
+
     div()
         .id(ElementId::Name(chip_id))
+        .flex_shrink_0()
         .flex()
         .items_center()
         .h(px(20.0))
         .rounded_xs()
-        .bg(theme.bg_card)
+        .bg(chip_bg)
         .border_1()
-        .border_color(theme.border_subtle)
+        .border_color(chip_border)
         .hover(|s| s.border_color(theme.accent).bg(theme.btn_hover))
         .tooltip(render_tooltip(
-            &format!("Include '{tag_tooltip}' (+), or click ✕ to exclude"),
+            &format!("Click to toggle include '{tag_tooltip}', or ✕ to exclude"),
             None,
             theme,
         ))
@@ -51,7 +59,7 @@ fn render_facet_chip(
                 .child(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.text_primary)
+                        .text_color(label_color)
                         .child(tag),
                 )
                 .child(
@@ -75,7 +83,11 @@ fn render_facet_chip(
                 .border_color(theme.border_subtle)
                 .hover(|s| s.bg(theme.error_red).text_color(rgb(0xffffff)))
                 .text_size(px(9.0))
-                .text_color(theme.text_muted)
+                .text_color(if filter_state == Some(true) {
+                    theme.error_red
+                } else {
+                    theme.text_muted
+                })
                 .on_click(cx.listener(move |this, _, _window, cx| {
                     this.add_facet_filter(&tag_for_exclude, true, cx);
                 }))
@@ -94,6 +106,11 @@ pub fn render_facets_bar(
 
     let theme = workspace.theme;
     let facets = workspace.facet_tags.clone();
+    let active_tab_filters = workspace
+        .filter_tabs
+        .get(workspace.active_tab_index)
+        .map(|t| t.filters.clone())
+        .unwrap_or_default();
 
     Some(
         div()
@@ -139,11 +156,13 @@ pub fn render_facets_bar(
                                         .child("No common Android tags identified in sample window"),
                                 )
                             })
-                            .children(
-                                facets
-                                    .into_iter()
-                                    .map(|(tag, count)| render_facet_chip(tag, count, theme, cx)),
-                            ),
+                            .children(facets.into_iter().map(|(tag, count)| {
+                                let filter_state = active_tab_filters
+                                    .iter()
+                                    .find(|r| r.active && !r.regex && r.text == tag)
+                                    .map(|r| r.exclude);
+                                render_facet_chip(tag, count, filter_state, theme, cx)
+                            })),
                     ),
             )
             // Right: Refresh & Dismiss Actions

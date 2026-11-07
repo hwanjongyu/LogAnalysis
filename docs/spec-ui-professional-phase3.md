@@ -31,12 +31,13 @@ Phase 3 introduces the **Linear / Zed / Fleet workstation layout architecture**:
   | Icon | Label | Shortcut | Behavior | Indicator / Badge |
   |---|---|---|---|---|
   | 📁 | Files / Recent | `Ctrl+O` | Prompts file picker or recent shelf | Active when log is open |
-  | 🔍 | Filter Rules | `Shift+F` | Toggles filter dock visibility | Badge with active rules count |
+  | 🔍 | Filter Rules | `Ctrl+J` | Toggles filter dock visibility | Badge with active rules count |
   | 🏷️ | Forensic Facets | `Alt+F` | Toggles quick tag facets bar | Active when facets bar open |
   | 🔖 | Bookmarks | `Ctrl+B` | Toggles slide-over bookmark drawer | Badge with bookmark count |
-  | 📈 | Timeline Profiler | `Ctrl+T` | Toggles anomaly sparkline ribbon | Active when ribbon visible |
-  | 📱 | ADB Streaming | `Ctrl+R` | Toggles device selector / streaming | Green/yellow dot indicator |
-  | 🪟 | Dual Pane Split | `Ctrl+D` | Toggles side-by-side log comparison | Active when split mode on |
+  | 📈 | Timeline Profiler | `Ctrl+Shift+T` | Toggles anomaly sparkline ribbon | Active when ribbon visible |
+  | 📱 | ADB Streaming | `Ctrl+Shift+R` | Toggles device selector / streaming | Green/yellow dot indicator |
+  | 🪟 | Dual Pane Split | `Ctrl+\` | Toggles side-by-side log comparison | Active when split mode on |
+  | 📋 | Column View | `Ctrl+G` | Toggles structured tabular columns | Active when column mode on |
   | ⚙️ | Command Palette | `Ctrl+P` | Opens command palette & shortcuts | Bottom anchor |
   | 🌓 | Toggle Theme | `Ctrl+U` | Toggles Dark / Light theme | Bottom anchor |
 

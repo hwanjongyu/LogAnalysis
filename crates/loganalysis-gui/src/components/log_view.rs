@@ -23,13 +23,23 @@ pub fn render_log_viewport(
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
                 if this.is_dragging_scrollbar && event.dragging() {
                     this.scroll_to_ratio_from_mouse_y(event.position.y, cx);
+                } else if this.is_dragging_secondary_scrollbar && event.dragging() {
+                    this.scroll_secondary_to_ratio_from_mouse_y(event.position.y, cx);
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    let mut changed = false;
                     if this.is_dragging_scrollbar {
                         this.is_dragging_scrollbar = false;
+                        changed = true;
+                    }
+                    if this.is_dragging_secondary_scrollbar {
+                        this.is_dragging_secondary_scrollbar = false;
+                        changed = true;
+                    }
+                    if changed {
                         cx.notify();
                     }
                 }),
@@ -73,13 +83,23 @@ pub fn render_log_viewport(
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
                 if this.is_dragging_scrollbar && event.dragging() {
                     this.scroll_to_ratio_from_mouse_y(event.position.y, cx);
+                } else if this.is_dragging_secondary_scrollbar && event.dragging() {
+                    this.scroll_secondary_to_ratio_from_mouse_y(event.position.y, cx);
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    let mut changed = false;
                     if this.is_dragging_scrollbar {
                         this.is_dragging_scrollbar = false;
+                        changed = true;
+                    }
+                    if this.is_dragging_secondary_scrollbar {
+                        this.is_dragging_secondary_scrollbar = false;
+                        changed = true;
+                    }
+                    if changed {
                         cx.notify();
                     }
                 }),
@@ -130,12 +150,44 @@ fn render_pane_container(
             .unwrap_or(0)
     };
 
+    let is_active_pane = if !workspace.is_split_view {
+        true
+    } else if is_primary {
+        !workspace.active_split_pane_is_secondary
+    } else {
+        workspace.active_split_pane_is_secondary
+    };
+
+    let (badge_bg, badge_fg) = if is_active_pane {
+        (theme.accent_muted, theme.accent)
+    } else {
+        (theme.bg_badge, theme.text_muted)
+    };
+
+    let header_border_color = if workspace.is_split_view && is_active_pane {
+        theme.accent
+    } else {
+        theme.border_subtle
+    };
+
     div()
         .flex_1()
         .h_full()
         .flex()
         .flex_col()
         .overflow_hidden()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+                if this.is_split_view {
+                    let new_sec = !is_primary;
+                    if this.active_split_pane_is_secondary != new_sec {
+                        this.active_split_pane_is_secondary = new_sec;
+                        cx.notify();
+                    }
+                }
+            }),
+        )
         // Sub-pane Header
         .child(
             div()
@@ -143,7 +195,7 @@ fn render_pane_container(
                 .w_full()
                 .bg(theme.bg_header)
                 .border_b_1()
-                .border_color(theme.border_subtle)
+                .border_color(header_border_color)
                 .flex()
                 .flex_row()
                 .items_center()
@@ -160,10 +212,10 @@ fn render_pane_container(
                                 .px(px(5.0))
                                 .py(px(1.0))
                                 .rounded_sm()
-                                .bg(if is_primary { theme.accent_muted } else { theme.bg_badge })
+                                .bg(badge_bg)
                                 .text_size(px(10.0))
                                 .font_weight(FontWeight::BOLD)
-                                .text_color(if is_primary { theme.accent } else { theme.text_muted })
+                                .text_color(badge_fg)
                                 .child(if is_primary { "PANE A" } else { "PANE B" }),
                         )
                         .child(
@@ -1042,7 +1094,11 @@ fn render_log_list(
         Vec::new()
     };
 
-    let is_dragging = is_primary && workspace.is_dragging_scrollbar;
+    let is_dragging = if is_primary {
+        workspace.is_dragging_scrollbar
+    } else {
+        workspace.is_dragging_secondary_scrollbar
+    };
     let scrollbar_thumb_color = if is_dragging {
         theme.accent
     } else if workspace.is_dark_theme {
@@ -1086,12 +1142,26 @@ fn render_log_list(
                 }),
             );
     } else {
-        scrollbar_track = scrollbar_track.on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                this.scroll_secondary_to_ratio_from_mouse_y(event.position.y, cx);
-            }),
-        );
+        scrollbar_track = scrollbar_track
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                    this.is_dragging_secondary_scrollbar = true;
+                    this.scroll_secondary_to_ratio_from_mouse_y(event.position.y, cx);
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                if this.is_dragging_secondary_scrollbar && event.dragging() {
+                    this.scroll_secondary_to_ratio_from_mouse_y(event.position.y, cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    this.is_dragging_secondary_scrollbar = false;
+                    cx.notify();
+                }),
+            );
     }
 
     scrollbar_track = scrollbar_track
@@ -1836,11 +1906,12 @@ fn render_onboarding_empty_state(
                         .child(render_kbd_chip("Ctrl+O", "Open", theme))
                         .child(render_kbd_chip("Ctrl+P", "Palette", theme))
                         .child(render_kbd_chip("Ctrl+F", "Find", theme))
-                        .child(render_kbd_chip("F", "Filter Mode", theme))
+                        .child(render_kbd_chip("Ctrl+H", "Filter Mode", theme))
+                        .child(render_kbd_chip("Ctrl+J", "Toggle Dock", theme))
                         .child(render_kbd_chip("Ctrl+\\", "Dual Split", theme))
                         .child(render_kbd_chip("Ctrl+Shift+M", "Merge", theme))
                         .child(render_kbd_chip("Ctrl+B", "Bookmarks", theme))
-                        .child(render_kbd_chip("Ctrl+R", "Live ADB", theme)),
+                        .child(render_kbd_chip("Ctrl+Shift+R", "Live ADB", theme)),
                 ),
         )
 }

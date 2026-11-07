@@ -125,7 +125,7 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             id: PaletteCommandId::StartAdbStream,
             title: "ADB: Start Live Logcat Stream",
             category: "ADB",
-            shortcut: None,
+            shortcut: Some("Ctrl+Shift+R"),
         },
         PaletteCommand {
             id: PaletteCommandId::StopAdbStream,
@@ -161,7 +161,7 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             id: PaletteCommandId::ToggleFilterDock,
             title: "View: Toggle Filter Rules Dock Visibility",
             category: "VIEW",
-            shortcut: Some("Shift+F"),
+            shortcut: Some("Ctrl+J"),
         },
         PaletteCommand {
             id: PaletteCommandId::ToggleFacetsBar,
@@ -173,13 +173,13 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             id: PaletteCommandId::ToggleFullLineDisplay,
             title: "View: Toggle Full Line Wrap Mode",
             category: "VIEW",
-            shortcut: None,
+            shortcut: Some("Alt+Z"),
         },
         PaletteCommand {
             id: PaletteCommandId::ToggleTheme,
             title: "View: Toggle Dark / Light Theme",
             category: "VIEW",
-            shortcut: None,
+            shortcut: Some("Ctrl+U"),
         },
         PaletteCommand {
             id: PaletteCommandId::ToggleEpsTimeline,
