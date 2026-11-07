@@ -5,6 +5,51 @@ use crate::components::tooltip::render_tooltip;
 use crate::types::FilterPanelPosition;
 use crate::workspace::LogAnalysisWorkspace;
 
+/// Renders an interactive splitter/divider between Filter Dock and Log Viewport
+pub fn render_filter_dock_splitter(
+    workspace: &LogAnalysisWorkspace,
+    cx: &mut Context<LogAnalysisWorkspace>,
+) -> impl IntoElement {
+    let theme = workspace.theme;
+    let is_bottom_dock = workspace.filter_panel_position == FilterPanelPosition::Bottom;
+    let is_resizing = workspace.is_resizing_filter_dock;
+
+    div()
+        .id("filter-dock-splitter")
+        .when(!is_bottom_dock, |s| {
+            s.w(px(4.0))
+                .h_full()
+                .cursor_col_resize()
+                .bg(if is_resizing {
+                    theme.accent
+                } else {
+                    theme.border
+                })
+                .hover(|s| s.bg(theme.accent))
+        })
+        .when(is_bottom_dock, |s| {
+            s.w_full()
+                .h(px(4.0))
+                .cursor_row_resize()
+                .bg(if is_resizing {
+                    theme.accent
+                } else {
+                    theme.border
+                })
+                .hover(|s| s.bg(theme.accent))
+        })
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                if event.click_count == 2 {
+                    this.reset_filter_dock_size(cx);
+                } else {
+                    this.start_resizing_filter_dock(event.position, cx);
+                }
+            }),
+        )
+}
+
 pub fn render_filter_dock(
     workspace: &LogAnalysisWorkspace,
     cx: &mut Context<LogAnalysisWorkspace>,
@@ -19,16 +64,12 @@ pub fn render_filter_dock(
         .flex_col()
         .overflow_hidden()
         .when(!is_bottom_dock, |s| {
-            s.w(px(310.0))
+            s.w(px(workspace.filter_dock_width))
                 .h_full()
-                .border_r_1()
-                .border_color(theme.border)
         })
         .when(is_bottom_dock, |s| {
             s.w_full()
-                .h(px(220.0))
-                .border_t_1()
-                .border_color(theme.border)
+                .h(px(workspace.filter_dock_height))
         })
         // Tab Bar Header
         .child(

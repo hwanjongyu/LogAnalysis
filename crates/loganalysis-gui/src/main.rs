@@ -18,7 +18,7 @@ use gpui::*;
 use actions::*;
 use cli::handle_cli_version_flag;
 use components::activity_bar::render_activity_bar;
-use components::filter_dock::render_filter_dock;
+use components::filter_dock::{render_filter_dock, render_filter_dock_splitter};
 use components::log_view::render_log_viewport;
 use components::resize_border::render_window_resize_borders;
 use components::status_bar::render_status_bar;
@@ -76,6 +76,7 @@ impl Render for LogAnalysisWorkspace {
         let timeline_ribbon_el = render_timeline_sparkline(self, cx);
         let activity_bar_el = render_activity_bar(self, cx);
         let filter_panel_el = render_filter_dock(self, cx);
+        let filter_splitter_el = render_filter_dock_splitter(self, cx);
         let log_viewport_el = render_log_viewport(self, cx);
         let status_bar_el = render_status_bar(self, cx);
         let modal_el = render_filter_edit_modal(self, cx);
@@ -92,7 +93,9 @@ impl Render for LogAnalysisWorkspace {
                     .flex()
                     .flex_row()
                     .overflow_hidden()
+                    .when(self.is_resizing_filter_dock, |s| s.cursor_col_resize())
                     .child(filter_panel_el)
+                    .child(filter_splitter_el)
                     .child(log_viewport_el)
             } else {
                 div()
@@ -101,7 +104,9 @@ impl Render for LogAnalysisWorkspace {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
+                    .when(self.is_resizing_filter_dock, |s| s.cursor_row_resize())
                     .child(log_viewport_el)
+                    .child(filter_splitter_el)
                     .child(filter_panel_el)
             }
         } else {
@@ -125,6 +130,19 @@ impl Render for LogAnalysisWorkspace {
         div()
             .id("workspace-container")
             .track_focus(&self.focus_handle)
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                if this.is_resizing_filter_dock && event.dragging() {
+                    this.update_resizing_filter_dock(event.position, cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    if this.is_resizing_filter_dock {
+                        this.stop_resizing_filter_dock(cx);
+                    }
+                }),
+            )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 if event.keystroke.key == "escape" && this.is_device_selector_open {
                     this.is_device_selector_open = false;
@@ -1116,5 +1134,28 @@ mod tests {
             .find(|c| c.id == crate::modals::command_palette::PaletteCommandId::ToggleFacetsBar)
             .expect("ToggleFacetsBar should exist");
         assert_eq!(facets_cmd.shortcut, Some("Alt+F"));
+    }
+
+    #[test]
+    fn test_resizable_filter_dock_clamping_and_reset() {
+        // Test clamp bounds and reset defaults for Filter Dock resizer
+        let default_width = 310.0f32;
+        let default_height = 220.0f32;
+
+        // 1. Left dock width clamping [180.0, 800.0]
+        let clamp_width = |start: f32, delta: f32| (start + delta).clamp(180.0, 800.0);
+        assert_eq!(clamp_width(default_width, 100.0), 410.0);
+        assert_eq!(clamp_width(default_width, 999.0), 800.0); // max clamped
+        assert_eq!(clamp_width(default_width, -500.0), 180.0); // min clamped
+
+        // 2. Bottom dock height clamping [100.0, 700.0]
+        let clamp_height = |start: f32, delta: f32| (start + delta).clamp(100.0, 700.0);
+        assert_eq!(clamp_height(default_height, 80.0), 300.0);
+        assert_eq!(clamp_height(default_height, 1000.0), 700.0); // max clamped
+        assert_eq!(clamp_height(default_height, -300.0), 100.0); // min clamped
+
+        // 3. Preset defaults
+        assert_eq!(default_width, 310.0);
+        assert_eq!(default_height, 220.0);
     }
 }
