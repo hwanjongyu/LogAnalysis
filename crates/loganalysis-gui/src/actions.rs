@@ -38,5 +38,6 @@ actions!(
         ExportHtmlReport,
         ToggleBookmarkDrawer,
         EditBookmarkNote,
+        ToggleEpsTimeline,
     ]
 );

@@ -4,6 +4,7 @@ pub mod log_view;
 pub mod resize_border;
 pub mod status_bar;
 pub mod text_input;
+pub mod timeline_sparkline;
 pub mod titlebar;
 pub mod toolbar;
 

@@ -3,6 +3,7 @@ pub mod engine;
 pub mod heatmap;
 pub mod matcher;
 pub mod model;
+pub mod timeline;
 
 pub use contrast::{contrast_ratio, evaluate_contrast, relative_luminance, ContrastLevel};
 pub use engine::{
@@ -12,3 +13,4 @@ pub use engine::{
 pub use heatmap::{detect_line_severity, HeatmapBucket, HeatmapData, LineSeverity};
 pub use matcher::{CompiledMatcher, MultiFilterMatcher, PreparedFilter};
 pub use model::{parse_filters_json, FilterRule, FilterTabData};
+pub use timeline::{EpsTimelineBucket, EpsTimelineData};

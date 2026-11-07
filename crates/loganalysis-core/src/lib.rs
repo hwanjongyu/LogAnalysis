@@ -27,7 +27,7 @@ pub use filter::{
     evaluate_and_style_line_with_matcher, evaluate_contrast, execute_filtering,
     find_nearest_anchor_row, parse_filters_json, CompiledMatcher, ContrastLevel, FilterResult,
     FilterRule, FilterTabData, HeatmapBucket, HeatmapData, LineSeverity, MultiFilterMatcher,
-    PreparedFilter, ResolvedStyle,
+    PreparedFilter, ResolvedStyle, EpsTimelineBucket, EpsTimelineData,
 };
 pub use search::{
     fuzzy_match, fuzzy_match_detailed, search_in_log, FuzzyMatchResult, SearchQuery, SearchResult,

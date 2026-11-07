@@ -21,6 +21,7 @@ use components::filter_dock::render_filter_dock;
 use components::log_view::render_log_viewport;
 use components::resize_border::render_window_resize_borders;
 use components::status_bar::render_status_bar;
+use components::timeline_sparkline::render_timeline_sparkline;
 use components::titlebar::render_titlebar;
 use components::toolbar::render_toolbar;
 use modals::bookmark_drawer::render_bookmark_drawer;
@@ -53,6 +54,7 @@ impl Render for LogAnalysisWorkspace {
 
         let titlebar_el = render_titlebar(self, window, cx);
         let toolbar_el = render_toolbar(self, cx);
+        let timeline_ribbon_el = render_timeline_sparkline(self, cx);
         let filter_panel_el = render_filter_dock(self, cx);
         let log_viewport_el = render_log_viewport(self, cx);
         let status_bar_el = render_status_bar(self, cx);
@@ -213,6 +215,9 @@ impl Render for LogAnalysisWorkspace {
                     window.focus(&this.note_input.read(cx).focus_handle);
                 }
             }))
+            .on_action(cx.listener(|this, _: &ToggleEpsTimeline, _window, cx| {
+                this.toggle_eps_timeline(cx);
+            }))
             .relative()
             .flex()
             .flex_col()
@@ -222,6 +227,7 @@ impl Render for LogAnalysisWorkspace {
             .when(is_csd && is_floating, |s| s.border_1().border_color(theme.border))
             .child(titlebar_el)
             .child(toolbar_el)
+            .children(timeline_ribbon_el)
             .child(body)
             .child(status_bar_el)
             .children(modal_el)
@@ -378,6 +384,8 @@ fn main() {
             KeyBinding::new("ctrl-b", ToggleBookmarkDrawer, None),
             KeyBinding::new("cmd-b", ToggleBookmarkDrawer, None),
             KeyBinding::new("alt-enter", EditBookmarkNote, None),
+            KeyBinding::new("ctrl-shift-t", ToggleEpsTimeline, None),
+            KeyBinding::new("cmd-shift-t", ToggleEpsTimeline, None),
         ]);
 
         // Register Scoped TextInput Key Bindings (Cut, Copy, Paste, Arrows, Selection, etc.)
@@ -570,6 +578,14 @@ mod tests {
             .collect();
         assert!(!export_matches.is_empty());
         assert_eq!(export_matches[0].0.id, PaletteCommandId::ExportHtmlReport);
+
+        // Fuzzy search for "timeline" -> should find EPS sparkline command
+        let timeline_matches: Vec<_> = commands
+            .iter()
+            .filter_map(|c| fuzzy_match("timeline", c.title).map(|score| (c, score)))
+            .collect();
+        assert!(!timeline_matches.is_empty());
+        assert_eq!(timeline_matches[0].0.id, PaletteCommandId::ToggleEpsTimeline);
     }
 
     #[test]

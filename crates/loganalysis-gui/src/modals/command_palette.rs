@@ -34,6 +34,7 @@ pub enum PaletteCommandId {
     ExportHtmlReport,
     ToggleBookmarkDrawer,
     EditBookmarkNote,
+    ToggleEpsTimeline,
 }
 
 #[derive(Clone, Debug)]
@@ -159,6 +160,12 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             title: "View: Toggle Dark / Light Theme",
             category: "VIEW",
             shortcut: None,
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ToggleEpsTimeline,
+            title: "View: Toggle Throughput & EPS Timeline Sparkline",
+            category: "VIEW",
+            shortcut: Some("Ctrl+Shift+T"),
         },
         PaletteCommand {
             id: PaletteCommandId::ZoomIn,

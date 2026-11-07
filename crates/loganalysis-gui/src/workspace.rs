@@ -16,6 +16,8 @@ pub struct LogAnalysisWorkspace {
     pub(crate) log_source: Option<Arc<ActiveLogSource>>,
     pub(crate) filter_result: Option<Arc<FilterResult>>,
     pub(crate) heatmap_data: Option<Arc<HeatmapData>>,
+    pub(crate) timeline_data: Option<Arc<EpsTimelineData>>,
+    pub(crate) is_timeline_visible: bool,
     pub(crate) scroll_handle: UniformListScrollHandle,
     pub(crate) selection: SelectionModel,
     pub(crate) theme: Theme,
@@ -208,6 +210,8 @@ impl LogAnalysisWorkspace {
             log_source: None,
             filter_result: None,
             heatmap_data: None,
+            timeline_data: None,
+            is_timeline_visible: true,
             scroll_handle: UniformListScrollHandle::new(),
             selection: SelectionModel::new(),
             theme: Theme::default(),
@@ -400,11 +404,17 @@ impl LogAnalysisWorkspace {
                             &res.visible_styles,
                             200,
                         );
-                        Some((res, heatmap))
+                        let timeline = EpsTimelineData::compute(
+                            &*source_for_bg,
+                            &res.visible_indices,
+                            &res.visible_styles,
+                            80,
+                        );
+                        Some((res, heatmap, timeline))
                     })
                     .await;
 
-                if let Some((res, heatmap)) = result {
+                if let Some((res, heatmap, timeline)) = result {
                     let _ = this.update(&mut async_cx, |workspace, cx| {
                         // Check if a newer generation superseded this task
                         if workspace.filter_cancel_gen.load(Ordering::SeqCst) != generation {
@@ -414,6 +424,7 @@ impl LogAnalysisWorkspace {
                         let prev_anchor = workspace.selection.anchor_source_idx;
                         workspace.filter_result = Some(Arc::new(res));
                         workspace.heatmap_data = Some(Arc::new(heatmap));
+                        workspace.timeline_data = Some(Arc::new(timeline));
 
                         // Viewport anchor preservation
                         if let (Some(anchor), Some(res)) = (prev_anchor, &workspace.filter_result) {
@@ -690,6 +701,12 @@ impl LogAnalysisWorkspace {
                                                     &res_mut.visible_indices,
                                                     &res_mut.visible_styles,
                                                     200,
+                                                )));
+                                                workspace.timeline_data = Some(Arc::new(EpsTimelineData::compute(
+                                                    &**src_ref,
+                                                    &res_mut.visible_indices,
+                                                    &res_mut.visible_styles,
+                                                    80,
                                                 )));
                                                 workspace.status_text = format!(
                                                     "Visible: {} / {} lines ({} matched)",
@@ -1257,6 +1274,7 @@ impl LogAnalysisWorkspace {
             }
             PaletteCommandId::ToggleBookmarkDrawer => self.toggle_bookmark_drawer(cx),
             PaletteCommandId::EditBookmarkNote => self.open_note_modal_for_selected(cx),
+            PaletteCommandId::ToggleEpsTimeline => self.toggle_eps_timeline(cx),
         }
     }
 
@@ -1623,6 +1641,7 @@ impl LogAnalysisWorkspace {
         self.log_source = None;
         self.filter_result = None;
         self.heatmap_data = None;
+        self.timeline_data = None;
         self.selection.clear();
         self.bookmarks.clear();
         self.active_file_name = None;
@@ -2185,6 +2204,17 @@ impl LogAnalysisWorkspace {
         if self.input_focus == InputFocusTarget::BookmarkNote {
             self.input_focus = InputFocusTarget::None;
         }
+        cx.notify();
+    }
+
+    /// Toggles the Throughput & EPS Timeline Sparkline ribbon (Ctrl+Shift+T)
+    pub fn toggle_eps_timeline(&mut self, cx: &mut Context<Self>) {
+        self.is_timeline_visible = !self.is_timeline_visible;
+        self.status_text = if self.is_timeline_visible {
+            "Throughput Timeline Ribbon: ON".into()
+        } else {
+            "Throughput Timeline Ribbon: OFF".into()
+        };
         cx.notify();
     }
 }
