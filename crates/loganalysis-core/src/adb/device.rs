@@ -115,6 +115,19 @@ pub fn scan_adb_device_details(timeout: Duration) -> Result<Vec<AdbDeviceInfo>, 
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
 
+    #[cfg(target_os = "linux")]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        let parent_pid = libc::getpid();
+        cmd.pre_exec(move || {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            if libc::getppid() != parent_pid {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+
     let mut child = cmd.spawn().map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
 
     // If timeout already elapsed during spawn

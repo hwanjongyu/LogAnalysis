@@ -71,8 +71,12 @@ pub fn start_logcat_stream(
     #[cfg(target_os = "linux")]
     unsafe {
         use std::os::unix::process::CommandExt;
-        cmd.pre_exec(|| {
+        let parent_pid = libc::getpid();
+        cmd.pre_exec(move || {
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            if libc::getppid() != parent_pid {
+                libc::_exit(1);
+            }
             Ok(())
         });
     }

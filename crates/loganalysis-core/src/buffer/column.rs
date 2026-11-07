@@ -37,37 +37,39 @@ pub fn parse_logcat_column_line<'a>(line: &'a str) -> ParsedColumnLine<'a> {
                 && level_str.len() == 1
             {
                 let lvl = level_str.chars().next().unwrap().to_ascii_uppercase();
-                let severity = match lvl {
-                    'E' | 'F' => LineSeverity::Error,
-                    'W' => LineSeverity::Warning,
-                    'I' | 'D' | 'V' => LineSeverity::Normal,
-                    _ => LineSeverity::Normal,
-                };
+                if matches!(lvl, 'V' | 'D' | 'I' | 'W' | 'E' | 'F') {
+                    let severity = match lvl {
+                        'E' | 'F' => LineSeverity::Error,
+                        'W' => LineSeverity::Warning,
+                        _ => LineSeverity::Normal,
+                    };
 
-                let level_pos = rest.find(level_str).unwrap();
-                let after_level = rest[level_pos + level_str.len()..].trim_start();
+                    // Exact subslice pointer offset eliminates substring ambiguity
+                    let level_pos = (level_str.as_ptr() as usize).saturating_sub(rest.as_ptr() as usize);
+                    let after_level = rest[level_pos + level_str.len()..].trim_start();
 
-                // Tag is usually before ':'
-                let (tag, message) = if let Some(colon_pos) = after_level.find(':') {
-                    let tag = after_level[..colon_pos].trim();
-                    let msg = after_level[colon_pos + 1..].trim_start();
-                    (Some(tag), msg)
-                } else {
-                    let mut parts = after_level.splitn(2, ' ');
-                    let tag = parts.next().map(|s| s.trim());
-                    let msg = parts.next().unwrap_or("").trim_start();
-                    (tag, msg)
-                };
+                    // Tag is usually before ':'
+                    let (tag, message) = if let Some(colon_pos) = after_level.find(':') {
+                        let tag = after_level[..colon_pos].trim();
+                        let msg = after_level[colon_pos + 1..].trim_start();
+                        (Some(tag), msg)
+                    } else {
+                        let mut parts = after_level.splitn(2, ' ');
+                        let tag = parts.next().map(|s| s.trim());
+                        let msg = parts.next().unwrap_or("").trim_start();
+                        (tag, msg)
+                    };
 
-                return ParsedColumnLine {
-                    time: Some(time_part),
-                    pid: Some(pid),
-                    tid: Some(tid),
-                    level_char: Some(lvl),
-                    level_severity: severity,
-                    tag,
-                    message,
-                };
+                    return ParsedColumnLine {
+                        time: Some(time_part),
+                        pid: Some(pid),
+                        tid: Some(tid),
+                        level_char: Some(lvl),
+                        level_severity: severity,
+                        tag,
+                        message,
+                    };
+                }
             }
         }
     }
@@ -142,5 +144,32 @@ mod tests {
         assert_eq!(parsed.level_severity, LineSeverity::Normal);
         assert_eq!(parsed.tag, None);
         assert_eq!(parsed.message, line);
+    }
+
+    #[test]
+    fn test_parse_non_logcat_level_token_fallback() {
+        // 'X' is not a standard logcat severity (V/D/I/W/E/F)
+        let line = "11-06 18:00:00.123  1000  1000 X CustomApp: Something strange";
+        let parsed = parse_logcat_column_line(line);
+
+        assert_eq!(parsed.time, None);
+        assert_eq!(parsed.pid, None);
+        assert_eq!(parsed.tid, None);
+        assert_eq!(parsed.level_char, None);
+        assert_eq!(parsed.message, line);
+    }
+
+    #[test]
+    fn test_parse_level_pointer_offset_exactness() {
+        // Tag contains same letter as level ('E')
+        let line = "11-06 18:00:00.123  1000  1000 E EngineCore: Critical fault";
+        let parsed = parse_logcat_column_line(line);
+
+        assert_eq!(parsed.time, Some("11-06 18:00:00.123"));
+        assert_eq!(parsed.pid, Some("1000"));
+        assert_eq!(parsed.tid, Some("1000"));
+        assert_eq!(parsed.level_char, Some('E'));
+        assert_eq!(parsed.tag, Some("EngineCore"));
+        assert_eq!(parsed.message, "Critical fault");
     }
 }

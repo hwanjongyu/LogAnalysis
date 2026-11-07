@@ -68,8 +68,9 @@
 - ADB 디바이스 시리얼 번호는 반드시 안전한 영숫자/특수문자 패턴(`^[a-zA-Z0-9._:-]+$`) 검증을 거친 후 명령행 인자로 전달되어야 합니다 (Command Injection 원천 방어).
 - 디바이스 목록 스캔(`scan_adb_devices`) 시 ADB 서버 응답 지연으로 인한 UI 프리징을 방지하기 위해 3초 타임아웃을 적용하고, 타임아웃 초과 시 서브프로세스를 강제 회수(`kill`)해야 합니다.
 
-### `[INV-12]` 리눅스 자식 프로세스 커널 자동 회수 (Linux PDEATHSIG Guard)
-- `adb logcat` 등 백그라운드 스트리밍 서브프로세스 생성 시, 리눅스 환경에서는 `prctl(PR_SET_PDEATHSIG, SIGKILL)`을 반드시 등록하여 부모 프로세스가 예기치 않게 비정상 종료(Crash, SIGKILL, 전원 차단 등)되더라도 리눅스 커널 레벨에서 자식 프로세스를 즉시 자동 강제 종료하여 고아 프로세스가 시스템 자원을 점유하지 않도록 보장해야 합니다.
+### `[INV-12]` 리눅스 자식 프로세스 커널 자동 회수 및 부모 레이스 방어 (Linux PDEATHSIG Guard & Parent Race Defense)
+- `adb logcat` 스트리밍 및 `adb devices -l` 디바이스 스캔 등 모든 ADB 서브프로세스 생성 시, 리눅스 환경에서는 `cmd.pre_exec`를 통해 `prctl(PR_SET_PDEATHSIG, SIGKILL)`을 반드시 등록하여 부모 프로세스가 예기치 않게 비정상 종료(Crash, SIGKILL, 전원 차단 등)되더라도 리눅스 커널 레벨에서 자식 프로세스를 즉시 자동 강제 종료하여 고아 프로세스가 시스템 자원을 점유하지 않도록 보장해야 합니다.
+- 또한 `fork()` 직후 부모 프로세스가 종료되어 `init`(PID 1) 또는 서브리퍼(Subreaper)로 재부모화(Reparenting)되는 레이스 컨디션을 원천 차단하기 위해, fork 전 `libc::getpid()`로 부모 PID를 캡처하고 `pre_exec` 내에서 `libc::getppid() != parent_pid`인 경우 즉시 `libc::_exit(1)`로 자폭(Self-terminate)해야 합니다.
 
 ---
 

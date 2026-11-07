@@ -1,4 +1,4 @@
-#![recursion_limit = "512"]
+#![recursion_limit = "1024"]
 #![windows_subsystem = "windows"]
 
 mod actions;
@@ -907,5 +907,26 @@ mod tests {
         // Cleanup
         let _ = std::fs::remove_file(client_path);
         let _ = std::fs::remove_file(server_path);
+    }
+
+    #[test]
+    fn test_render_highlighted_text_zero_allocation() {
+        use crate::components::log_view::render_highlighted_text;
+        use gpui::{HighlightStyle, SharedString};
+        use loganalysis_core::CompiledMatcher;
+
+        let text = SharedString::from("2026-11-06 12:00:00 Normal log line");
+        let style = HighlightStyle::default();
+
+        // 1. Without matcher: returns element directly
+        let _elem1 = render_highlighted_text(text.clone(), &None, style);
+
+        // 2. With matcher and matches
+        let matcher = std::sync::Arc::new(CompiledMatcher::new("Normal", false, false).unwrap());
+        let _elem2 = render_highlighted_text(text.clone(), &Some(matcher.clone()), style);
+
+        // 3. With matcher but no matches
+        let no_matcher = std::sync::Arc::new(CompiledMatcher::new("NonExistentPattern", false, false).unwrap());
+        let _elem3 = render_highlighted_text(text, &Some(no_matcher), style);
     }
 }

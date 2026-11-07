@@ -429,24 +429,24 @@ fn render_pane_content(
     }
 }
 
-/// Helper to render text with search match highlighting
-fn render_highlighted_text(
-    text_content: &str,
+/// Helper to render text with search match highlighting with zero unnecessary string allocations
+pub(crate) fn render_highlighted_text(
+    text_content: SharedString,
     search_matcher: &Option<std::sync::Arc<loganalysis_core::CompiledMatcher>>,
     highlight_style: HighlightStyle,
 ) -> AnyElement {
     if let Some(ref matcher) = search_matcher {
-        let ranges = matcher.find_match_ranges(text_content, 32);
+        let ranges = matcher.find_match_ranges(text_content.as_ref(), 32);
         if !ranges.is_empty() {
             let highlights = ranges.into_iter().map(|r| (r, highlight_style));
-            StyledText::new(text_content.to_string())
+            StyledText::new(text_content)
                 .with_highlights(highlights)
                 .into_any_element()
         } else {
-            text_content.to_string().into_any_element()
+            text_content.into_any_element()
         }
     } else {
-        text_content.to_string().into_any_element()
+        text_content.into_any_element()
     }
 }
 
@@ -762,7 +762,7 @@ fn render_log_list(
                                     .text_color(badge_fg)
                                     .text_size(px(10.0))
                                     .font_weight(FontWeight::BOLD)
-                                    .child(s_name.to_string()),
+                                    .child(SharedString::new(s_name)),
                             ),
                     );
                 }
@@ -774,12 +774,22 @@ fn render_log_list(
                             parsed.level_char,
                             is_dark_theme,
                         );
-                        let level_char_str = parsed
-                            .level_char
-                            .map(|c| c.to_string())
-                            .unwrap_or_else(|| "-".into());
-                        let pid_tid_str =
-                            format!("{}/{}", parsed.pid.unwrap_or("-"), parsed.tid.unwrap_or("-"));
+                        let level_char_str: SharedString = match parsed.level_char {
+                            Some('E') | Some('e') => "E".into(),
+                            Some('W') | Some('w') => "W".into(),
+                            Some('I') | Some('i') => "I".into(),
+                            Some('D') | Some('d') => "D".into(),
+                            Some('V') | Some('v') => "V".into(),
+                            Some('F') | Some('f') => "F".into(),
+                            Some(c) => SharedString::new(c.to_string()),
+                            None => "-".into(),
+                        };
+                        let pid_tid_str: SharedString = match (parsed.pid, parsed.tid) {
+                            (Some(p), Some(t)) => format!("{}/{}", p, t).into(),
+                            (Some(p), None) => format!("{}/-", p).into(),
+                            (None, Some(t)) => format!("-/{}" , t).into(),
+                            (None, None) => "-/-".into(),
+                        };
                         let tag_str = parsed.tag.unwrap_or("-");
                         let tag_color = crate::theme::hash_tag_color(tag_str, is_dark_theme);
                         let msg_text = parsed.message;
@@ -797,7 +807,7 @@ fn render_log_list(
                                     .items_center()
                                     .text_size(px(11.0))
                                     .text_color(row_theme.text_muted)
-                                    .child(time_str.to_string()),
+                                    .child(SharedString::new(time_str)),
                             )
                             .child(
                                 div()
@@ -854,7 +864,7 @@ fn render_log_list(
                                     .text_color(tag_color)
                                     .whitespace_nowrap()
                                     .overflow_hidden()
-                                    .child(tag_str.to_string()),
+                                    .child(SharedString::new(tag_str)),
                             )
                             .child(
                                 div()
@@ -863,7 +873,7 @@ fn render_log_list(
                                     .whitespace_nowrap()
                                     .overflow_hidden()
                                     .child(render_highlighted_text(
-                                        msg_text,
+                                        SharedString::new(msg_text),
                                         &search_matcher,
                                         highlight_style,
                                     )),
@@ -877,7 +887,7 @@ fn render_log_list(
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .child(render_highlighted_text(
-                                    text.as_ref(),
+                                    text.clone(),
                                     &search_matcher,
                                     highlight_style,
                                 )),
@@ -891,7 +901,7 @@ fn render_log_list(
                             .px(px(10.0))
                             .whitespace_nowrap()
                             .child(render_highlighted_text(
-                                text.as_ref(),
+                                text.clone(),
                                 &search_matcher,
                                 highlight_style,
                             )),
