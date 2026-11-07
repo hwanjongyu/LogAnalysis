@@ -3009,6 +3009,7 @@ dependencies = [
  "aho-corasick",
  "crossbeam-channel",
  "fancy-regex",
+ "libc",
  "memchr",
  "memmap2",
  "rayon",

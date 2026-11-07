@@ -68,6 +68,9 @@
 - ADB 디바이스 시리얼 번호는 반드시 안전한 영숫자/특수문자 패턴(`^[a-zA-Z0-9._:-]+$`) 검증을 거친 후 명령행 인자로 전달되어야 합니다 (Command Injection 원천 방어).
 - 디바이스 목록 스캔(`scan_adb_devices`) 시 ADB 서버 응답 지연으로 인한 UI 프리징을 방지하기 위해 3초 타임아웃을 적용하고, 타임아웃 초과 시 서브프로세스를 강제 회수(`kill`)해야 합니다.
 
+### `[INV-12]` 리눅스 자식 프로세스 커널 자동 회수 (Linux PDEATHSIG Guard)
+- `adb logcat` 등 백그라운드 스트리밍 서브프로세스 생성 시, 리눅스 환경에서는 `prctl(PR_SET_PDEATHSIG, SIGKILL)`을 반드시 등록하여 부모 프로세스가 예기치 않게 비정상 종료(Crash, SIGKILL, 전원 차단 등)되더라도 리눅스 커널 레벨에서 자식 프로세스를 즉시 자동 강제 종료하여 고아 프로세스가 시스템 자원을 점유하지 않도록 보장해야 합니다.
+
 ---
 
 ## 7. 텍스트 입력 및 IME 안전성 (TextInput & IME Safety)
@@ -106,7 +109,7 @@
 
 코드 수정 시 반드시 다음 단계를 거쳐야 합니다:
 
-1. **자동화 테스트 통과**: `cargo test --workspace` (49개 단위/통합 테스트 전체 통과 확인)
+1. **자동화 테스트 통과**: `cargo test --workspace` (단위/통합 테스트 전체 통과 확인, 회귀 0건)
 2. **다이얼로그 사양 검증**: 파일 열기/저장 창에 `*.log`, `*.txt`, `*.json`, `*.*` 필터가 정상 포함되어 있는지 단위 테스트(`dialogs::tests`)로 증명
 3. **컴파일 및 린트**: `cargo check --workspace` 및 `cargo clippy --workspace` (경고 0건 유지)
 4. **빌드 검증**: `./scripts/build-appimage.sh`로 패키징 정상 여부 확인

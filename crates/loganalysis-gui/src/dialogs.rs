@@ -93,11 +93,8 @@ pub fn attach_dialog_parent(mut dialog: rfd::AsyncFileDialog, parent: Option<&Wi
             }
         } else {
             // Under X11, GPUI 0.2.2 panics if window_handle is called on Window.
-            // Safely query the active window ID and provide our custom raw handle.
-            if let Some(xid) = get_active_x11_window_id() {
-                let handle = CustomX11WindowHandle(xid);
-                dialog = dialog.set_parent(&handle);
-            }
+            // X11 dialog attachment must be performed asynchronously via attach_dialog_x11_id
+            // on the background executor to prevent blocking the UI render thread (INV-02-B).
         }
     }
 

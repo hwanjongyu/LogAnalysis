@@ -68,6 +68,15 @@ pub fn start_logcat_stream(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
 
+    #[cfg(target_os = "linux")]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            Ok(())
+        });
+    }
+
     let mut child = cmd.spawn().map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
     let stdout = child.stdout.take().ok_or(AdbError::IoCaptureFailed)?;
 
@@ -147,5 +156,46 @@ pub fn stream_log_lines<R: std::io::Read>(
 
     if !buffer.is_empty() {
         let _ = chunk_tx.send(buffer);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::bounded;
+
+    #[test]
+    fn test_invalid_device_serial_rejected() {
+        let (tx, _rx) = bounded(1);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+
+        // Command injection attempt in serial
+        let evil_serial = "emulator-5554; rm -rf /";
+        let res = start_logcat_stream(Some(evil_serial), tx, stop_flag);
+        assert!(matches!(res, Err(AdbError::InvalidSerial(_))));
+    }
+
+    #[test]
+    fn test_stream_log_lines_empty_reader() {
+        let (tx, rx) = bounded(10);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let empty_input = b"";
+        let reader = BufReader::new(&empty_input[..]);
+
+        stream_log_lines(reader, tx, stop_flag);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_stream_log_lines_batch_and_strip() {
+        let (tx, rx) = bounded(10);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let input = b"Line 1\r\nLine 2\nLine 3\n";
+        let reader = BufReader::new(&input[..]);
+
+        stream_log_lines(reader, tx, stop_flag);
+
+        let batch = rx.recv().expect("Should receive batch");
+        assert_eq!(batch, vec!["Line 1", "Line 2", "Line 3"]);
     }
 }
