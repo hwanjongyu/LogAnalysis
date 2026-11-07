@@ -735,6 +735,35 @@ fn render_log_list(
                     })
                     .child(gutter_el);
 
+                if let Some((s_id, s_name)) = source.and_then(|s| s.get_line_source_info(real_idx)) {
+                    let badge_colors = [
+                        (rgb(0x1e3a8a), rgb(0x93c5fd)), // File 0: Blue
+                        (rgb(0x581c87), rgb(0xd8b4fe)), // File 1: Purple
+                        (rgb(0x064e3b), rgb(0x6ee7b7)), // File 2: Emerald
+                        (rgb(0x7c2d12), rgb(0xfdba74)), // File 3: Amber
+                    ];
+                    let (badge_bg, badge_fg) = badge_colors[(s_id as usize) % badge_colors.len()];
+                    row_el = row_el.child(
+                        div()
+                            .h_full()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .px(px(3.0))
+                            .child(
+                                div()
+                                    .px(px(4.0))
+                                    .py(px(1.0))
+                                    .rounded_xs()
+                                    .bg(badge_bg)
+                                    .text_color(badge_fg)
+                                    .text_size(px(10.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(s_name.to_string()),
+                            ),
+                    );
+                }
+
                 if is_col_view {
                     let parsed = parse_logcat_column_line(text.as_ref());
                     if let Some(time_str) = parsed.time {

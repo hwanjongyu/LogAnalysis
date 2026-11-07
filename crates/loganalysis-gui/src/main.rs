@@ -230,6 +230,9 @@ impl Render for LogAnalysisWorkspace {
             .on_action(cx.listener(|this, _: &OpenSecondaryLog, window, cx| {
                 this.prompt_open_secondary_file(Some(window), cx);
             }))
+            .on_action(cx.listener(|this, _: &OpenMergedLogs, window, cx| {
+                this.prompt_open_merged_files(Some(window), cx);
+            }))
             .on_action(cx.listener(|this, _: &ToggleColumnView, _window, cx| {
                 this.toggle_column_view(cx);
             }))
@@ -407,6 +410,8 @@ fn main() {
             KeyBinding::new("ctrl-alt-s", ToggleSyncedScroll, None),
             KeyBinding::new("ctrl-g", ToggleColumnView, None),
             KeyBinding::new("cmd-g", ToggleColumnView, None),
+            KeyBinding::new("ctrl-shift-m", OpenMergedLogs, None),
+            KeyBinding::new("cmd-shift-m", OpenMergedLogs, None),
         ]);
 
         // Register Scoped TextInput Key Bindings (Cut, Copy, Paste, Arrows, Selection, etc.)
@@ -633,6 +638,14 @@ mod tests {
             .collect();
         assert!(!column_matches.is_empty());
         assert_eq!(column_matches[0].0.id, PaletteCommandId::ToggleColumnView);
+
+        // Fuzzy search for "merge" -> should find open merged logs command
+        let merge_matches: Vec<_> = commands
+            .iter()
+            .filter_map(|c| fuzzy_match("merge", c.title).map(|score| (c, score)))
+            .collect();
+        assert!(!merge_matches.is_empty());
+        assert_eq!(merge_matches[0].0.id, PaletteCommandId::OpenMergedLogs);
     }
 
     #[test]
@@ -795,5 +808,86 @@ mod tests {
         assert_eq!(p3.level_severity, LineSeverity::Warning);
         assert_eq!(p3.tag, Some("AudioFlinger"));
         assert_eq!(p3.message, "Buffer underrun occurred");
+    }
+
+    #[test]
+    fn test_chronological_multi_file_merge_view_and_filtering() {
+        use loganalysis_core::*;
+        use std::io::Write;
+
+        let dir = std::env::temp_dir();
+        let client_path = dir.join("test_merge_client.log");
+        let server_path = dir.join("test_merge_server.log");
+
+        let client_content = "11-06 12:00:01.000 Client sends request\n\
+                              11-06 12:00:03.000 Client timeout waiting for reply\n\
+                              \tat com.client.Http.call(Http.java:10)\n";
+
+        let server_content = "11-06 12:00:02.000 Server receives request\n\
+                              11-06 12:00:02.500 Server database deadlock\n\
+                              11-06 12:00:04.000 Server restarted\n";
+
+        {
+            let mut f1 = std::fs::File::create(&client_path).unwrap();
+            f1.write_all(client_content.as_bytes()).unwrap();
+            let mut f2 = std::fs::File::create(&server_path).unwrap();
+            f2.write_all(server_content.as_bytes()).unwrap();
+        }
+
+        let merged_buf = MergedLogBuffer::open_multiple(&[client_path.clone(), server_path.clone()]).unwrap();
+        assert_eq!(merged_buf.line_count(), 6);
+
+        // Verify origin badges and names
+        assert_eq!(merged_buf.source_names(), &["test_merge_client.log", "test_merge_server.log"]);
+
+        // Line 0: Client sends request (12:00:01.000)
+        assert_eq!(merged_buf.get_line_source_id(0), Some(0));
+        assert_eq!(merged_buf.get_line_source_name(0), Some("test_merge_client.log"));
+        assert!(merged_buf.get_line(0).unwrap().contains("Client sends request"));
+
+        // Line 1: Server receives request (12:00:02.000)
+        assert_eq!(merged_buf.get_line_source_id(1), Some(1));
+        assert_eq!(merged_buf.get_line_source_name(1), Some("test_merge_server.log"));
+        assert!(merged_buf.get_line(1).unwrap().contains("Server receives request"));
+
+        // Line 2: Server database deadlock (12:00:02.500)
+        assert_eq!(merged_buf.get_line_source_id(2), Some(1));
+        assert!(merged_buf.get_line(2).unwrap().contains("Server database deadlock"));
+
+        // Line 3: Client timeout waiting for reply (12:00:03.000)
+        assert_eq!(merged_buf.get_line_source_id(3), Some(0));
+        assert!(merged_buf.get_line(3).unwrap().contains("Client timeout"));
+
+        // Line 4: Stack trace continuation (inherits 12:00:03.000, attached to client)
+        assert_eq!(merged_buf.get_line_source_id(4), Some(0));
+        assert!(merged_buf.get_line(4).unwrap().contains("Http.java:10"));
+
+        // Line 5: Server restarted (12:00:04.000)
+        assert_eq!(merged_buf.get_line_source_id(5), Some(1));
+        assert!(merged_buf.get_line(5).unwrap().contains("Server restarted"));
+
+        // Verify ActiveLogSource dispatch and execute_filtering
+        let active_source = ActiveLogSource::Merged(merged_buf);
+        assert_eq!(active_source.line_count(), 6);
+        assert_eq!(active_source.get_line_source_info(1), Some((1, "test_merge_server.log")));
+
+        let rule = FilterRule {
+            text: "deadlock".to_string(),
+            regex: false,
+            case_sensitive: false,
+            exclude: false,
+            bg_color: "Red".to_string(),
+            text_color: "White".to_string(),
+            active: true,
+            ..Default::default()
+        };
+
+        let filter_res = execute_filtering(&active_source, &[rule], true, None, 0).unwrap();
+        assert_eq!(filter_res.total_matched_lines, 1);
+        assert_eq!(filter_res.visible_indices, vec![2]);
+
+        // Cleanup
+        let _ = std::fs::remove_file(client_path);
+        let _ = std::fs::remove_file(server_path);
     }
 }

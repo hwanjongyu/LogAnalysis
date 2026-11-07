@@ -1,6 +1,7 @@
 pub mod column;
 pub mod correlation;
 pub mod file_buffer;
+pub mod merged_buffer;
 pub mod stream_buffer;
 pub mod timestamp;
 
@@ -10,15 +11,17 @@ use std::sync::Arc;
 pub use column::{parse_logcat_column_line, ParsedColumnLine};
 pub use correlation::find_nearest_timestamp_row;
 pub use file_buffer::FileLogBuffer;
+pub use merged_buffer::{MergedLineRef, MergedLogBuffer};
 pub use stream_buffer::StreamLogBuffer;
 pub use timestamp::{
     compute_delta_micros, extract_timestamp, format_delta_micros, LatencyLevel, LogTimestamp,
 };
 
-/// Unified log source enum representing either a file-backed mmap buffer or a streaming ring buffer.
+/// Unified log source enum representing either a file-backed mmap buffer, streaming buffer, or merged multi-file buffer.
 pub enum ActiveLogSource {
     File(FileLogBuffer),
     Stream(StreamLogBuffer),
+    Merged(MergedLogBuffer),
 }
 
 impl std::fmt::Debug for ActiveLogSource {
@@ -26,6 +29,26 @@ impl std::fmt::Debug for ActiveLogSource {
         match self {
             Self::File(_) => write!(f, "ActiveLogSource::File"),
             Self::Stream(s) => write!(f, "ActiveLogSource::Stream({:?})", s),
+            Self::Merged(m) => write!(
+                f,
+                "ActiveLogSource::Merged({} files, {} lines)",
+                m.source_count(),
+                m.line_count()
+            ),
+        }
+    }
+}
+
+impl ActiveLogSource {
+    /// Returns the (source_id, source_file_name) if this source is a multi-file merged buffer.
+    pub fn get_line_source_info(&self, idx: usize) -> Option<(u8, &str)> {
+        match self {
+            Self::Merged(m) => {
+                let s_id = m.get_line_source_id(idx)?;
+                let name = m.source_name(s_id)?;
+                Some((s_id, name))
+            }
+            _ => None,
         }
     }
 }
@@ -36,6 +59,7 @@ impl LogSource for ActiveLogSource {
         match self {
             Self::File(f) => f.line_count(),
             Self::Stream(s) => s.line_count(),
+            Self::Merged(m) => m.line_count(),
         }
     }
 
@@ -44,6 +68,7 @@ impl LogSource for ActiveLogSource {
         match self {
             Self::File(f) => f.get_raw_line(idx),
             Self::Stream(s) => s.get_raw_line(idx),
+            Self::Merged(m) => m.get_raw_line(idx),
         }
     }
 
@@ -52,6 +77,7 @@ impl LogSource for ActiveLogSource {
         match self {
             Self::File(f) => f.get_line(idx),
             Self::Stream(s) => s.get_line(idx),
+            Self::Merged(m) => m.get_line(idx),
         }
     }
 
@@ -60,6 +86,7 @@ impl LogSource for ActiveLogSource {
         match self {
             Self::File(f) => f.get_line_arc(idx),
             Self::Stream(s) => s.get_line_arc(idx),
+            Self::Merged(m) => m.get_line_arc(idx),
         }
     }
 
@@ -68,6 +95,7 @@ impl LogSource for ActiveLogSource {
         match self {
             Self::File(f) => f.get_measured_length(idx),
             Self::Stream(s) => s.get_measured_length(idx),
+            Self::Merged(m) => m.get_measured_length(idx),
         }
     }
 }

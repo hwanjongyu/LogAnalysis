@@ -12,7 +12,8 @@ pub use adb::{
 };
 pub use buffer::{
     column::parse_logcat_column_line, column::ParsedColumnLine,
-    correlation::find_nearest_timestamp_row, file_buffer::FileLogBuffer, stream_buffer::StreamLogBuffer,
+    correlation::find_nearest_timestamp_row, file_buffer::FileLogBuffer,
+    merged_buffer::{MergedLineRef, MergedLogBuffer}, stream_buffer::StreamLogBuffer,
     timestamp::compute_delta_micros, timestamp::extract_timestamp, timestamp::format_delta_micros,
     timestamp::LatencyLevel, timestamp::LogTimestamp, ActiveLogSource, LogSource,
 };

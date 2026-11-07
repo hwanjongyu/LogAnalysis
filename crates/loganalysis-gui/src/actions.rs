@@ -44,5 +44,6 @@ actions!(
         ToggleSyncedScroll,
         OpenSecondaryLog,
         ToggleColumnView,
+        OpenMergedLogs,
     ]
 );

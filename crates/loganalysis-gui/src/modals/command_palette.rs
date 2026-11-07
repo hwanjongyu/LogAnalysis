@@ -40,6 +40,7 @@ pub enum PaletteCommandId {
     ToggleSyncedScroll,
     OpenSecondaryLog,
     ToggleColumnView,
+    OpenMergedLogs,
 }
 
 #[derive(Clone, Debug)]
@@ -195,6 +196,12 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             title: "File: Open Log in Secondary Split Pane...",
             category: "FILE",
             shortcut: None,
+        },
+        PaletteCommand {
+            id: PaletteCommandId::OpenMergedLogs,
+            title: "File: Open and Merge Multiple Log Files (Chronological)...",
+            category: "FILE",
+            shortcut: Some("Ctrl+Shift+M"),
         },
         PaletteCommand {
             id: PaletteCommandId::ToggleColumnView,
