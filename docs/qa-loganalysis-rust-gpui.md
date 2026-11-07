@@ -1,15 +1,15 @@
 # QA & Verification Report: LogAnalysis Rust + GPUI
 
-- **작성일:** 2026-11-03
-- **대상 크레이트:** `loganalysis-core`, `loganalysis-gui`
-- **검증 환경:** Linux x86_64, rustc 1.99.0 / cargo 1.99.0
+- **Date:** 2026-11-03
+- **Target Crates:** `loganalysis-core`, `loganalysis-gui`
+- **Verification Environment:** Linux x86_64, rustc 1.99.0 / cargo 1.99.0
 
 ---
 
-## 1. 워크스페이스 빌드 & 단위 테스트 최종 결과
+## 1. Workspace Build & Unit Test Results
 
 - `cargo test --workspace`: **17/17 PASS (0 failures)**
-- `cargo build --workspace`: **컴파일 및 링킹 완료 (`target/debug/loganalysis` 생성 확인, 504MB)**
+- `cargo build --workspace`: **Compilation and linking successful (`target/debug/loganalysis` generated, 504MB)**
 
 ```
 running 17 tests
@@ -36,64 +36,64 @@ test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 
 ---
 
-## 2. P3 코드 위생 및 API 인체공학 완료 내역 (Code Polish & Hygiene)
+## 2. P3 Code Polish & API Ergonomics
 
-1. **강타입 에러 도메인 구축 (`thiserror`)**:
-   - 기존 `Result<T, String>` 문자열 에러 안티패턴을 제거하고, `FilterError`, `SearchError`, `AdbError` 열거형으로 체계화.
-   - 호출자에서 패턴 매칭(`match`)을 통해 타임아웃, 정규식 문법 에러, 시리얼 인자 검증 에러를 세밀하게 핸들링 가능하도록 개선.
-2. **CJK(한글/한자/일본어) 문자 폭 계산 보정**:
-   - `get_measured_length`에서 UTF-8 바이트 길이(`.len()`) 대신 `s.chars().count()` 기반 문자 개수 계산을 적용하여 한글 1글자당 3배로 과계산되던 수평 스크롤 왜곡을 해결.
-3. **순환 검색 루프 나눗셈 연산 및 원자적 부하 최적화**:
-   - `search_in_log`의 `(idx + 1) % total` 정수 나눗셈을 분기문으로 치환하여 CPU 사이클 절감.
-   - 원자적 취소 토큰(`cancel_token`) 확인 주기를 1,024행 단위 스트라이드로 조정하여 메모리 버스 부하 99.9% 감소.
-4. **의존성 및 빌드 스크립트 플랫폼 보호**:
-   - `crates/loganalysis-core/Cargo.toml`의 미사용 `tokio` 종속성 제거.
-   - `crates/loganalysis-gui/build.rs`의 심볼릭 링크 생성 분기를 `#[cfg(target_os = "linux")]`로 감싸 크로스 플랫폼 빌드 호환성 확보.
-
----
-
-## 3. P2 데스크톱 UI 구현 완료 내역 (`loganalysis-gui`)
-
-1. **GPU 가상화 리스트(`uniform_list`) 뷰포트 구현**:
-   - Zed Industries의 `uniform_list`를 연동하여 $O(1)$ GPU 프레임 렌더링, 줄 번호 거터(Gutter), 독립된 전경색/배경색 스타일 반영 구현.
-2. **비동기 백그라운드 필터 디스패치 및 뷰포트 앵커 보존**:
-   - `cx.spawn()` 및 `cx.background_executor()`를 결합하여 UI 스레드 멈춤 없이 Rayon 필터 엔진을 백그라운드에서 실행.
-   - 필터 전환 시 직전 시선 위치를 유지하는 `find_nearest_anchor_row` 앵커 보존 이진 탐색 스크롤 자동 동기화.
-3. **다중 탭 필터 관리 및 JSON 연동**:
-   - 다중 탭 구조(`FilterTabData`), 필터 규칙 활성화/비활성화, Exclude 상태 표시 사이드바 패널 구축.
-   - 기존 Python `loganalysis_gui` 3종 JSON 포맷 완벽 호환 `import_filters_json` / `export_filters_json` 구현.
-4. **인라인 검색 바 및 순환 검색 연동**:
-   - `Ctrl+F` 검색 바 토글, `F3` / `Shift+F3` 양방향 순환 검색(`search_in_log`) 연동.
-5. **실시간 ADB 스트리밍 연동**:
-   - ADB 기기 자동 스캔(`refresh_adb_devices`), 시작/정지 제어 및 `LogcatStreamHandle` RAII 연동.
+1. **Strongly-Typed Error Domains (`thiserror`)**:
+   - Replaced legacy `Result<T, String>` string error antipatterns with structured `FilterError`, `SearchError`, and `AdbError` enums.
+   - Callers can pattern-match (`match`) against timeouts, regex syntax errors, and serial validation errors with precision.
+2. **CJK (Chinese/Japanese/Korean) Character Width Measurement**:
+   - Updated `get_measured_length` to use `s.chars().count()` instead of raw UTF-8 byte length (`.len()`), resolving horizontal scroll over-estimation where multibyte characters were inflated 3x.
+3. **Cyclic Search Loop Division & Atomic Contention Optimization**:
+   - Replaced modulo `(idx + 1) % total` integer division in `search_in_log` with conditional branches to save CPU cycles.
+   - Paced atomic cancellation token (`cancel_token`) polling to a 1,024-line stride, reducing memory bus load by 99.9%.
+4. **Dependency & Build Script Platform Safeguards**:
+   - Removed unused `tokio` dependency from `crates/loganalysis-core/Cargo.toml`.
+   - Guarded symlink creation in `crates/loganalysis-gui/build.rs` with `#[cfg(target_os = "linux")]` for cross-platform build safety.
 
 ---
 
-## 4. P1 핫루프 및 버퍼 최적화 완료 내역 (Performance & Memory)
+## 3. P2 Desktop UI Implementation (`loganalysis-gui`)
 
-1. **단일 패스 라인 평가 (2중 정규식 평가 제거 / CPU 연산 50% 절감)**:
-   - `evaluate_and_style_line`이 `(is_visible, style, is_matched)`를 즉시 반환하도록 개선하여 2중 정규식 순회를 100% 제거.
-2. **Rayon 멀티코어 캐시 라인 바운싱(False Sharing) 완전 해소**:
-   - 모든 워커 스레드가 공유하던 `filter_counts`를 청크 로컬 벡터(`Vec<usize>`)로 격리하여 MESI 캐시 라인 무효화 제거.
-3. **`StreamLogBuffer`를 `VecDeque` 링 버퍼로 전환 및 최대 라인 길이 동기화**:
-   - 200,000줄 트림 시 4.8MB의 `memmove` 포인터 복사를 $O(1)$ 헤드 이동으로 변경. 드레인 시 최대 라인 길이 동기화 보장.
-4. **필터 색상 Hex 사전 파싱 캐싱**:
-   - `PreparedFilter` 컴파일 시점에 `Option<u32>` 정수로 사전 파싱하여 라인 매칭 시 선형 탐색 오버헤드를 1사이클 정수 복사로 전환.
-5. **대소문자 무시 리터럴 검색 SIMD 가속**:
-   - `regex::bytes::RegexBuilder`의 `case_insensitive(true)` 빌더를 통해 AVX2/Teddy SIMD 벡터 연산 적용.
-
----
-
-## 5. P0 해결 완료 내역 (Concurrency, Deadlock & Resilience)
-
-1. **ADB 로그캣 백그라운드 스레드 교착(Deadlock) 및 프로세스 누수 방지**:
-   - `LogcatStreamHandle` RAII 가드를 구축하여 `stop()` 또는 `Drop` 시 파이프 폐쇄 및 자식 프로세스 자동 회수.
-2. **비-UTF8 / 바이너리 로그 데이터 스트리밍 크래시 해결**:
-   - `read_until(b'\n', ...)` 및 `String::from_utf8_lossy` 디코딩으로 바이너리 데이터 유입 시에도 스트림 영구 중단 차단.
-3. **ADB 디바이스 스캔 타임아웃 및 시리얼 공백 트림**:
-   - 실제 채널 타임아웃 적용 및 시리얼 번호 자동 `trim()` 처리.
+1. **GPU-Virtualized List (`uniform_list`) Viewport**:
+   - Integrated Zed Industries' `uniform_list` for $O(1)$ GPU frame rendering, line number gutter, and independent foreground/background styling.
+2. **Asynchronous Background Filter Dispatch & Viewport Anchor Preservation**:
+   - Combined `cx.spawn()` and `cx.background_executor()` to execute the Rayon filter engine without blocking the UI thread.
+   - Implemented `find_nearest_anchor_row` binary search scroll synchronization to preserve the active visual row when toggling filters.
+3. **Multi-Tab Filter Management & JSON Serialization**:
+   - Built sidebar panel supporting multi-tab structures (`FilterTabData`), filter rule enabling/disabling, and Exclude indicator states.
+   - Implemented `import_filters_json` / `export_filters_json` with complete backward compatibility for all 3 legacy Python JSON schemas.
+4. **Inline Search Bar & Cyclic Search Integration**:
+   - Wired `Ctrl+F` search bar toggle and `F3` / `Shift+F3` bidirectional cyclic search (`search_in_log`).
+5. **Real-Time ADB Streaming Integration**:
+   - Integrated automatic ADB device discovery (`refresh_adb_devices`), start/stop stream controls, and RAII-based `LogcatStreamHandle` lifecycle management.
 
 ---
 
-## 6. 최종 품질 게이트 판정: PASS (전체 마일스톤 P0 ~ P3 무결점 달성)
-모든 아키텍처 결함, 성능 병목, UI 가상화, 강타입 에러 도메인이 완벽히 통합되었으며 17개 단위/통합 테스트 실증 통과 및 바이너리 생성이 완료되었습니다.
+## 4. P1 Hot-Loop & Buffer Optimizations (Performance & Memory)
+
+1. **Single-Pass Line Evaluation (Eliminated Double Regex Evaluation / 50% CPU Reduction)**:
+   - Modified `evaluate_and_style_line` to return `(is_visible, style, is_matched)` directly, eliminating duplicate regex traversals completely.
+2. **Eliminated Rayon Multicore Cache-Line Bouncing (False Sharing)**:
+   - Isolated previously shared `filter_counts` into chunk-local vectors (`Vec<usize>`), eliminating MESI cache line invalidation stalls across worker threads.
+3. **Switched `StreamLogBuffer` to `VecDeque` Ring Buffer with Max Line Length Sync**:
+   - Replaced 4.8MB pointer copies (`memmove`) on 200,000-line trims with $O(1)$ ring buffer head advances. Guaranteed max line length resynchronization on drain.
+4. **Pre-Parsed Hex Integer Filter Colors**:
+   - Pre-parsed color hex strings into `Option<u32>` integers at `PreparedFilter` compile time, replacing runtime linear searches with single-cycle integer copies.
+5. **SIMD Acceleration for Case-Insensitive Literal Search**:
+   - Configured `regex::bytes::RegexBuilder` with `case_insensitive(true)` to utilize AVX2/Teddy SIMD vector instructions.
+
+---
+
+## 5. P0 Resolution (Concurrency, Deadlock & Resilience)
+
+1. **ADB Logcat Background Thread Deadlock & Process Leak Prevention**:
+   - Built `LogcatStreamHandle` RAII guard to guarantee pipe closure and child process cleanup on `stop()` or `Drop`.
+2. **Resilience to Non-UTF-8 / Binary Log Streams**:
+   - Handled arbitrary byte streams via `read_until(b'\n', ...)` and `String::from_utf8_lossy` decoding, preventing crashes from corrupted binary logs.
+3. **ADB Device Scan Timeout & Serial Whitespace Trimming**:
+   - Implemented channel timeouts and automated serial number `trim()`.
+
+---
+
+## 6. Final Quality Gate Decision: PASS (All Milestones P0–P3 Verified)
+All architectural issues, performance bottlenecks, virtualized UI components, and strongly-typed error domains are fully integrated. 17 unit/integration tests pass with 0 failures, and desktop binaries compile cleanly.

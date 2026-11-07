@@ -11,7 +11,7 @@
 
 ### P0-1: CJK / Multi-byte UTF-8 Char Boundary Panic in `TextInput::select_word_at`
 - **Location:** [`crates/loganalysis-gui/src/components/text_input.rs:162-168`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/components/text_input.rs#L162-L168)
-- **Root Cause:** In `select_word_at`, the boundary expansion loop decrements/increments raw byte indices:
+- **Root Cause:** In `select_word_at`, the boundary expansion loop decremented/incremented raw byte indices:
   ```rust
   while start > 0 && !bytes[start - 1].is_ascii_whitespace() {
       start -= 1;
@@ -25,28 +25,28 @@
 
 ---
 
-### P0-2: ADB Worker Disconnection Zombie Loop & Unbounded Ingestion Channel
+## P0-2: ADB Worker Disconnection Zombie Loop & Unbounded Ingestion Channel
 - **Location:** [`crates/loganalysis-gui/src/workspace.rs:358, 380-466`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/workspace.rs#L358)
 - **Root Cause:**
-  1. `let (tx, rx) = unbounded();` allocates an unbounded queue. During Android boot bursts or log floods, queue memory can grow unboundedly, risking OOM.
-  2. When the ADB subprocess exits or USB disconnects, the reader thread exits and drops `tx`. `rx.try_recv()` returns `Err(TryRecvError::Disconnected)`. The UI loop ignores the disconnection, leaving `batch` empty and executing `timer_executor.timer(16ms).await`.
-  3. Because `workspace.is_streaming` is never set to `false`, the UI remains trapped in a zombie polling loop with a deceptive green "Streaming" status.
+  1. `let (tx, rx) = unbounded();` allocated an unbounded queue. During Android boot bursts or log floods, queue memory could grow unboundedly, risking OOM.
+  2. When the ADB subprocess exited or USB disconnected, the reader thread exited and dropped `tx`. `rx.try_recv()` returned `Err(TryRecvError::Disconnected)`. The UI loop ignored the disconnection, leaving `batch` empty and executing `timer_executor.timer(16ms).await`.
+  3. Because `workspace.is_streaming` was never set to `false`, the UI remained trapped in a zombie polling loop with a deceptive green "Streaming" status.
 - **Target Fix:**
   1. Bound the channel to `crossbeam_channel::bounded(256)`.
   2. Handle `TryRecvError::Disconnected`: if disconnected, immediately transition `workspace.is_streaming = false`, set status text to `"ADB stream disconnected"`, notify GPUI, and terminate the async loop cleanly.
 
 ---
 
-### P0-3: Low-Throughput Stream Stall & Indefinite Pipe Trapping in `logcat.rs`
+## P0-3: Low-Throughput Stream Stall & Indefinite Pipe Trapping in `logcat.rs`
 - **Location:** [`crates/loganalysis-core/src/adb/logcat.rs:84-114`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-core/src/adb/logcat.rs#L84-L114)
-- **Root Cause:** The flush check `buffer.len() >= 100 || (last_flush.elapsed() >= 16ms && !buffer.is_empty())` fails when log lines arrive with inter-arrival times $>16\text{ms}$. Line 1 arrives at $t=0$ (elapsed $\approx 0\text{ms}$), so it is not flushed. The thread immediately blocks synchronously inside `reader.read_until(b'\n')`, trapping the line in memory until the next line arrives seconds or minutes later.
+- **Root Cause:** The flush check `buffer.len() >= 100 || (last_flush.elapsed() >= 16ms && !buffer.is_empty())` failed when log lines arrived with inter-arrival times $>16\text{ms}$. Line 1 arrived at $t=0$ (elapsed $\approx 0\text{ms}$), so it was not flushed. The thread immediately blocked synchronously inside `reader.read_until(b'\n')`, trapping the line in memory until the next line arrived seconds or minutes later.
 - **Target Fix:** Inspect `reader.buffer()`. If `reader.buffer().is_empty()` after reading a line (no pending bytes in the OS pipe buffer), flush immediately so interactive/sparse logs appear with zero latency.
 
 ---
 
-### P0-4: 200,000 Atomic Refcount Operations & Heap Thrashing on Live Ingestion
+## P0-4: 200,000 Atomic Refcount Operations & Heap Thrashing on Live Ingestion
 - **Location:** [`crates/loganalysis-gui/src/workspace.rs:408-414`](file:///home/drew/github/hwanjongyu/loganalysis/crates/loganalysis-gui/src/workspace.rs#L408-L414)
-- **Root Cause:** On every batch arrival (up to 60 times/sec), `stream.clone()` clones the entire `StreamLogBuffer` (`VecDeque<Arc<str>>`), incrementing 200,000 atomic reference counts and re-allocating the ring buffer on the heap on the UI thread.
+- **Root Cause:** On every batch arrival (up to 60 times/sec), `stream.clone()` cloned the entire `StreamLogBuffer` (`VecDeque<Arc<str>>`), incrementing 200,000 atomic reference counts and re-allocating the ring buffer on the heap on the UI thread.
 - **Target Fix:** Use `Arc::get_mut` on `workspace.log_source`. When no background filtering thread holds a read lock, mutate the `StreamLogBuffer` in-place (`append_chunk` and `trim_if_needed`) with **zero pointer clones**. Only fall back to cloning if a concurrent filter task is actively reading the buffer. Also replace `paused_stream_buffer.remove(0)` with `VecDeque::pop_front()` ($O(1)$).
 
 ---
@@ -65,7 +65,7 @@
 ## 3. Verification & Acceptance Criteria
 
 - `cargo test`: All unit and integration tests must pass cleanly.
-- Double-clicking Korean text ("안녕하세요 로그 분석") in `TextInput` must select the word without triggering char boundary panics.
+- Double-clicking Korean text in `TextInput` must select the word without triggering char boundary panics.
 - ADB stream termination must cleanly transition `is_streaming` to `false` and break the polling loop.
 - Low-frequency single log lines must flush immediately without stalling.
 - In-place mutation of `StreamLogBuffer` must execute with zero ring buffer cloning when unique.

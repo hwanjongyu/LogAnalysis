@@ -6,7 +6,7 @@
 
 ---
 
-## 1. Issue Analysis: "Edit Filter Rule의 Cancel/Update Rule이 클릭이 되지 않음"
+## 1. Issue Analysis: Cancel and Update Rule Buttons Unresponsive to Mouse Clicks in Edit Filter Rule Dialog
 
 ### 1.1 Root Cause Identified in `TextInput::on_mouse_up_out` & GPUI Capture Phase
 - In GPUI (`gpui::window::Window::dispatch_mouse_event`):
@@ -47,7 +47,7 @@
 
 ---
 
-## 4. Issue Analysis & Resolution: "ESC/Enter키가 늦게 작동함"
+## 4. Issue Analysis & Resolution: Latency in ESC and Enter Key Handling
 
 ### 4.1 Root Cause Analysis
 1. **Lack of GPUI Scoped Action Bindings for Enter / Escape:**
