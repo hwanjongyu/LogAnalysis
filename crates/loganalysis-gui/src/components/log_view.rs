@@ -15,6 +15,7 @@ pub fn render_log_viewport(
         div()
             .flex_1()
             .h_full()
+            .relative()
             .flex()
             .flex_col()
             .bg(theme.bg_dark)
@@ -33,10 +34,10 @@ pub fn render_log_viewport(
                     }
                 }),
             )
-            // Interactive Find Bar
-            .children(render_find_bar(workspace, cx))
             // Single primary viewport content
             .child(render_pane_content(workspace, true, false, cx))
+            // Modern Floating Find Widget (over log content without reflow)
+            .children(render_find_bar(workspace, cx))
     } else {
         let is_vertical = workspace.is_split_vertical;
         let mut split_container = div()
@@ -62,6 +63,7 @@ pub fn render_log_viewport(
         div()
             .flex_1()
             .h_full()
+            .relative()
             .flex()
             .flex_col()
             .bg(theme.bg_dark)
@@ -80,10 +82,10 @@ pub fn render_log_viewport(
                     }
                 }),
             )
-            // Interactive Find Bar
-            .children(render_find_bar(workspace, cx))
             // Dual-Pane Split Container
             .child(split_container)
+            // Modern Floating Find Widget (over split container without reflow)
+            .children(render_find_bar(workspace, cx))
     }
 }
 

@@ -35,6 +35,10 @@ impl Render for LogAnalysisWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let modal_pattern_focused = self.modal_pattern_input.read(cx).focus_handle.is_focused(window);
         let note_input_focused = self.note_input.read(cx).focus_handle.is_focused(window);
+        let find_input_focused = self.find_input.read(cx).focus_handle.is_focused(window);
+        let palette_input_focused = self.palette_input.read(cx).focus_handle.is_focused(window);
+        let filter_rule_focused = self.filter_rule_input.read(cx).focus_handle.is_focused(window);
+
         if self.filter_edit_modal.is_open {
             if self.input_focus == InputFocusTarget::ModalPattern && !modal_pattern_focused {
                 window.focus(&self.modal_pattern_input.read(cx).focus_handle);
@@ -43,7 +47,21 @@ impl Render for LogAnalysisWorkspace {
             if self.input_focus == InputFocusTarget::BookmarkNote && !note_input_focused {
                 window.focus(&self.note_input.read(cx).focus_handle);
             }
-        } else if !self.focus_handle.is_focused(window) {
+        } else if self.is_command_palette_open {
+            if !palette_input_focused {
+                window.focus(&self.palette_input.read(cx).focus_handle);
+            }
+        } else if self.is_search_visible && self.input_focus == InputFocusTarget::SearchBar {
+            if !find_input_focused {
+                window.focus(&self.find_input.read(cx).focus_handle);
+            }
+        } else if !modal_pattern_focused
+            && !note_input_focused
+            && !find_input_focused
+            && !palette_input_focused
+            && !filter_rule_focused
+            && !self.focus_handle.is_focused(window)
+        {
             window.focus(&self.focus_handle);
         }
 
