@@ -53,8 +53,8 @@
 ## 5. CLI 및 신원 명세 (CLI Flags & Identity)
 
 ### `[INV-05]` CLI 버전 플래그
-- 터미널에서 `loganalysis --version`, `-V`, `-v` 입력 시 GUI를 띄우지 않고 즉시 `LogAnalysis 0.1.1` (또는 `CARGO_PKG_VERSION`)을 stdout으로 출력 후 정상 종료(exit code 0)해야 합니다.
-- GUI 실행 시 CSD 타이틀바 및 하단 상태바에 일관된 버전 뱃지(`v0.1.1`)가 표시되어야 합니다.
+- 터미널에서 `loganalysis --version`, `-V`, `-v` 입력 시 GUI를 띄우지 않고 즉시 `LogAnalysis 0.2.0` (또는 `CARGO_PKG_VERSION`)을 stdout으로 출력 후 정상 종료(exit code 0)해야 합니다.
+- GUI 실행 시 CSD 타이틀바 및 하단 상태바에 일관된 버전 뱃지(`v0.2.0`)가 표시되어야 합니다.
 
 ---
 

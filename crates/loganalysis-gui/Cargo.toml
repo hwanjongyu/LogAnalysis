@@ -1,6 +1,6 @@
 [package]
 name = "loganalysis-gui"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["Drew Yu"]
 description = "GPU-accelerated desktop GUI for LogAnalysis using GPUI"

@@ -20,7 +20,7 @@ fi
 # Extract version from Cargo.toml
 VERSION=$(grep -m 1 '^version = ' "${PROJECT_ROOT}/crates/loganalysis-gui/Cargo.toml" | cut -d '"' -f2)
 if [ -z "${VERSION}" ]; then
-    VERSION="0.1.1"
+    VERSION="0.2.0"
 fi
 
 echo "==> [2/3] Staging Debian package layout (v${VERSION})..."
