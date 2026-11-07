@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.2] - 2026-11-07
+
+### Added
+- **Workstation Navigation Activity Bar (Phase 3)**: Left-docked quick navigation bar with dedicated modes for Explorer, Filters, Bookmarks, Forensic Facets, and Telemetry.
+- **Forensic Facets Bar (Phase 3)**: Interactive horizontal tag & process frequency distribution bar with instant single-click include/exclude filter creation and toggle deduplication.
+- **Live Buffer Telemetry Ribbon (Phase 3)**: Status telemetry displaying active memory footprint, total parsed lines, visible filtered rows, and throughput counters.
+- **Welcome Onboarding Grid (Phase 2)**: 3-pillar quick ingestion hero grid (Open File, Stream ADB Logcat, Merge Chronological Logs).
+- **Recent Files Shelf (Phase 2)**: Quick-launch shelf tracking up to 5 recently opened files with canonical path deduplication and LRU ordering.
+- **Contextual Breadcrumbs Bar (Phase 2)**: Monospace path breadcrumbs showing active file origin, ingestion mode, and row status.
+- **Micro-Hover Tooltip System (Phase 1)**: Instant zero-delay tooltips with keyboard shortcut badges for all action buttons.
+- **Exception Stack Trace Indentation (Phase 1)**: Visual hierarchy and left border indentation for multiline exception traces and causal chains.
+
+### Changed
+- **Dual-Pane Split Scrolling & Dragging**: Replaced discontinuous 0.98 ratio jump with smooth continuous top-index mapping, implemented full mouse drag lifecycle for Pane B scrollbar, and added strict center alignment to timestamp lockstep synchronization.
+- **Active Split Pane Focus & Navigation**: Added active pane state tracking with visual header indicators and Up/Down arrow key routing to the currently focused pane.
+
+### Fixed
+- **Sub-Pixel Border Alignment**: Standardized 1px borders and container dividers to eliminate 2px doubling artifacts across nested panels.
+
+---
+
 ## [0.2.1] - 2026-11-06
 
 ### Added

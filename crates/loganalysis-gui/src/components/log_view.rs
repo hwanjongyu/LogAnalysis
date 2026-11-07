@@ -1352,7 +1352,7 @@ fn render_onboarding_empty_state(
                                         .text_size(px(9.0))
                                         .font_weight(FontWeight::BOLD)
                                         .text_color(theme.accent)
-                                        .child("v0.2.1"),
+                                        .child(concat!("v", env!("CARGO_PKG_VERSION"))),
                                 ),
                         )
                         .child(
