@@ -116,6 +116,35 @@ impl BookmarkManager {
         &self.bookmarks
     }
 
+    /// Retrieves a reference to the bookmark at `source_idx`, if bookmarked.
+    pub fn get(&self, source_idx: usize) -> Option<&Bookmark> {
+        if !self.index_set.contains(&source_idx) {
+            return None;
+        }
+        let pos = self
+            .bookmarks
+            .binary_search_by_key(&source_idx, |b| b.source_idx)
+            .ok()?;
+        self.bookmarks.get(pos)
+    }
+
+    /// Sets or updates the annotation note for the bookmark at `source_idx`.
+    /// Returns true if updated, false if source_idx was not bookmarked.
+    pub fn set_note(&mut self, source_idx: usize, note: Option<String>) -> bool {
+        if !self.index_set.contains(&source_idx) {
+            return false;
+        }
+        if let Ok(pos) = self
+            .bookmarks
+            .binary_search_by_key(&source_idx, |b| b.source_idx)
+        {
+            let cleaned = note.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            self.bookmarks[pos].note = cleaned;
+            return true;
+        }
+        false
+    }
+
     /// Returns the total number of active bookmarks.
     pub fn len(&self) -> usize {
         self.bookmarks.len()
@@ -175,5 +204,29 @@ mod tests {
         // Wrap around to end
         assert_eq!(mgr.prev_bookmark(10), Some(100));
         assert_eq!(mgr.prev_bookmark(5), Some(100));
+    }
+
+    #[test]
+    fn test_bookmark_note_management() {
+        let mut mgr = BookmarkManager::new();
+        mgr.toggle(42, "Fatal error on line 42".into(), LineSeverity::Error);
+
+        assert!(mgr.get(42).is_some());
+        assert_eq!(mgr.get(42).unwrap().note, None);
+
+        // Set note
+        assert!(mgr.set_note(42, Some("  NullPointerException in AuthService  ".into())));
+        assert_eq!(
+            mgr.get(42).unwrap().note.as_deref(),
+            Some("NullPointerException in AuthService")
+        );
+
+        // Clear note via empty string
+        assert!(mgr.set_note(42, Some("   ".into())));
+        assert_eq!(mgr.get(42).unwrap().note, None);
+
+        // Setting note on non-existent bookmark returns false
+        assert!(!mgr.set_note(999, Some("Note on missing".into())));
+        assert!(mgr.get(999).is_none());
     }
 }

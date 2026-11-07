@@ -23,17 +23,24 @@ use components::resize_border::render_window_resize_borders;
 use components::status_bar::render_status_bar;
 use components::titlebar::render_titlebar;
 use components::toolbar::render_toolbar;
+use modals::bookmark_drawer::render_bookmark_drawer;
 use modals::command_palette::render_command_palette;
 use modals::filter_edit_modal::render_filter_edit_modal;
+use modals::note_edit_modal::render_note_edit_modal;
 use types::{FilterPanelPosition, InputFocusTarget};
 pub use workspace::LogAnalysisWorkspace;
 
 impl Render for LogAnalysisWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let modal_pattern_focused = self.modal_pattern_input.read(cx).focus_handle.is_focused(window);
+        let note_input_focused = self.note_input.read(cx).focus_handle.is_focused(window);
         if self.filter_edit_modal.is_open {
             if self.input_focus == InputFocusTarget::ModalPattern && !modal_pattern_focused {
                 window.focus(&self.modal_pattern_input.read(cx).focus_handle);
+            }
+        } else if self.is_note_modal_open {
+            if self.input_focus == InputFocusTarget::BookmarkNote && !note_input_focused {
+                window.focus(&self.note_input.read(cx).focus_handle);
             }
         } else if !self.focus_handle.is_focused(window) {
             window.focus(&self.focus_handle);
@@ -51,6 +58,8 @@ impl Render for LogAnalysisWorkspace {
         let status_bar_el = render_status_bar(self, cx);
         let modal_el = render_filter_edit_modal(self, cx);
         let palette_el = render_command_palette(self, cx);
+        let bookmark_drawer_el = render_bookmark_drawer(self, cx);
+        let note_modal_el = render_note_edit_modal(self, cx);
         let resize_borders = render_window_resize_borders(window, cx);
 
         let mut body = div()
@@ -195,6 +204,15 @@ impl Render for LogAnalysisWorkspace {
             .on_action(cx.listener(|this, _: &ExportHtmlReport, window, cx| {
                 this.prompt_export_html_report(Some(window), cx);
             }))
+            .on_action(cx.listener(|this, _: &ToggleBookmarkDrawer, _window, cx| {
+                this.toggle_bookmark_drawer(cx);
+            }))
+            .on_action(cx.listener(|this, _: &EditBookmarkNote, window, cx| {
+                this.open_note_modal_for_selected(cx);
+                if this.is_note_modal_open {
+                    window.focus(&this.note_input.read(cx).focus_handle);
+                }
+            }))
             .relative()
             .flex()
             .flex_col()
@@ -208,6 +226,8 @@ impl Render for LogAnalysisWorkspace {
             .child(status_bar_el)
             .children(modal_el)
             .children(palette_el)
+            .children(bookmark_drawer_el)
+            .children(note_modal_el)
             .children(resize_borders)
     }
 }
@@ -355,6 +375,9 @@ fn main() {
             KeyBinding::new("shift-f2", PrevBookmark, None),
             KeyBinding::new("ctrl-f2", ToggleBookmark, None),
             KeyBinding::new("alt-f2", NextBookmark, None),
+            KeyBinding::new("ctrl-b", ToggleBookmarkDrawer, None),
+            KeyBinding::new("cmd-b", ToggleBookmarkDrawer, None),
+            KeyBinding::new("alt-enter", EditBookmarkNote, None),
         ]);
 
         // Register Scoped TextInput Key Bindings (Cut, Copy, Paste, Arrows, Selection, etc.)
@@ -536,7 +559,9 @@ mod tests {
             .iter()
             .filter_map(|c| fuzzy_match("bookmark", c.title).map(|score| (c, score)))
             .collect();
-        assert!(bookmark_matches.len() >= 4);
+        assert!(bookmark_matches.len() >= 6, "Expected at least 6 bookmark commands");
+        assert!(commands.iter().any(|c| c.id == PaletteCommandId::ToggleBookmarkDrawer));
+        assert!(commands.iter().any(|c| c.id == PaletteCommandId::EditBookmarkNote));
 
         // Fuzzy search for "export" -> should find export command
         let export_matches: Vec<_> = commands
@@ -559,11 +584,26 @@ mod tests {
         assert!(manager.toggle(50, "11-06 18:00:05 W Tag: Memory warning".into(), LineSeverity::Warning));
         assert!(manager.toggle(100, "11-06 18:00:10 E Tag: Fatal crash occurred".into(), LineSeverity::Error));
 
+        // Set triage notes
+        assert!(manager.set_note(100, Some("Root cause null pointer exception in binder IPC".into())));
+        assert!(manager.set_note(50, Some("Heap usage crossed 85% threshold".into())));
+
         assert_eq!(manager.len(), 3);
         assert!(manager.is_bookmarked(10));
         assert!(manager.is_bookmarked(50));
         assert!(manager.is_bookmarked(100));
         assert!(!manager.is_bookmarked(99));
+
+        // Verify note retrieval
+        assert_eq!(
+            manager.get(100).and_then(|b| b.note.as_deref()),
+            Some("Root cause null pointer exception in binder IPC")
+        );
+        assert_eq!(
+            manager.get(50).and_then(|b| b.note.as_deref()),
+            Some("Heap usage crossed 85% threshold")
+        );
+        assert_eq!(manager.get(10).and_then(|b| b.note.as_deref()), None);
 
         // Navigation tests
         assert_eq!(manager.next_bookmark(10), Some(50));
@@ -574,7 +614,7 @@ mod tests {
         assert_eq!(manager.prev_bookmark(50), Some(10));
         assert_eq!(manager.prev_bookmark(10), Some(100)); // Cyclic wrap to last
 
-        // HTML report generation
+        // HTML report generation with embedded notes
         let options = HtmlReportOptions {
             file_name: "test_session.log".to_string(),
             total_lines: 500,
@@ -586,6 +626,8 @@ mod tests {
         assert!(report.contains("Fatal crash occurred"));
         assert!(report.contains("Memory warning"));
         assert!(report.contains("System init"));
+        assert!(report.contains("Root cause null pointer exception in binder IPC"));
+        assert!(report.contains("Heap usage crossed 85% threshold"));
         assert!(report.contains("data-severity=\"error\""));
         assert!(report.contains("data-severity=\"warning\""));
         assert!(report.contains("data-severity=\"info\""));

@@ -32,6 +32,8 @@ pub enum PaletteCommandId {
     PrevBookmark,
     ClearBookmarks,
     ExportHtmlReport,
+    ToggleBookmarkDrawer,
+    EditBookmarkNote,
 }
 
 #[derive(Clone, Debug)]
@@ -199,6 +201,18 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             title: "Bookmark: Clear All Bookmarks",
             category: "BOOKMARK",
             shortcut: None,
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ToggleBookmarkDrawer,
+            title: "Bookmark: Toggle Bookmarks Drawer",
+            category: "BOOKMARK",
+            shortcut: Some("Ctrl+B"),
+        },
+        PaletteCommand {
+            id: PaletteCommandId::EditBookmarkNote,
+            title: "Bookmark: Edit Note on Selected Line",
+            category: "BOOKMARK",
+            shortcut: Some("Alt+Enter"),
         },
         PaletteCommand {
             id: PaletteCommandId::ExportHtmlReport,

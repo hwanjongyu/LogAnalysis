@@ -70,6 +70,11 @@ pub struct LogAnalysisWorkspace {
 
     // Bookmark state
     pub(crate) bookmarks: BookmarkManager,
+    pub(crate) is_bookmark_drawer_open: bool,
+    pub(crate) bookmark_drawer_selected_index: usize,
+    pub(crate) is_note_modal_open: bool,
+    pub(crate) note_editing_source_idx: Option<usize>,
+    pub(crate) note_input: Entity<TextInput>,
 }
 
 impl LogAnalysisWorkspace {
@@ -182,6 +187,22 @@ impl LogAnalysisWorkspace {
         )
         .detach();
 
+        let note_input = cx.new(|cx| TextInput::new("Add triage note or root cause...", cx));
+
+        cx.subscribe(
+            &note_input,
+            |this, _input, event: &TextInputEvent, cx| match event {
+                TextInputEvent::Submit => {
+                    this.save_bookmark_note(cx);
+                }
+                TextInputEvent::Cancel => {
+                    this.close_note_modal(cx);
+                }
+                TextInputEvent::Change => {}
+            },
+        )
+        .detach();
+
         Self {
             focus_handle: cx.focus_handle(),
             log_source: None,
@@ -233,6 +254,11 @@ impl LogAnalysisWorkspace {
             palette_input,
             palette_selected_index: 0,
             bookmarks: BookmarkManager::new(),
+            is_bookmark_drawer_open: false,
+            bookmark_drawer_selected_index: 0,
+            is_note_modal_open: false,
+            note_editing_source_idx: None,
+            note_input,
         }
     }
 
@@ -928,8 +954,57 @@ impl LogAnalysisWorkspace {
         if self.filter_edit_modal.is_open {
             if key == "escape" {
                 self.close_filter_modal(cx);
+                return;
             } else if key == "enter" {
                 self.save_modal_filter(cx);
+                return;
+            }
+        }
+
+        // If the note modal is open, handle Escape and Enter
+        if self.is_note_modal_open {
+            if key == "escape" {
+                self.close_note_modal(cx);
+                return;
+            } else if key == "enter" {
+                self.save_bookmark_note(cx);
+                return;
+            }
+        }
+
+        // If the bookmark drawer is open, handle navigation keys
+        if self.is_bookmark_drawer_open {
+            if key == "escape" {
+                self.close_bookmark_drawer(cx);
+                return;
+            } else if key == "up" {
+                if self.bookmark_drawer_selected_index > 0 {
+                    self.bookmark_drawer_selected_index -= 1;
+                    cx.notify();
+                }
+                return;
+            } else if key == "down" {
+                if self.bookmark_drawer_selected_index + 1 < self.bookmarks.len() {
+                    self.bookmark_drawer_selected_index += 1;
+                    cx.notify();
+                }
+                return;
+            } else if key == "enter" {
+                if let Some(b) = self.bookmarks.items().get(self.bookmark_drawer_selected_index) {
+                    let src_idx = b.source_idx;
+                    self.jump_to_bookmark_source_idx(src_idx, cx);
+                    self.close_bookmark_drawer(cx);
+                }
+                return;
+            } else if key == "delete" || key == "backspace" {
+                if let Some(b) = self.bookmarks.items().get(self.bookmark_drawer_selected_index) {
+                    let src_idx = b.source_idx;
+                    let line_num = b.line_number;
+                    self.bookmarks.remove(src_idx);
+                    self.status_text = format!("Removed bookmark on line {line_num}").into();
+                    cx.notify();
+                }
+                return;
             }
         }
     }
@@ -1180,6 +1255,8 @@ impl LogAnalysisWorkspace {
             PaletteCommandId::ExportHtmlReport => {
                 self.prompt_export_html_report(window.as_deref(), cx)
             }
+            PaletteCommandId::ToggleBookmarkDrawer => self.toggle_bookmark_drawer(cx),
+            PaletteCommandId::EditBookmarkNote => self.open_note_modal_for_selected(cx),
         }
     }
 
@@ -1986,6 +2063,129 @@ impl LogAnalysisWorkspace {
             }
         })
         .detach();
+    }
+
+    /// Toggles the slide-over Bookmark Drawer (Ctrl+B)
+    pub fn toggle_bookmark_drawer(&mut self, cx: &mut Context<Self>) {
+        self.is_bookmark_drawer_open = !self.is_bookmark_drawer_open;
+        if self.is_bookmark_drawer_open {
+            self.bookmark_drawer_selected_index = 0;
+            self.is_command_palette_open = false;
+            self.is_note_modal_open = false;
+            self.input_focus = InputFocusTarget::None;
+        }
+        cx.notify();
+    }
+
+    /// Closes the Bookmark Drawer
+    pub fn close_bookmark_drawer(&mut self, cx: &mut Context<Self>) {
+        self.is_bookmark_drawer_open = false;
+        cx.notify();
+    }
+
+    /// Jumps directly to a specific bookmarked source line index in the log viewport
+    pub fn jump_to_bookmark_source_idx(&mut self, target_source_idx: usize, cx: &mut Context<Self>) {
+        if let Some(res) = &self.filter_result {
+            if let Some(vis_row) = res
+                .visible_indices
+                .iter()
+                .position(|&idx| idx == target_source_idx)
+            {
+                self.selection.select(vis_row, target_source_idx);
+                self.scroll_handle
+                    .scroll_to_item(vis_row, ScrollStrategy::Center);
+                self.refresh_status_line(cx);
+                self.status_text =
+                    format!("Jumped to bookmark on line {}", target_source_idx + 1).into();
+                cx.notify();
+                return;
+            }
+        }
+
+        self.status_text = format!(
+            "Bookmark on line {} is hidden by active filter",
+            target_source_idx + 1
+        )
+        .into();
+        cx.notify();
+    }
+
+    /// Opens the note editor modal for the currently selected log row
+    pub fn open_note_modal_for_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(sel_row) = self.selection.selected_row else {
+            self.status_text = "Select a log line first to edit note".into();
+            cx.notify();
+            return;
+        };
+
+        let src_idx = if let Some(filter_res) = &self.filter_result {
+            if let Some(&idx) = filter_res.visible_indices.get(sel_row) {
+                idx
+            } else {
+                return;
+            }
+        } else {
+            return;
+        };
+
+        // If not already bookmarked, bookmark it first
+        if !self.bookmarks.is_bookmarked(src_idx) {
+            self.toggle_bookmark_on_selected(cx);
+        }
+
+        self.open_note_modal_for_source_idx(src_idx, cx);
+    }
+
+    /// Opens the note editor modal for a specific source line index
+    pub fn open_note_modal_for_source_idx(&mut self, source_idx: usize, cx: &mut Context<Self>) {
+        let existing = self
+            .bookmarks
+            .get(source_idx)
+            .and_then(|b| b.note.clone())
+            .unwrap_or_default();
+
+        self.note_input
+            .update(cx, |input, cx| input.set_text(&existing, cx));
+        self.note_editing_source_idx = Some(source_idx);
+        self.is_note_modal_open = true;
+        self.input_focus = InputFocusTarget::BookmarkNote;
+        cx.notify();
+    }
+
+    /// Saves the note from the note input into the current bookmark
+    pub fn save_bookmark_note(&mut self, cx: &mut Context<Self>) {
+        let Some(src_idx) = self.note_editing_source_idx else {
+            self.close_note_modal(cx);
+            return;
+        };
+
+        let note_text = self.note_input.read(cx).text().to_string();
+        let updated = self.bookmarks.set_note(src_idx, Some(note_text));
+
+        if updated {
+            self.status_text = format!("✓ Updated note for line {}", src_idx + 1).into();
+        }
+
+        self.close_note_modal(cx);
+    }
+
+    /// Clears the note on the current bookmark
+    pub fn clear_bookmark_note(&mut self, cx: &mut Context<Self>) {
+        if let Some(src_idx) = self.note_editing_source_idx {
+            self.bookmarks.set_note(src_idx, None);
+            self.status_text = format!("Cleared note for line {}", src_idx + 1).into();
+        }
+        self.close_note_modal(cx);
+    }
+
+    /// Closes the note edit modal
+    pub fn close_note_modal(&mut self, cx: &mut Context<Self>) {
+        self.is_note_modal_open = false;
+        self.note_editing_source_idx = None;
+        if self.input_focus == InputFocusTarget::BookmarkNote {
+            self.input_focus = InputFocusTarget::None;
+        }
+        cx.notify();
     }
 }
 

@@ -144,6 +144,8 @@ pub fn render_status_bar(
                 .when(bookmark_count > 0, |parent| {
                     parent.child(
                         div()
+                            .id("btn-status-bookmarks")
+                            .cursor_pointer()
                             .flex()
                             .items_center()
                             .gap_1()
@@ -154,6 +156,10 @@ pub fn render_status_bar(
                             .border_1()
                             .border_color(theme.accent)
                             .text_color(theme.accent)
+                            .hover(|s| s.bg(theme.accent).text_color(rgb(0xffffff)))
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.toggle_bookmark_drawer(cx);
+                            }))
                             .child("🔖")
                             .child(format!("{} bm", bookmark_count)),
                     )

@@ -36,5 +36,7 @@ actions!(
         PrevBookmark,
         ClearBookmarks,
         ExportHtmlReport,
+        ToggleBookmarkDrawer,
+        EditBookmarkNote,
     ]
 );
