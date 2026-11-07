@@ -32,6 +32,12 @@ impl MergedLogBuffer {
                 "No paths provided for merge",
             ));
         }
+        if paths.len() > 255 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Maximum number of merged files is 255",
+            ));
+        }
 
         let mut sources = Vec::with_capacity(paths.len());
         let mut source_names = Vec::with_capacity(paths.len());
@@ -47,14 +53,20 @@ impl MergedLogBuffer {
             source_names.push(name);
         }
 
-        Ok(Self::from_sources(sources, source_names))
+        Self::from_sources(sources, source_names)
     }
 
     /// Constructs a merged buffer from already opened FileLogBuffers.
     pub fn from_sources(
         sources: Vec<Arc<FileLogBuffer>>,
         source_names: Vec<String>,
-    ) -> Self {
+    ) -> std::io::Result<Self> {
+        if sources.len() > 255 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Maximum number of merged files is 255",
+            ));
+        }
         let mut total_lines = 0usize;
         for s in &sources {
             total_lines += s.line_count();
@@ -104,12 +116,12 @@ impl MergedLogBuffer {
             (None, None) => (a.source_id, a.source_line_idx).cmp(&(b.source_id, b.source_line_idx)),
         });
 
-        Self {
+        Ok(Self {
             sources,
             source_names,
             merged_index,
             max_line_len,
-        }
+        })
     }
 
     /// Returns the maximum line length across all merged files.
@@ -277,5 +289,36 @@ mod tests {
 
         let _ = std::fs::remove_file(a_dir);
         let _ = std::fs::remove_file(b_dir);
+    }
+
+    #[test]
+    fn test_merge_rejects_more_than_255_sources() {
+        let dummy_paths: Vec<PathBuf> = (0..256)
+            .map(|i| PathBuf::from(format!("dummy_{}.log", i)))
+            .collect();
+        let Err(err) = MergedLogBuffer::open_multiple(&dummy_paths) else {
+            panic!("expected error for > 255 paths");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("255"));
+    }
+
+    #[test]
+    fn test_from_sources_rejects_more_than_255_sources() {
+        let mut tmp = std::env::temp_dir();
+        tmp.push(format!("test_max_sources_{}.log", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp, b"test line\n").unwrap();
+
+        let buf = Arc::new(FileLogBuffer::open(&tmp).unwrap());
+        let sources = vec![Arc::clone(&buf); 256];
+        let names = vec!["test.log".to_string(); 256];
+
+        let Err(err) = MergedLogBuffer::from_sources(sources, names) else {
+            panic!("expected error for > 255 sources");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("255"));
+
+        let _ = std::fs::remove_file(tmp);
     }
 }

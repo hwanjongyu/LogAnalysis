@@ -108,6 +108,24 @@ pub struct LogAnalysisWorkspace {
     pub(crate) filter_dock_drag_start_size: f32,
 }
 
+/// Extracts timestamp for a given log row, probing backwards up to 10 lines if None (e.g. multi-line stack traces).
+pub(crate) fn probe_parent_timestamp(source: &ActiveLogSource, target_idx: usize) -> Option<i64> {
+    let raw_line = source.get_raw_line(target_idx)?;
+    if let Some(ts) = extract_timestamp(raw_line) {
+        return Some(ts.total_micros);
+    }
+
+    let min_idx = target_idx.saturating_sub(10);
+    for idx in (min_idx..target_idx).rev() {
+        if let Some(prev_raw) = source.get_raw_line(idx) {
+            if let Some(t) = extract_timestamp(prev_raw) {
+                return Some(t.total_micros);
+            }
+        }
+    }
+    None
+}
+
 impl LogAnalysisWorkspace {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let default_tab = FilterTabData {
@@ -2970,17 +2988,14 @@ impl LogAnalysisWorkspace {
             return;
         };
 
-        let Some(raw_line) = primary_src.get_raw_line(primary_source_idx) else {
-            return;
-        };
-        let Some(ts) = extract_timestamp(raw_line) else {
+        let Some(ts_micros) = probe_parent_timestamp(primary_src, primary_source_idx) else {
             return;
         };
 
         if let Some(target_vis_idx) = find_nearest_timestamp_row(
             &**secondary_src,
             &secondary_res.visible_indices,
-            ts.total_micros,
+            ts_micros,
         ) {
             let target_source_idx = secondary_res.visible_indices.get(target_vis_idx).copied().unwrap_or(0);
             self.secondary_selection.select(target_vis_idx, target_source_idx);
@@ -2999,17 +3014,14 @@ impl LogAnalysisWorkspace {
             return;
         };
 
-        let Some(raw_line) = secondary_src.get_raw_line(secondary_source_idx) else {
-            return;
-        };
-        let Some(ts) = extract_timestamp(raw_line) else {
+        let Some(ts_micros) = probe_parent_timestamp(secondary_src, secondary_source_idx) else {
             return;
         };
 
         if let Some(target_vis_idx) = find_nearest_timestamp_row(
             &**primary_src,
             &primary_res.visible_indices,
-            ts.total_micros,
+            ts_micros,
         ) {
             let target_source_idx = primary_res.visible_indices.get(target_vis_idx).copied().unwrap_or(0);
             self.selection.select(target_vis_idx, target_source_idx);

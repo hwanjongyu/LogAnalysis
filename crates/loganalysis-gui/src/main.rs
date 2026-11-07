@@ -868,6 +868,26 @@ mod tests {
         let correlated_a = find_nearest_timestamp_row(&source_a, &vis_a, ts_b4.total_micros);
         assert_eq!(correlated_a, Some(2));
 
+        // 3. Secondary selects line 3: "\tat com.example.Server.parse(Server.java:42)" (stack trace row, no timestamp)
+        let raw_b3 = source_b.get_raw_line(3).unwrap();
+        assert!(extract_timestamp(raw_b3).is_none());
+
+        // probe_parent_timestamp probes backwards up to 10 lines and finds line 2's timestamp (10:00:01.220)
+        let probed_ts = crate::workspace::probe_parent_timestamp(&source_b, 3);
+        assert!(probed_ts.is_some());
+        let correlated_stack_a = find_nearest_timestamp_row(&source_a, &vis_a, probed_ts.unwrap());
+        assert_eq!(correlated_stack_a, Some(1)); // Correlates to "Client request sent" (10:00:01.200)
+
+        // 4. Test boundary: if no timestamp within 10 lines backwards, returns None
+        let unparsed_data = b"line without timestamp\n".repeat(15);
+        let mut unparsed_dir = std::env::temp_dir();
+        unparsed_dir.push(format!("unparsed_{}.log", uuid::Uuid::new_v4()));
+        std::fs::write(&unparsed_dir, unparsed_data).unwrap();
+        let unparsed_buf = FileLogBuffer::open(&unparsed_dir).unwrap();
+        let unparsed_src = ActiveLogSource::File(unparsed_buf);
+        assert_eq!(crate::workspace::probe_parent_timestamp(&unparsed_src, 12), None);
+        let _ = std::fs::remove_file(unparsed_dir);
+
         // Clean up temp files
         let _ = std::fs::remove_file(a_dir);
         let _ = std::fs::remove_file(b_dir);
