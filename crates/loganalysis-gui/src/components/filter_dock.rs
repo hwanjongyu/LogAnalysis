@@ -193,11 +193,15 @@ pub fn render_filter_dock(
                         .text_size(px(11.0))
                         .font_weight(FontWeight::MEDIUM)
                         .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_add_filter_modal(cx);
                             window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                         }))
-                        .child("+ New Rule"),
+                        .child("+ New Rule")
+                        .child(crate::components::toolbar::render_kbd_badge_on_accent("Ctrl+Shift+F")),
                 ),
         )
         // In Left Sidebar mode, display the full-width dedicated search box
@@ -303,11 +307,15 @@ pub fn render_filter_dock(
                                                 .text_size(px(11.0))
                                                 .font_weight(FontWeight::MEDIUM)
                                                 .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .gap_1p5()
                                                 .on_click(cx.listener(|this, _, window, cx| {
                                                     this.open_add_filter_modal(cx);
                                                     window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                                                 }))
-                                                .child("+ Add Rule (Ctrl+Shift+F)"),
+                                                .child("+ Add Rule")
+                                                .child(crate::components::toolbar::render_kbd_badge_on_accent("Ctrl+Shift+F")),
                                         )
                                         .into_any_element(),
                                 ];
@@ -451,17 +459,17 @@ pub fn render_filter_dock(
                                                                 .child("Aa"),
                                                         ),
                                                 )
-                                                // Active Checkbox
+                                                // Linear / iOS Style Modern Pill Toggle Switch
                                                 .child(
                                                     div()
                                                         .id(ElementId::NamedInteger(
                                                             "chk-rule".into(),
                                                             r_idx as u64,
                                                         ))
-                                                        .w(px(15.0))
-                                                        .h(px(15.0))
+                                                        .w(px(24.0))
+                                                        .h(px(13.0))
                                                         .flex_shrink_0()
-                                                        .rounded_sm()
+                                                        .rounded_full()
                                                         .border_1()
                                                         .border_color(if is_active {
                                                             theme.accent
@@ -471,7 +479,7 @@ pub fn render_filter_dock(
                                                         .bg(if is_active {
                                                             theme.accent
                                                         } else {
-                                                            theme.bg_dark
+                                                            theme.bg_badge
                                                         })
                                                         .cursor_pointer()
                                                         .on_click(cx.listener(
@@ -481,10 +489,19 @@ pub fn render_filter_dock(
                                                         ))
                                                         .flex()
                                                         .items_center()
-                                                        .justify_center()
-                                                        .text_size(px(10.0))
-                                                        .text_color(rgb(0xffffff))
-                                                        .child(if is_active { "✓" } else { "" }),
+                                                        .px(px(1.5))
+                                                        .child(
+                                                            div()
+                                                                .w(px(9.0))
+                                                                .h(px(9.0))
+                                                                .rounded_full()
+                                                                .bg(if is_active {
+                                                                    rgb(0xffffff)
+                                                                } else {
+                                                                    theme.text_muted
+                                                                })
+                                                                .when(is_active, |s| s.ml(px(10.0))),
+                                                        ),
                                                 )
                                                 // Pattern String (Monospace)
                                                 .child(

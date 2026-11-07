@@ -579,6 +579,7 @@ fn render_log_list(
         ..Default::default()
     };
 
+    let is_dark_theme = workspace.is_dark_theme;
     let weak_handle = weak_self.clone();
     let list_id = if is_primary { "log-view" } else { "secondary-log-view" };
 
@@ -767,13 +768,10 @@ fn render_log_list(
                 if is_col_view {
                     let parsed = parse_logcat_column_line(text.as_ref());
                     if let Some(time_str) = parsed.time {
-                        let (lvl_bg, lvl_fg) = match parsed.level_char {
-                            Some('E') | Some('F') => (row_theme.error_red, rgb(0xffffff)),
-                            Some('W') => (row_theme.warning_amber, rgb(0x000000)),
-                            Some('I') => (row_theme.success_green, rgb(0x000000)),
-                            Some('D') => (row_theme.accent, rgb(0xffffff)),
-                            _ => (row_theme.bg_badge, row_theme.text_muted),
-                        };
+                        let (lvl_bg, lvl_fg) = crate::theme::severity_badge_colors(
+                            parsed.level_char,
+                            is_dark_theme,
+                        );
                         let level_char_str = parsed
                             .level_char
                             .map(|c| c.to_string())
@@ -781,6 +779,7 @@ fn render_log_list(
                         let pid_tid_str =
                             format!("{}/{}", parsed.pid.unwrap_or("-"), parsed.tid.unwrap_or("-"));
                         let tag_str = parsed.tag.unwrap_or("-");
+                        let tag_color = crate::theme::hash_tag_color(tag_str, is_dark_theme);
                         let msg_text = parsed.message;
 
                         row_el = row_el
@@ -810,13 +809,16 @@ fn render_log_list(
                                     .justify_center()
                                     .child(
                                         div()
-                                            .px(px(4.0))
-                                            .py(px(1.0))
+                                            .w(px(22.0))
+                                            .h(px(17.0))
                                             .rounded_xs()
                                             .bg(lvl_bg)
                                             .text_color(lvl_fg)
                                             .text_size(px(10.0))
                                             .font_weight(FontWeight::BOLD)
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
                                             .child(level_char_str),
                                     ),
                             )
@@ -847,7 +849,7 @@ fn render_log_list(
                                     .items_center()
                                     .text_size(font_size)
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(row_theme.accent)
+                                    .text_color(tag_color)
                                     .whitespace_nowrap()
                                     .overflow_hidden()
                                     .child(tag_str.to_string()),

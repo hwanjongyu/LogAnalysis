@@ -1,8 +1,37 @@
 use gpui::*;
 use loganalysis_core::LogSource;
 
+use crate::theme::Theme;
 use crate::types::FilterPanelPosition;
 use crate::workspace::LogAnalysisWorkspace;
+
+pub fn render_kbd_badge(shortcut: &'static str, theme: Theme) -> impl IntoElement {
+    div()
+        .px(px(4.0))
+        .py(px(0.5))
+        .rounded_xs()
+        .bg(theme.kbd_bg)
+        .border_1()
+        .border_color(theme.kbd_border)
+        .text_size(px(9.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .font_family("monospace")
+        .text_color(theme.kbd_fg)
+        .child(shortcut)
+}
+
+pub fn render_kbd_badge_on_accent(shortcut: &'static str) -> impl IntoElement {
+    div()
+        .px(px(4.0))
+        .py(px(0.5))
+        .rounded_xs()
+        .bg(rgba(0xffffff2e))
+        .text_size(px(9.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .font_family("monospace")
+        .text_color(rgb(0xffffff))
+        .child(shortcut)
+}
 
 pub fn render_toolbar(
     workspace: &LogAnalysisWorkspace,
@@ -26,25 +55,38 @@ pub fn render_toolbar(
                 .flex()
                 .items_center()
                 .gap_2()
-                // App Brand Pill
+                // Modernized App Brand Pill
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap_1()
+                        .gap_1p5()
                         .pr(px(6.0))
                         .child(
                             div()
-                                .w(px(8.0))
-                                .h(px(8.0))
-                                .rounded_full()
-                                .bg(theme.accent),
+                                .w(px(9.0))
+                                .h(px(9.0))
+                                .rounded_sm()
+                                .bg(theme.accent)
+                                .shadow_sm(),
                         )
                         .child(
                             div()
                                 .font_weight(FontWeight::BOLD)
                                 .text_size(px(13.0))
+                                .text_color(theme.text_primary)
                                 .child("LogAnalysis"),
+                        )
+                        .child(
+                            div()
+                                .px(px(4.0))
+                                .py(px(0.5))
+                                .rounded_xs()
+                                .bg(theme.bg_badge)
+                                .text_size(px(8.5))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme.accent)
+                                .child("STUDIO"),
                         ),
                 )
                 // File Action Group
@@ -70,10 +112,14 @@ pub fn render_toolbar(
                                 .text_size(px(11.0))
                                 .font_weight(FontWeight::MEDIUM)
                                 .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.prompt_open_file(Some(window), cx);
                                 }))
-                                .child("Open (Ctrl+O)"),
+                                .child("Open")
+                                .child(render_kbd_badge_on_accent("Ctrl+O")),
                         )
                         .child(
                             div()
@@ -113,10 +159,14 @@ pub fn render_toolbar(
                                 .text_size(px(11.0))
                                 .text_color(theme.text_muted)
                                 .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.clear_logs(cx);
                                 }))
-                                .child("Clear (Ctrl+K)"),
+                                .child("Clear")
+                                .child(render_kbd_badge("Ctrl+K", theme)),
                         ),
                 )
                 // Active File Pill Badge
@@ -218,12 +268,16 @@ pub fn render_toolbar(
                                 .text_size(px(11.0))
                                 .font_weight(FontWeight::MEDIUM)
                                 .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     if !this.show_only_filtered {
                                         this.toggle_filtered_only(cx);
                                     }
                                 }))
-                                .child("Filtered Only (Ctrl+H)"),
+                                .child("Filtered Only")
+                                .child(render_kbd_badge("Ctrl+H", theme)),
                         ),
                 )
                 // View Options Pill Group: Full Width & Auto-Scroll
@@ -351,10 +405,14 @@ pub fn render_toolbar(
                                 .hover(move |s| s.bg(theme.btn_hover))
                                 .text_size(px(11.0))
                                 .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.copy_selection(cx);
                                 }))
-                                .child("Copy (Ctrl+C)"),
+                                .child("Copy")
+                                .child(render_kbd_badge("Ctrl+C", theme)),
                         )
                         .child(
                             div()
@@ -411,10 +469,14 @@ pub fn render_toolbar(
                         })
                         .text_size(px(11.0))
                         .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
                         .on_click(cx.listener(|this, _, _window, cx| {
                             this.toggle_search_bar(cx);
                         }))
-                        .child("🔍 Find (Ctrl+F)"),
+                        .child("🔍 Find")
+                        .child(render_kbd_badge("Ctrl+F", theme)),
                 )
                 // Theme Switcher
                 .child(

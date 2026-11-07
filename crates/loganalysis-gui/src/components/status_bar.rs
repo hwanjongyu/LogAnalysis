@@ -84,15 +84,57 @@ pub fn render_status_bar(
             div()
                 .flex()
                 .items_center()
-                .gap_4()
+                .gap_2()
                 .font_family("monospace")
-                .text_size(px(11.0))
-                .text_color(theme.text_muted)
-                .child(format!(
-                    "Visible: {} / {} ({:.1}%)",
-                    row_count, total_lines, visible_pct
-                ))
-                .child(format!("Matched: {}", total_matched))
+                .text_size(px(10.5))
+                .child(
+                    div()
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .rounded_xs()
+                        .bg(theme.bg_card)
+                        .border_1()
+                        .border_color(theme.border_subtle)
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(div().text_color(theme.text_muted).child("Visible:"))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.text_primary)
+                                .child(format!("{}/{}", row_count, total_lines)),
+                        )
+                        .child(
+                            div()
+                                .text_color(theme.text_muted)
+                                .text_size(px(9.5))
+                                .child(format!("({:.1}%)", visible_pct)),
+                        ),
+                )
+                .child(
+                    div()
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .rounded_xs()
+                        .bg(theme.bg_card)
+                        .border_1()
+                        .border_color(theme.border_subtle)
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(div().text_color(theme.text_muted).child("Matched:"))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(if total_matched > 0 {
+                                    theme.accent
+                                } else {
+                                    theme.text_muted
+                                })
+                                .child(format!("{}", total_matched)),
+                        ),
+                )
                 .when(total_errors > 0 || total_warnings > 0, |parent| {
                     parent.child(
                         div()
@@ -164,11 +206,29 @@ pub fn render_status_bar(
                             .child(format!("{} bm", bookmark_count)),
                     )
                 })
-                .child(if let Some(line_idx) = selected_real_line {
-                    format!("Line: {}", line_idx + 1)
-                } else {
-                    "Line: -".to_string()
-                })
+                .child(
+                    div()
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .rounded_xs()
+                        .bg(theme.bg_card)
+                        .border_1()
+                        .border_color(theme.border_subtle)
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(div().text_color(theme.text_muted).child("Line:"))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.text_primary)
+                                .child(if let Some(line_idx) = selected_real_line {
+                                    format!("{}", line_idx + 1)
+                                } else {
+                                    "-".to_string()
+                                }),
+                        ),
+                )
                 .when(selected_dt.is_some(), |parent| {
                     let (dt_str, latency, _) = selected_dt.as_ref().unwrap();
                     let (badge_bg, badge_fg, icon) = match latency {
