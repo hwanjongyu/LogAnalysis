@@ -1142,51 +1142,80 @@ fn render_secondary_empty_state(
         .bg(theme.bg_dark)
         .child(
             div()
-                .w(px(380.0))
-                .p(px(20.0))
+                .w(px(400.0))
                 .rounded_xl()
                 .bg(theme.bg_panel)
                 .border_1()
                 .border_color(theme.border)
+                .shadow_lg()
+                .overflow_hidden()
                 .flex()
                 .flex_col()
-                .items_center()
-                .gap_4()
                 .child(
                     div()
-                        .text_size(px(16.0))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(theme.text_primary)
-                        .child("📂 Secondary Split Pane"),
+                        .h(px(1.0))
+                        .w_full()
+                        .bg(theme.border_highlight),
                 )
                 .child(
                     div()
-                        .text_size(px(12.0))
-                        .text_color(theme.text_muted)
-                        .text_align(TextAlign::Center)
-                        .child("Load a reference log file or previous session capture to compare side-by-side with microsecond timestamp correlation."),
-                )
-                .child(
-                    div()
-                        .id("btn-secondary-empty-open")
-                        .px(px(16.0))
-                        .py(px(8.0))
-                        .rounded_md()
-                        .bg(theme.accent)
-                        .hover(move |s| s.bg(theme.btn_hover))
-                        .text_color(rgb(0xffffff))
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.prompt_open_secondary_file(Some(window), cx);
-                        }))
-                        .child("📂 Choose Log File..."),
+                        .p(px(22.0))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap_4()
+                        .child(
+                            div()
+                                .text_size(px(16.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme.text_primary)
+                                .child("📂 Secondary Split Pane"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(theme.text_muted)
+                                .text_align(TextAlign::Center)
+                                .child("Load a reference log file or previous session capture to compare side-by-side with microsecond timestamp correlation."),
+                        )
+                        .child(
+                            div()
+                                .id("btn-secondary-empty-open")
+                                .px(px(16.0))
+                                .py(px(8.0))
+                                .rounded_md()
+                                .bg(theme.accent)
+                                .hover(move |s| s.bg(theme.btn_hover))
+                                .text_color(rgb(0xffffff))
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.prompt_open_secondary_file(Some(window), cx);
+                                }))
+                                .child("📂 Choose Log File..."),
+                        ),
                 ),
         )
 }
 
-/// Primary pane onboarding layout (Local File vs Live Android ADB)
+/// Helper to render a keyboard shortcut chip with label
+fn render_kbd_chip(shortcut: &'static str, label: &'static str, theme: crate::theme::Theme) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .child(crate::components::toolbar::render_kbd_badge(shortcut, theme))
+        .child(
+            div()
+                .text_size(px(10.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_muted)
+                .child(label),
+        )
+}
+
+/// Primary pane onboarding layout (3 Pillars + Recent Workspaces + Cheat Sheet)
 fn render_onboarding_empty_state(
     workspace: &LogAnalysisWorkspace,
     cx: &mut Context<LogAnalysisWorkspace>,
@@ -1197,8 +1226,10 @@ fn render_onboarding_empty_state(
     let is_scanning = workspace.is_scanning_adb;
 
     div()
+        .id("onboarding-scroll-container")
         .flex_1()
         .h_full()
+        .overflow_y_scroll()
         .flex()
         .flex_col()
         .items_center()
@@ -1206,11 +1237,11 @@ fn render_onboarding_empty_state(
         .p(px(24.0))
         .child(
             div()
-                .w(px(740.0))
+                .w(px(860.0))
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap_6()
+                .gap_5()
                 // Title Header
                 .child(
                     div()
@@ -1220,10 +1251,35 @@ fn render_onboarding_empty_state(
                         .gap_1()
                         .child(
                             div()
-                                .text_size(px(22.0))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(theme.text_primary)
-                                .child("LogAnalysis Studio"),
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .w(px(12.0))
+                                        .h(px(12.0))
+                                        .rounded_sm()
+                                        .bg(theme.accent)
+                                        .shadow_sm(),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(22.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme.text_primary)
+                                        .child("LogAnalysis Studio"),
+                                )
+                                .child(
+                                    div()
+                                        .px(px(5.0))
+                                        .py(px(1.0))
+                                        .rounded_xs()
+                                        .bg(theme.bg_badge)
+                                        .text_size(px(9.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme.accent)
+                                        .child("v0.2.1"),
+                                ),
                         )
                         .child(
                             div()
@@ -1232,277 +1288,555 @@ fn render_onboarding_empty_state(
                                 .child("GPU-Accelerated High-Performance Exploration for Android & System Logs"),
                         ),
                 )
-                // Dual-Pillar Ingestion Grid
+                // 3-Pillar Ingestion Grid
                 .child(
                     div()
                         .w_full()
                         .flex()
                         .flex_row()
-                        .gap_4()
-                        // Left Pillar: Local File Ingestion
+                        .gap_3p5()
+                        // Pillar 1: Local File Ingestion
                         .child(
                             div()
                                 .flex_1()
-                                .p(px(22.0))
                                 .rounded_xl()
                                 .bg(theme.bg_panel)
                                 .border_1()
                                 .border_color(theme.border)
+                                .shadow_md()
+                                .overflow_hidden()
                                 .flex()
                                 .flex_col()
-                                .justify_between()
-                                .gap_4()
                                 .child(
                                     div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap_2()
-                                        .child(
-                                            div()
-                                                .text_size(px(15.0))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(theme.text_primary)
-                                                .child("📂 Local Log File"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(11.5))
-                                                .text_color(theme.text_muted)
-                                                .child("Drop any .log, .txt, or filter profile .json file directly into this window."),
-                                        )
-                                        .child(
-                                            div()
-                                                .mt(px(4.0))
-                                                .p(px(12.0))
-                                                .rounded_md()
-                                                .border_1()
-                                                .border_dashed()
-                                                .border_color(theme.border_subtle)
-                                                .bg(theme.bg_card)
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .text_size(px(11.0))
-                                                .text_color(theme.text_muted)
-                                                .child("Drop file here to open instantly"),
-                                        ),
+                                        .h(px(1.0))
+                                        .w_full()
+                                        .bg(theme.border_highlight),
                                 )
                                 .child(
                                     div()
-                                        .id("btn-empty-state-open")
-                                        .w_full()
-                                        .py(px(8.0))
-                                        .rounded_md()
-                                        .bg(theme.accent)
-                                        .hover(move |s| s.bg(theme.btn_hover))
-                                        .text_color(rgb(0xffffff))
-                                        .text_size(px(12.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .cursor_pointer()
+                                        .p(px(18.0))
+                                        .flex_1()
                                         .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .gap_1p5()
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.prompt_open_file(Some(window), cx);
-                                        }))
-                                        .child("📂 Open File")
-                                        .child(crate::components::toolbar::render_kbd_badge_on_accent("Ctrl+O")),
+                                        .flex_col()
+                                        .justify_between()
+                                        .gap_3()
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap_1p5()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(14.5))
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .text_color(theme.text_primary)
+                                                        .child("📂 Local Log File"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(11.0))
+                                                        .text_color(theme.text_muted)
+                                                        .child("Inspect local dumps, logcat, and crash logs."),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id("drop-zone-local-file")
+                                                        .mt(px(4.0))
+                                                        .p(px(14.0))
+                                                        .rounded_md()
+                                                        .border_1()
+                                                        .border_dashed()
+                                                        .border_color(theme.border_subtle)
+                                                        .bg(theme.bg_card)
+                                                        .hover(|s| s.bg(theme.btn_hover).border_color(theme.accent))
+                                                        .cursor_pointer()
+                                                        .flex()
+                                                        .flex_col()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .gap_1()
+                                                        .on_click(cx.listener(|this, _, window, cx| {
+                                                            this.prompt_open_file(Some(window), cx);
+                                                        }))
+                                                        .child(div().text_size(px(18.0)).child("📂"))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(10.5))
+                                                                .font_weight(FontWeight::MEDIUM)
+                                                                .text_color(theme.text_primary)
+                                                                .child("Drop file or click here"),
+                                                        ),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("btn-empty-state-open")
+                                                .w_full()
+                                                .py(px(7.5))
+                                                .rounded_md()
+                                                .bg(theme.accent)
+                                                .hover(move |s| s.bg(theme.btn_hover))
+                                                .text_color(rgb(0xffffff))
+                                                .text_size(px(11.5))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .gap_1p5()
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.prompt_open_file(Some(window), cx);
+                                                }))
+                                                .child("Open File")
+                                                .child(crate::components::toolbar::render_kbd_badge_on_accent("Ctrl+O")),
+                                        ),
                                 ),
                         )
-                        // Right Pillar: Live Android ADB Stream
+                        // Pillar 2: Multi-File Interleaved Merge
                         .child(
                             div()
                                 .flex_1()
-                                .p(px(22.0))
                                 .rounded_xl()
                                 .bg(theme.bg_panel)
                                 .border_1()
                                 .border_color(theme.border)
+                                .shadow_md()
+                                .overflow_hidden()
                                 .flex()
                                 .flex_col()
-                                .justify_between()
-                                .gap_4()
                                 .child(
                                     div()
+                                        .h(px(1.0))
+                                        .w_full()
+                                        .bg(theme.border_highlight),
+                                )
+                                .child(
+                                    div()
+                                        .p(px(18.0))
+                                        .flex_1()
                                         .flex()
                                         .flex_col()
-                                        .gap_2()
+                                        .justify_between()
+                                        .gap_3()
                                         .child(
                                             div()
                                                 .flex()
-                                                .items_center()
-                                                .justify_between()
+                                                .flex_col()
+                                                .gap_1p5()
                                                 .child(
                                                     div()
-                                                        .text_size(px(15.0))
+                                                        .text_size(px(14.5))
                                                         .font_weight(FontWeight::SEMIBOLD)
                                                         .text_color(theme.text_primary)
-                                                        .child("📱 Live Android ADB"),
+                                                        .child("🔀 Multi-File Merge"),
                                                 )
                                                 .child(
                                                     div()
-                                                        .id("btn-welcome-rescan-adb")
-                                                        .px(px(6.0))
-                                                        .py(px(2.0))
-                                                        .rounded_sm()
+                                                        .text_size(px(11.0))
+                                                        .text_color(theme.text_muted)
+                                                        .child("Interleave multiple logs chronologically."),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .mt(px(4.0))
+                                                        .p(px(12.0))
+                                                        .rounded_md()
+                                                        .border_1()
+                                                        .border_color(theme.border_subtle)
                                                         .bg(theme.bg_card)
-                                                        .hover(move |s| s.bg(theme.btn_hover))
-                                                        .text_size(px(10.0))
-                                                        .text_color(theme.accent)
-                                                        .cursor_pointer()
-                                                        .on_click(cx.listener(|this, _, _window, cx| {
-                                                            this.refresh_adb_devices(cx);
-                                                        }))
-                                                        .child("🔄 Rescan"),
+                                                        .flex()
+                                                        .flex_col()
+                                                        .justify_center()
+                                                        .gap_1()
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(10.5))
+                                                                .font_weight(FontWeight::MEDIUM)
+                                                                .text_color(theme.text_muted)
+                                                                .child("⚡ k-way Priority Heap"),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(10.5))
+                                                                .font_weight(FontWeight::MEDIUM)
+                                                                .text_color(theme.text_muted)
+                                                                .child("⏱️ Microsecond Interleaving"),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(10.5))
+                                                                .font_weight(FontWeight::MEDIUM)
+                                                                .text_color(theme.text_muted)
+                                                                .child("🔗 Stack Trace Continuity"),
+                                                        ),
                                                 ),
                                         )
                                         .child(
-                                            if is_scanning {
-                                                div()
-                                                    .p(px(10.0))
-                                                    .rounded_md()
-                                                    .bg(theme.bg_card)
-                                                    .text_size(px(11.0))
-                                                    .text_color(theme.text_muted)
-                                                    .child("Scanning for connected devices...")
-                                            } else if has_devices {
-                                                let dev_info = selected_dev_info;
-                                                let dev_name = dev_info.map(|d| d.short_name()).unwrap_or_else(|| "Connected Device".to_string());
-                                                let dev_serial = dev_info.map(|d| d.serial.clone()).unwrap_or_default();
-                                                let is_ready = dev_info.map(|d| d.is_ready()).unwrap_or(false);
-
-                                                div()
-                                                    .p(px(10.0))
-                                                    .rounded_md()
-                                                    .bg(theme.bg_card)
-                                                    .border_1()
-                                                    .border_color(theme.border_subtle)
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap_1p5()
-                                                    .child(
+                                            div()
+                                                .id("btn-empty-state-merge")
+                                                .w_full()
+                                                .py(px(7.5))
+                                                .rounded_md()
+                                                .bg(theme.accent)
+                                                .hover(move |s| s.bg(theme.btn_hover))
+                                                .text_color(rgb(0xffffff))
+                                                .text_size(px(11.5))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .gap_1p5()
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.prompt_open_merged_files(Some(window), cx);
+                                                }))
+                                                .child("Merge Files")
+                                                .child(crate::components::toolbar::render_kbd_badge_on_accent("Ctrl+Shift+M")),
+                                        ),
+                                ),
+                        )
+                        // Pillar 3: Live Android ADB Stream
+                        .child(
+                            div()
+                                .flex_1()
+                                .rounded_xl()
+                                .bg(theme.bg_panel)
+                                .border_1()
+                                .border_color(theme.border)
+                                .shadow_md()
+                                .overflow_hidden()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .h(px(1.0))
+                                        .w_full()
+                                        .bg(theme.border_highlight),
+                                )
+                                .child(
+                                    div()
+                                        .p(px(18.0))
+                                        .flex_1()
+                                        .flex()
+                                        .flex_col()
+                                        .justify_between()
+                                        .gap_3()
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap_1p5()
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_between()
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(14.5))
+                                                                .font_weight(FontWeight::SEMIBOLD)
+                                                                .text_color(theme.text_primary)
+                                                                .child("📱 Live Android ADB"),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .id("btn-welcome-rescan-adb")
+                                                                .px(px(6.0))
+                                                                .py(px(2.0))
+                                                                .rounded_sm()
+                                                                .bg(theme.bg_card)
+                                                                .hover(move |s| s.bg(theme.btn_hover))
+                                                                .text_size(px(10.0))
+                                                                .text_color(theme.accent)
+                                                                .cursor_pointer()
+                                                                .on_click(cx.listener(|this, _, _window, cx| {
+                                                                    this.refresh_adb_devices(cx);
+                                                                }))
+                                                                .child("🔄 Rescan"),
+                                                        ),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(11.0))
+                                                        .text_color(theme.text_muted)
+                                                        .child("Stream live logcat with process isolation."),
+                                                )
+                                                .child(
+                                                    if is_scanning {
                                                         div()
+                                                            .mt(px(4.0))
+                                                            .p(px(12.0))
+                                                            .rounded_md()
+                                                            .bg(theme.bg_card)
+                                                            .text_size(px(11.0))
+                                                            .text_color(theme.text_muted)
+                                                            .child("Scanning for connected devices...")
+                                                    } else if has_devices {
+                                                        let dev_info = selected_dev_info;
+                                                        let dev_name = dev_info.map(|d| d.short_name()).unwrap_or_else(|| "Connected Device".to_string());
+                                                        let dev_serial = dev_info.map(|d| d.serial.clone()).unwrap_or_default();
+                                                        let is_ready = dev_info.map(|d| d.is_ready()).unwrap_or(false);
+
+                                                        div()
+                                                            .mt(px(4.0))
+                                                            .p(px(10.0))
+                                                            .rounded_md()
+                                                            .bg(theme.bg_card)
+                                                            .border_1()
+                                                            .border_color(theme.border_subtle)
                                                             .flex()
-                                                            .items_center()
-                                                            .justify_between()
+                                                            .flex_col()
+                                                            .gap_1p5()
                                                             .child(
                                                                 div()
                                                                     .flex()
                                                                     .items_center()
-                                                                    .gap_2()
+                                                                    .justify_between()
                                                                     .child(
                                                                         div()
-                                                                            .w(px(7.0))
-                                                                            .h(px(7.0))
-                                                                            .rounded_full()
-                                                                            .bg(if is_ready { theme.success_green } else { theme.warning_amber }),
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .gap_2()
+                                                                            .child(
+                                                                                div()
+                                                                                    .w(px(7.0))
+                                                                                    .h(px(7.0))
+                                                                                    .rounded_full()
+                                                                                    .bg(if is_ready { theme.success_green } else { theme.warning_amber }),
+                                                                            )
+                                                                            .child(
+                                                                                div()
+                                                                                    .text_size(px(11.5))
+                                                                                    .font_weight(FontWeight::BOLD)
+                                                                                    .text_color(theme.text_primary)
+                                                                                    .child(dev_name),
+                                                                            ),
                                                                     )
                                                                     .child(
                                                                         div()
-                                                                            .text_size(px(12.0))
-                                                                            .font_weight(FontWeight::BOLD)
-                                                                            .text_color(theme.text_primary)
-                                                                            .child(dev_name),
+                                                                            .text_size(px(10.0))
+                                                                            .text_color(if is_ready { theme.success_green } else { theme.warning_amber })
+                                                                            .child(if is_ready { "Ready" } else { "Unauthorized" }),
                                                                     ),
                                                             )
                                                             .child(
                                                                 div()
-                                                                    .text_size(px(10.0))
-                                                                    .text_color(if is_ready { theme.success_green } else { theme.warning_amber })
-                                                                    .child(if is_ready { "Ready" } else { "Unauthorized" }),
-                                                            ),
-                                                    )
-                                                    .child(
+                                                                    .text_size(px(9.5))
+                                                                    .font_family("monospace")
+                                                                    .text_color(theme.text_muted)
+                                                                    .child(format!("Serial: {} • {} found", dev_serial, workspace.adb_device_details.len())),
+                                                            )
+                                                    } else {
                                                         div()
-                                                            .text_size(px(10.0))
-                                                            .font_family("monospace")
-                                                            .text_color(theme.text_muted)
-                                                            .child(format!("Serial: {} • {} found", dev_serial, workspace.adb_device_details.len())),
-                                                    )
-                                            } else {
-                                                div()
-                                                    .p(px(10.0))
-                                                    .rounded_md()
-                                                    .bg(theme.bg_card)
-                                                    .border_1()
-                                                    .border_color(theme.border_subtle)
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap_1()
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(11.5))
-                                                            .font_weight(FontWeight::MEDIUM)
-                                                            .text_color(theme.warning_amber)
-                                                            .child("No Android devices detected"),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(10.0))
-                                                            .text_color(theme.text_muted)
-                                                            .child("Enable USB Debugging in Developer Options & connect USB"),
-                                                    )
-                                            },
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .id("btn-empty-state-adb")
-                                        .w_full()
-                                        .py(px(8.0))
-                                        .rounded_md()
-                                        .bg(if has_devices { theme.success_green } else { theme.bg_card })
-                                        .hover(move |s| {
-                                            if has_devices {
-                                                s.bg(rgb(0x16a34a))
-                                            } else {
-                                                s.bg(theme.btn_hover)
-                                            }
-                                        })
-                                        .text_color(if has_devices { rgb(0xffffff) } else { theme.text_muted })
-                                        .text_size(px(12.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .cursor_pointer()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .on_click(cx.listener(|this, _, _window, cx| {
-                                            if !this.adb_device_details.is_empty() {
-                                                this.start_adb_stream(cx);
-                                            } else {
-                                                this.refresh_adb_devices(cx);
-                                            }
-                                        }))
+                                                            .mt(px(4.0))
+                                                            .p(px(10.0))
+                                                            .rounded_md()
+                                                            .bg(theme.bg_card)
+                                                            .border_1()
+                                                            .border_color(theme.border_subtle)
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap_1()
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(11.0))
+                                                                    .font_weight(FontWeight::MEDIUM)
+                                                                    .text_color(theme.warning_amber)
+                                                                    .child("No Android devices detected"),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(9.5))
+                                                                    .text_color(theme.text_muted)
+                                                                    .child("Enable USB Debugging in Developer Options"),
+                                                            )
+                                                    },
+                                                ),
+                                        )
                                         .child(
-                                            if is_scanning {
-                                                "📱 Scanning ADB...".to_string()
-                                            } else if let Some(info) = selected_dev_info {
-                                                format!("⚡ Stream from {}", info.short_name())
-                                            } else if has_devices {
-                                                "⚡ Start Live ADB Stream".to_string()
-                                            } else {
-                                                "🔄 Scan for Devices".to_string()
-                                            },
+                                            div()
+                                                .id("btn-empty-state-adb")
+                                                .w_full()
+                                                .py(px(7.5))
+                                                .rounded_md()
+                                                .bg(if has_devices { theme.success_green } else { theme.bg_card })
+                                                .hover(move |s| {
+                                                    if has_devices {
+                                                        s.bg(rgb(0x16a34a))
+                                                    } else {
+                                                        s.bg(theme.btn_hover)
+                                                    }
+                                                })
+                                                .text_color(if has_devices { rgb(0xffffff) } else { theme.text_muted })
+                                                .text_size(px(11.5))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .on_click(cx.listener(|this, _, _window, cx| {
+                                                    if !this.adb_device_details.is_empty() {
+                                                        this.start_adb_stream(cx);
+                                                    } else {
+                                                        this.refresh_adb_devices(cx);
+                                                    }
+                                                }))
+                                                .child(
+                                                    if is_scanning {
+                                                        "📱 Scanning ADB...".to_string()
+                                                    } else if let Some(info) = selected_dev_info {
+                                                        format!("⚡ Stream from {}", info.short_name())
+                                                    } else if has_devices {
+                                                        "⚡ Start Live ADB Stream".to_string()
+                                                    } else {
+                                                        "🔄 Scan for Devices".to_string()
+                                                    },
+                                                ),
                                         ),
                                 ),
                         ),
                 )
-                // Shortcut Cheat Sheet
+                // Recent Workspaces Shelf (when recent_files is not empty)
+                .children(if !workspace.recent_files.is_empty() {
+                    Some(
+                        div()
+                            .w_full()
+                            .rounded_xl()
+                            .bg(theme.bg_panel)
+                            .border_1()
+                            .border_color(theme.border)
+                            .shadow_sm()
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .h(px(1.0))
+                                    .w_full()
+                                    .bg(theme.border_highlight),
+                            )
+                            .child(
+                                div()
+                                    .p(px(14.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_1p5()
+                                                    .text_size(px(11.0))
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(theme.text_muted)
+                                                    .child("🕒 RECENT WORKSPACES"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("btn-clear-recent-files")
+                                                    .cursor_pointer()
+                                                    .text_size(px(10.0))
+                                                    .text_color(theme.text_muted)
+                                                    .hover(|s| s.text_color(theme.error_red))
+                                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                                        this.clear_recent_files();
+                                                        cx.notify();
+                                                    }))
+                                                    .child("Clear history"),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .children(workspace.recent_files.iter().map(|path_buf| {
+                                                let path_clone = path_buf.clone();
+                                                let file_name = path_buf
+                                                    .file_name()
+                                                    .unwrap_or_default()
+                                                    .to_string_lossy()
+                                                    .to_string();
+                                                let path_display = path_buf.to_string_lossy().to_string();
+
+                                                div()
+                                                    .id(ElementId::Name(format!("recent-item-{}", path_display).into()))
+                                                    .px(px(10.0))
+                                                    .py(px(6.0))
+                                                    .rounded_md()
+                                                    .bg(theme.bg_card)
+                                                    .border_1()
+                                                    .border_color(theme.border_subtle)
+                                                    .hover(|s| s.bg(theme.btn_hover).border_color(theme.accent))
+                                                    .cursor_pointer()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_between()
+                                                    .on_click(cx.listener(move |this, _, _window, cx| {
+                                                        this.open_file(&path_clone, cx);
+                                                    }))
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap_2()
+                                                            .child(div().text_size(px(13.0)).child("📄"))
+                                                            .child(
+                                                                div()
+                                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                                    .text_size(px(11.5))
+                                                                    .text_color(theme.text_primary)
+                                                                    .child(file_name),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .font_family("monospace")
+                                                                    .text_size(px(10.0))
+                                                                    .text_color(theme.text_muted)
+                                                                    .child(path_display),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(10.5))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(theme.accent)
+                                                            .child("Open ➔"),
+                                                    )
+                                                    .into_any_element()
+                                            })),
+                                    ),
+                            ),
+                    )
+                } else {
+                    None
+                })
+                // Interactive Keyboard Shortcut Cheat Sheet Bar
                 .child(
                     div()
                         .w_full()
-                        .pt(px(12.0))
+                        .pt(px(14.0))
                         .border_t_1()
                         .border_color(theme.border_subtle)
                         .flex()
-                        .flex_col()
+                        .flex_wrap()
                         .items_center()
-                        .gap_1p5()
-                        .text_size(px(11.0))
-                        .font_family("monospace")
-                        .text_color(theme.text_muted)
-                        .child("Ctrl+F: Search  •  Ctrl+\\: Split View  •  Ctrl+Alt+S: Sync Scroll  •  Ctrl+Space: Pause"),
+                        .justify_center()
+                        .gap_3()
+                        .child(render_kbd_chip("Ctrl+O", "Open", theme))
+                        .child(render_kbd_chip("Ctrl+P", "Palette", theme))
+                        .child(render_kbd_chip("Ctrl+F", "Find", theme))
+                        .child(render_kbd_chip("F", "Filter Mode", theme))
+                        .child(render_kbd_chip("Ctrl+\\", "Dual Split", theme))
+                        .child(render_kbd_chip("Ctrl+Shift+M", "Merge", theme))
+                        .child(render_kbd_chip("Ctrl+B", "Bookmarks", theme))
+                        .child(render_kbd_chip("Ctrl+R", "Live ADB", theme)),
                 ),
         )
 }

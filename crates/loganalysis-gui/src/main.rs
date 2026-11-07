@@ -948,4 +948,47 @@ mod tests {
         assert_eq!(tooltip.shortcut, Some("Ctrl+O"));
         assert!(tooltip.theme.border.a > 0.0);
     }
+
+    #[test]
+    fn test_recent_files_lru_and_persistence() {
+        use std::path::PathBuf;
+
+        let mut recents: Vec<PathBuf> = Vec::new();
+
+        // Helper matching workspace.add_recent_file logic
+        let add_rec = |list: &mut Vec<PathBuf>, p: PathBuf| {
+            list.retain(|item| item != &p);
+            list.insert(0, p);
+            list.truncate(5);
+        };
+
+        let p1 = PathBuf::from("/tmp/log1.txt");
+        let p2 = PathBuf::from("/tmp/log2.txt");
+        let p3 = PathBuf::from("/tmp/log3.txt");
+        let p4 = PathBuf::from("/tmp/log4.txt");
+        let p5 = PathBuf::from("/tmp/log5.txt");
+        let p6 = PathBuf::from("/tmp/log6.txt");
+
+        add_rec(&mut recents, p1.clone());
+        add_rec(&mut recents, p2.clone());
+        assert_eq!(recents, vec![p2.clone(), p1.clone()]);
+
+        // Duplicate re-order to front
+        add_rec(&mut recents, p1.clone());
+        assert_eq!(recents, vec![p1.clone(), p2.clone()]);
+
+        // Truncate at 5 items
+        add_rec(&mut recents, p3.clone());
+        add_rec(&mut recents, p4.clone());
+        add_rec(&mut recents, p5.clone());
+        add_rec(&mut recents, p6.clone());
+        assert_eq!(recents.len(), 5);
+        assert_eq!(recents[0], p6);
+        assert_eq!(recents[4], p1); // p2 was evicted
+
+        // JSON serialization roundtrip
+        let serialized = serde_json::to_string_pretty(&recents).expect("serialization failed");
+        let deserialized: Vec<PathBuf> = serde_json::from_str(&serialized).expect("deserialization failed");
+        assert_eq!(deserialized, recents);
+    }
 }

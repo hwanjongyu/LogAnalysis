@@ -1,3 +1,4 @@
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use loganalysis_core::LogSource;
 
@@ -174,27 +175,88 @@ pub fn render_toolbar(
                                 .child(render_kbd_badge("Ctrl+K", theme)),
                         ),
                 )
-                // Active File Pill Badge
+                // Contextual Breadcrumb Trail
                 .child(
                     div()
-                        .px(px(8.0))
-                        .py(px(3.0))
+                        .px(px(10.0))
+                        .py(px(3.5))
                         .rounded_full()
                         .bg(theme.bg_badge)
                         .border_1()
                         .border_color(theme.border_subtle)
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
                         .text_size(px(11.0))
-                        .font_family("monospace")
-                        .text_color(if workspace.active_file_name.is_some() {
-                            theme.text_primary
-                        } else {
-                            theme.text_muted
-                        })
                         .child(if let Some(name) = &workspace.active_file_name {
                             let lines = workspace.log_source.as_ref().map(|s| s.line_count()).unwrap_or(0);
-                            format!("📄 {} ({} lines)", name, lines)
+                            let matched = workspace.filter_result.as_ref().map(|r| r.total_matched_lines).unwrap_or(0);
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .child(div().text_size(px(12.0)).child("📄"))
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme.text_primary)
+                                        .child(name.clone()),
+                                )
+                                .child(div().text_color(theme.text_muted).child("›"))
+                                .child(
+                                    div()
+                                        .font_family("monospace")
+                                        .text_color(theme.text_muted)
+                                        .child(format!("{} lines", lines)),
+                                )
+                                .when(matched > 0, |parent| {
+                                    parent
+                                        .child(div().text_color(theme.text_muted).child("›"))
+                                        .child(
+                                            div()
+                                                .px(px(5.0))
+                                                .py(px(0.5))
+                                                .rounded_xs()
+                                                .bg(theme.accent_muted)
+                                                .font_family("monospace")
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(theme.accent)
+                                                .text_size(px(10.0))
+                                                .child(format!("{} matches", matched)),
+                                        )
+                                })
+                                .into_any_element()
+                        } else if workspace.is_streaming {
+                            let dev_name = workspace
+                                .get_selected_device_info()
+                                .map(|i| i.short_name())
+                                .or_else(|| workspace.selected_device.clone())
+                                .unwrap_or_else(|| "Android Device".to_string());
+                            let lines = workspace.log_source.as_ref().map(|s| s.line_count()).unwrap_or(0);
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .child(div().text_size(px(12.0)).child("📱"))
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme.text_primary)
+                                        .child(dev_name),
+                                )
+                                .child(div().text_color(theme.text_muted).child("›"))
+                                .child(
+                                    div()
+                                        .font_family("monospace")
+                                        .text_color(theme.success_green)
+                                        .child(format!("Live • {} lines", lines)),
+                                )
+                                .into_any_element()
                         } else {
-                            "No active log".into()
+                            div()
+                                .text_color(theme.text_muted)
+                                .child("No active log")
+                                .into_any_element()
                         }),
                 ),
         )
