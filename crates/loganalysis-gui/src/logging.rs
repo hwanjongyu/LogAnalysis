@@ -62,24 +62,68 @@ pub fn now_timestamp() -> String {
     format_epoch_utc(secs)
 }
 
+/// Resolves the user-specific directory for persistent application logs.
+/// Checks the following in order of precedence:
+/// 1. `HOME` -> `~/.local/share/loganalysis` (Unix/Linux/macOS)
+/// 2. `LOCALAPPDATA` -> `%LOCALAPPDATA%\loganalysis` (Windows local app data)
+/// 3. `APPDATA` -> `%APPDATA%\loganalysis` (Windows roaming app data fallback)
+/// 4. `USERPROFILE` -> `%USERPROFILE%\AppData\Local\loganalysis` (Windows user profile fallback)
+#[allow(dead_code)]
+pub fn resolve_user_log_dir() -> Option<PathBuf> {
+    resolve_user_log_dir_from_env(|k| std::env::var(k).ok())
+}
+
+pub(crate) fn resolve_user_log_dir_from_env<F>(get_env: F) -> Option<PathBuf>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if let Some(home) = get_env("HOME").filter(|s| !s.is_empty()) {
+        Some(PathBuf::from(home).join(".local").join("share").join("loganalysis"))
+    } else if let Some(local_app_data) = get_env("LOCALAPPDATA").filter(|s| !s.is_empty()) {
+        Some(PathBuf::from(local_app_data).join("loganalysis"))
+    } else if let Some(app_data) = get_env("APPDATA").filter(|s| !s.is_empty()) {
+        Some(PathBuf::from(app_data).join("loganalysis"))
+    } else {
+        get_env("USERPROFILE")
+            .filter(|s| !s.is_empty())
+            .map(|user_profile| PathBuf::from(user_profile).join("AppData").join("Local").join("loganalysis"))
+    }
+}
+
 /// Resolves standard log directory paths:
 /// 1. Current working directory
-/// 2. User data directory (~/.local/share/loganalysis)
+/// 2. User data directory (~/.local/share/loganalysis on Unix, or %LOCALAPPDATA%\loganalysis on Windows)
 pub fn resolve_log_paths(filename: &str) -> Vec<PathBuf> {
+    resolve_log_paths_with_lookup(
+        filename,
+        std::env::current_dir().ok(),
+        |k| std::env::var(k).ok(),
+        |dir| {
+            let _ = std::fs::create_dir_all(dir);
+        },
+    )
+}
+
+pub(crate) fn resolve_log_paths_with_lookup<F, C>(
+    filename: &str,
+    cwd: Option<PathBuf>,
+    get_env: F,
+    mut create_dir: C,
+) -> Vec<PathBuf>
+where
+    F: Fn(&str) -> Option<String>,
+    C: FnMut(&Path),
+{
     let mut paths = Vec::new();
 
     // 1. Current working directory
-    if let Ok(cwd) = std::env::current_dir() {
+    if let Some(cwd) = cwd {
         paths.push(cwd.join(filename));
     }
 
-    // 2. User local share directory
-    if let Ok(home) = std::env::var("HOME") {
-        let user_share = PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("loganalysis");
-        let _ = std::fs::create_dir_all(&user_share);
+    // 2. User local share directory (HOME, LOCALAPPDATA, APPDATA, or USERPROFILE)
+    if let Some(user_share) = resolve_user_log_dir_from_env(get_env) {
+        create_dir(&user_share);
         paths.push(user_share.join(filename));
     }
 
@@ -209,6 +253,69 @@ mod tests {
         let paths = resolve_log_paths("test.log");
         assert!(!paths.is_empty(), "Log paths should have at least cwd or home path");
         assert!(paths[0].ends_with("test.log"));
+    }
+
+    #[test]
+    fn test_resolve_user_log_dir_precedence() {
+        // Verify resolve_user_log_dir calls the resolver
+        let _ = resolve_user_log_dir();
+
+        // 1. HOME takes precedence when present
+        let dir = resolve_user_log_dir_from_env(|k| match k {
+            "HOME" => Some("/home/testuser".into()),
+            "LOCALAPPDATA" => Some("/mock/appdata/local".into()),
+            _ => None,
+        });
+        assert_eq!(dir, Some(PathBuf::from("/home/testuser").join(".local").join("share").join("loganalysis")));
+
+        // 2. LOCALAPPDATA used when HOME is unset
+        let dir = resolve_user_log_dir_from_env(|k| match k {
+            "LOCALAPPDATA" => Some("/mock/appdata/local".into()),
+            "APPDATA" => Some("/mock/appdata/roaming".into()),
+            "USERPROFILE" => Some("/mock/userprofile".into()),
+            _ => None,
+        });
+        assert_eq!(dir, Some(PathBuf::from("/mock/appdata/local").join("loganalysis")));
+
+        // 3. APPDATA used when HOME and LOCALAPPDATA are unset
+        let dir = resolve_user_log_dir_from_env(|k| match k {
+            "APPDATA" => Some("/mock/appdata/roaming".into()),
+            "USERPROFILE" => Some("/mock/userprofile".into()),
+            _ => None,
+        });
+        assert_eq!(dir, Some(PathBuf::from("/mock/appdata/roaming").join("loganalysis")));
+
+        // 4. USERPROFILE used when HOME, LOCALAPPDATA, and APPDATA are unset
+        let dir = resolve_user_log_dir_from_env(|k| match k {
+            "USERPROFILE" => Some("/mock/userprofile".into()),
+            _ => None,
+        });
+        assert_eq!(dir, Some(PathBuf::from("/mock/userprofile").join("AppData").join("Local").join("loganalysis")));
+
+        // 5. None when no environment variables set
+        let dir = resolve_user_log_dir_from_env(|_| None);
+        assert_eq!(dir, None);
+    }
+
+    #[test]
+    fn test_resolve_log_paths_with_lookup_windows() {
+        let mut created_dirs = Vec::new();
+        let cwd = PathBuf::from("/mock/install/dir");
+        let paths = resolve_log_paths_with_lookup(
+            "app.log",
+            Some(cwd.clone()),
+            |k| match k {
+                "USERPROFILE" => Some("/mock/userprofile".into()),
+                _ => None,
+            },
+            |dir| created_dirs.push(dir.to_path_buf()),
+        );
+
+        let expected_user_dir = PathBuf::from("/mock/userprofile").join("AppData").join("Local").join("loganalysis");
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], cwd.join("app.log"));
+        assert_eq!(paths[1], expected_user_dir.join("app.log"));
+        assert_eq!(created_dirs, vec![expected_user_dir]);
     }
 
     #[test]

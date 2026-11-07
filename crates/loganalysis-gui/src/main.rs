@@ -4,6 +4,7 @@
 mod actions;
 mod cli;
 mod components;
+pub mod controllers;
 mod dialogs;
 mod logging;
 mod modals;
