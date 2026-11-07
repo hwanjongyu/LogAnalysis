@@ -87,6 +87,9 @@ pub struct LogAnalysisWorkspace {
     pub(crate) secondary_filter_result: Option<Arc<FilterResult>>,
     pub(crate) secondary_scroll_handle: UniformListScrollHandle,
     pub(crate) secondary_selection: SelectionModel,
+
+    // Column View state
+    pub(crate) is_column_view: bool,
 }
 
 impl LogAnalysisWorkspace {
@@ -282,6 +285,8 @@ impl LogAnalysisWorkspace {
             secondary_filter_result: None,
             secondary_scroll_handle: UniformListScrollHandle::new(),
             secondary_selection: SelectionModel::new(),
+
+            is_column_view: false,
         }
     }
 
@@ -1338,6 +1343,7 @@ impl LogAnalysisWorkspace {
             PaletteCommandId::OpenSecondaryLog => {
                 self.prompt_open_secondary_file(window.as_deref(), cx)
             }
+            PaletteCommandId::ToggleColumnView => self.toggle_column_view(cx),
         }
     }
 
@@ -2569,6 +2575,37 @@ impl LogAnalysisWorkspace {
             self.scroll_handle.scroll_to_item(target_vis_idx, ScrollStrategy::Center);
             cx.notify();
         }
+    }
+
+    /// Toggles Structured Column Grid View vs Raw Monospace View (Ctrl+G / Cmd+G)
+    pub fn toggle_column_view(&mut self, cx: &mut Context<Self>) {
+        self.is_column_view = !self.is_column_view;
+        self.status_text = if self.is_column_view {
+            "Structured Column Grid View: ON".into()
+        } else {
+            "Structured Column Grid View: OFF (Raw Monospace)".into()
+        };
+        cx.notify();
+    }
+
+    /// Adds a quick filter rule for a specific tag
+    pub fn add_quick_tag_filter(&mut self, tag: &str, cx: &mut Context<Self>) {
+        let trimmed = tag.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let rule = FilterRule {
+            text: trimmed.to_string(),
+            regex: false,
+            case_sensitive: true,
+            exclude: false,
+            bg_color: "Cyan".to_string(),
+            text_color: "Black".to_string(),
+            active: true,
+            ..Default::default()
+        };
+        self.add_filter_rule(rule, cx);
+        self.status_text = format!("Added quick filter for tag: {}", trimmed).into();
     }
 }
 

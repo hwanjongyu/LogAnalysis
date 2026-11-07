@@ -39,6 +39,7 @@ pub enum PaletteCommandId {
     ToggleSplitOrientation,
     ToggleSyncedScroll,
     OpenSecondaryLog,
+    ToggleColumnView,
 }
 
 #[derive(Clone, Debug)]
@@ -194,6 +195,12 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             title: "File: Open Log in Secondary Split Pane...",
             category: "FILE",
             shortcut: None,
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ToggleColumnView,
+            title: "View: Toggle Structured Column Grid View",
+            category: "VIEW",
+            shortcut: Some("Ctrl+G"),
         },
         PaletteCommand {
             id: PaletteCommandId::ZoomIn,

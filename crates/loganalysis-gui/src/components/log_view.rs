@@ -1,5 +1,6 @@
+use gpui::prelude::FluentBuilder;
 use gpui::*;
-use loganalysis_core::{LineSeverity, LogSource};
+use loganalysis_core::{parse_logcat_column_line, LineSeverity, LogSource};
 
 use crate::components::find_bar::render_find_bar;
 use crate::workspace::LogAnalysisWorkspace;
@@ -426,6 +427,119 @@ fn render_pane_content(
     }
 }
 
+/// Helper to render text with search match highlighting
+fn render_highlighted_text(
+    text_content: &str,
+    search_matcher: &Option<std::sync::Arc<loganalysis_core::CompiledMatcher>>,
+    highlight_style: HighlightStyle,
+) -> AnyElement {
+    if let Some(ref matcher) = search_matcher {
+        let ranges = matcher.find_match_ranges(text_content, 32);
+        if !ranges.is_empty() {
+            let highlights = ranges.into_iter().map(|r| (r, highlight_style));
+            StyledText::new(text_content.to_string())
+                .with_highlights(highlights)
+                .into_any_element()
+        } else {
+            text_content.to_string().into_any_element()
+        }
+    } else {
+        text_content.to_string().into_any_element()
+    }
+}
+
+/// Column Header Bar for Structured Column Grid View
+fn render_column_header(theme: crate::theme::Theme) -> impl IntoElement {
+    div()
+        .h(px(24.0))
+        .w_full()
+        .bg(theme.bg_header)
+        .border_b_1()
+        .border_color(theme.border_subtle)
+        .flex()
+        .flex_row()
+        .items_center()
+        .text_size(px(10.5))
+        .font_weight(FontWeight::BOLD)
+        .text_color(theme.text_muted)
+        // Line Gutter Header (64px)
+        .child(
+            div()
+                .w(px(64.0))
+                .h_full()
+                .flex_shrink_0()
+                .px(px(4.0))
+                .border_r_1()
+                .border_color(theme.border_subtle)
+                .flex()
+                .items_center()
+                .justify_end()
+                .child("Line"),
+        )
+        // Time Header (135px)
+        .child(
+            div()
+                .w(px(135.0))
+                .h_full()
+                .flex_shrink_0()
+                .px(px(6.0))
+                .border_r_1()
+                .border_color(theme.border_subtle)
+                .flex()
+                .items_center()
+                .child("Time"),
+        )
+        // Level Header (36px)
+        .child(
+            div()
+                .w(px(36.0))
+                .h_full()
+                .flex_shrink_0()
+                .border_r_1()
+                .border_color(theme.border_subtle)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child("Lvl"),
+        )
+        // PID/TID Header (85px)
+        .child(
+            div()
+                .w(px(85.0))
+                .h_full()
+                .flex_shrink_0()
+                .px(px(6.0))
+                .border_r_1()
+                .border_color(theme.border_subtle)
+                .flex()
+                .items_center()
+                .child("PID / TID"),
+        )
+        // Tag Header (130px)
+        .child(
+            div()
+                .w(px(130.0))
+                .h_full()
+                .flex_shrink_0()
+                .px(px(6.0))
+                .border_r_1()
+                .border_color(theme.border_subtle)
+                .flex()
+                .items_center()
+                .child("Tag"),
+        )
+        // Message Header (flex-1)
+        .child(
+            div()
+                .flex_1()
+                .h_full()
+                .px(px(8.0))
+                .flex()
+                .items_center()
+                .child("Message"),
+        )
+}
+
 /// Renders the virtualized uniform list for either pane
 fn render_log_list(
     workspace: &LogAnalysisWorkspace,
@@ -433,6 +547,7 @@ fn render_log_list(
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> impl IntoElement {
     let theme = workspace.theme;
+    let is_column_view = workspace.is_column_view;
     let font_size = workspace.font_size;
     let row_height = font_size * 1.55;
     let weak_self = cx.weak_entity();
@@ -491,6 +606,7 @@ fn render_log_list(
 
         let search_matcher = ws.and_then(|w| w.cached_search_matcher.clone());
         let row_theme = ws.map(|w| w.theme).unwrap_or(theme);
+        let is_col_view = ws.map(|w| w.is_column_view).unwrap_or(false);
 
         range
             .map(|idx| {
@@ -540,7 +656,52 @@ fn render_log_list(
                 let entity_handle = weak_handle.clone();
                 let row_id = if is_primary { "log-row" } else { "secondary-log-row" };
 
-                div()
+                let gutter_el = div()
+                    .w(px(64.0))
+                    .h_full()
+                    .flex_shrink_0()
+                    .bg(if is_selected {
+                        theme.accent_muted
+                    } else if is_bookmarked {
+                        theme.accent_muted
+                    } else {
+                        theme.bg_gutter
+                    })
+                    .border_l_2()
+                    .border_r_1()
+                    .border_color(if is_selected {
+                        theme.accent
+                    } else if is_bookmarked {
+                        rgb(0x3b82f6)
+                    } else {
+                        theme.border_subtle
+                    })
+                    .text_color(if is_selected {
+                        theme.accent
+                    } else if is_bookmarked {
+                        rgb(0x3b82f6)
+                    } else {
+                        theme.text_gutter
+                    })
+                    .font_weight(if is_selected || is_bookmarked {
+                        FontWeight::BOLD
+                    } else {
+                        FontWeight::NORMAL
+                    })
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(4.0))
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .child(if is_bookmarked { "🔖" } else { "" }),
+                    )
+                    .child(div().child(format!("{}", real_idx + 1)));
+
+                let mut row_el = div()
                     .id(ElementId::NamedInteger(row_id.into(), idx as u64))
                     .h(row_height)
                     .min_h(row_height)
@@ -572,71 +733,139 @@ fn render_log_list(
                             }
                         });
                     })
-                    // Line Number Gutter
-                    .child(
-                        div()
-                            .w(px(64.0))
-                            .h_full()
-                            .flex_shrink_0()
-                            .bg(if is_selected {
-                                theme.accent_muted
-                            } else if is_bookmarked {
-                                theme.accent_muted
-                            } else {
-                                theme.bg_gutter
-                            })
-                            .border_l_2()
-                            .border_r_1()
-                            .border_color(if is_selected {
-                                theme.accent
-                            } else if is_bookmarked {
-                                rgb(0x3b82f6)
-                            } else {
-                                theme.border_subtle
-                            })
-                            .text_color(if is_selected {
-                                theme.accent
-                            } else if is_bookmarked {
-                                rgb(0x3b82f6)
-                            } else {
-                                theme.text_gutter
-                            })
-                            .font_weight(if is_selected || is_bookmarked {
-                                FontWeight::BOLD
-                            } else {
-                                FontWeight::NORMAL
-                            })
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .px(px(4.0))
-                            .whitespace_nowrap()
-                            .overflow_hidden()
+                    .child(gutter_el);
+
+                if is_col_view {
+                    let parsed = parse_logcat_column_line(text.as_ref());
+                    if let Some(time_str) = parsed.time {
+                        let (lvl_bg, lvl_fg) = match parsed.level_char {
+                            Some('E') | Some('F') => (row_theme.error_red, rgb(0xffffff)),
+                            Some('W') => (row_theme.warning_amber, rgb(0x000000)),
+                            Some('I') => (row_theme.success_green, rgb(0x000000)),
+                            Some('D') => (row_theme.accent, rgb(0xffffff)),
+                            _ => (row_theme.bg_badge, row_theme.text_muted),
+                        };
+                        let level_char_str = parsed
+                            .level_char
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| "-".into());
+                        let pid_tid_str =
+                            format!("{}/{}", parsed.pid.unwrap_or("-"), parsed.tid.unwrap_or("-"));
+                        let tag_str = parsed.tag.unwrap_or("-");
+                        let msg_text = parsed.message;
+
+                        row_el = row_el
                             .child(
                                 div()
-                                    .text_size(px(10.0))
-                                    .child(if is_bookmarked { "🔖" } else { "" }),
+                                    .w(px(135.0))
+                                    .h_full()
+                                    .flex_shrink_0()
+                                    .px(px(6.0))
+                                    .border_r_1()
+                                    .border_color(row_theme.border_subtle)
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(11.0))
+                                    .text_color(row_theme.text_muted)
+                                    .child(time_str.to_string()),
                             )
-                            .child(div().child(format!("{}", real_idx + 1))),
-                    )
-                    // Monospace Log Content
-                    .child(
+                            .child(
+                                div()
+                                    .w(px(36.0))
+                                    .h_full()
+                                    .flex_shrink_0()
+                                    .border_r_1()
+                                    .border_color(row_theme.border_subtle)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .px(px(4.0))
+                                            .py(px(1.0))
+                                            .rounded_xs()
+                                            .bg(lvl_bg)
+                                            .text_color(lvl_fg)
+                                            .text_size(px(10.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .child(level_char_str),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w(px(85.0))
+                                    .h_full()
+                                    .flex_shrink_0()
+                                    .px(px(6.0))
+                                    .border_r_1()
+                                    .border_color(row_theme.border_subtle)
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(11.0))
+                                    .font_family("monospace")
+                                    .text_color(row_theme.text_muted)
+                                    .child(pid_tid_str),
+                            )
+                            .child(
+                                div()
+                                    .w(px(130.0))
+                                    .h_full()
+                                    .flex_shrink_0()
+                                    .px(px(6.0))
+                                    .border_r_1()
+                                    .border_color(row_theme.border_subtle)
+                                    .flex()
+                                    .items_center()
+                                    .text_size(font_size)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(row_theme.accent)
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .child(tag_str.to_string()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .px(px(8.0))
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .child(render_highlighted_text(
+                                        msg_text,
+                                        &search_matcher,
+                                        highlight_style,
+                                    )),
+                            );
+                    } else {
+                        // Unstructured multiline stack trace fallback
+                        row_el = row_el.child(
+                            div()
+                                .flex_1()
+                                .px(px(12.0))
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .child(render_highlighted_text(
+                                    text.as_ref(),
+                                    &search_matcher,
+                                    highlight_style,
+                                )),
+                        );
+                    }
+                } else {
+                    // Raw monospace line
+                    row_el = row_el.child(
                         div()
                             .flex_1()
                             .px(px(10.0))
                             .whitespace_nowrap()
-                            .child(if let Some(ref matcher) = search_matcher {
-                                let ranges = matcher.find_match_ranges(&text, 32);
-                                if !ranges.is_empty() {
-                                    let highlights = ranges.into_iter().map(|r| (r, highlight_style));
-                                    StyledText::new(text).with_highlights(highlights).into_any_element()
-                                } else {
-                                    text.into_any_element()
-                                }
-                            } else {
-                                text.into_any_element()
-                            }),
-                    )
+                            .child(render_highlighted_text(
+                                text.as_ref(),
+                                &search_matcher,
+                                highlight_style,
+                            )),
+                    );
+                }
+
+                row_el
             })
             .collect::<Vec<_>>()
     });
@@ -787,13 +1016,22 @@ fn render_log_list(
                 .hover(move |s| s.bg(theme.accent)),
         );
 
+    let main_viewport = div()
+        .flex_1()
+        .h_full()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .when(is_column_view, |s| s.child(render_column_header(theme)))
+        .child(list_el);
+
     div()
         .flex_1()
         .h_full()
         .flex()
         .flex_row()
         .overflow_hidden()
-        .child(list_el)
+        .child(main_viewport)
         .child(scrollbar_track)
 }
 

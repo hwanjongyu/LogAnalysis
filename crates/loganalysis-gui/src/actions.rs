@@ -43,5 +43,6 @@ actions!(
         ToggleSplitOrientation,
         ToggleSyncedScroll,
         OpenSecondaryLog,
+        ToggleColumnView,
     ]
 );

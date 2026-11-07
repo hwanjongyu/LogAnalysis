@@ -230,6 +230,9 @@ impl Render for LogAnalysisWorkspace {
             .on_action(cx.listener(|this, _: &OpenSecondaryLog, window, cx| {
                 this.prompt_open_secondary_file(Some(window), cx);
             }))
+            .on_action(cx.listener(|this, _: &ToggleColumnView, _window, cx| {
+                this.toggle_column_view(cx);
+            }))
             .relative()
             .flex()
             .flex_col()
@@ -402,6 +405,8 @@ fn main() {
             KeyBinding::new("cmd-\\", ToggleSplitView, None),
             KeyBinding::new("ctrl-alt-\\", ToggleSplitOrientation, None),
             KeyBinding::new("ctrl-alt-s", ToggleSyncedScroll, None),
+            KeyBinding::new("ctrl-g", ToggleColumnView, None),
+            KeyBinding::new("cmd-g", ToggleColumnView, None),
         ]);
 
         // Register Scoped TextInput Key Bindings (Cut, Copy, Paste, Arrows, Selection, etc.)
@@ -620,6 +625,14 @@ mod tests {
             .collect();
         assert!(!sync_matches.is_empty());
         assert_eq!(sync_matches[0].0.id, PaletteCommandId::ToggleSyncedScroll);
+
+        // Fuzzy search for "column" -> should find column view command
+        let column_matches: Vec<_> = commands
+            .iter()
+            .filter_map(|c| fuzzy_match("column", c.title).map(|score| (c, score)))
+            .collect();
+        assert!(!column_matches.is_empty());
+        assert_eq!(column_matches[0].0.id, PaletteCommandId::ToggleColumnView);
     }
 
     #[test]
@@ -741,5 +754,46 @@ mod tests {
         // Clean up temp files
         let _ = std::fs::remove_file(a_dir);
         let _ = std::fs::remove_file(b_dir);
+    }
+
+    #[test]
+    fn test_structured_column_view_parsing_and_tag_quick_filter() {
+        use loganalysis_core::*;
+
+        let log_sample = "11-06 18:00:00.123  1000  1000 E AndroidRuntime: FATAL EXCEPTION: main\n\
+                          11-06 18:00:00.124  1000  1000 E AndroidRuntime: Process: com.example.app\n\
+                          \tat com.example.app.MainActivity.onCreate(MainActivity.java:42)\n\
+                          11-06 18:00:01.000   500   500 W AudioFlinger: Buffer underrun occurred\n";
+
+        let lines: Vec<&str> = log_sample.lines().collect();
+        assert_eq!(lines.len(), 4);
+
+        // 1. Threadtime error line
+        let p0 = parse_logcat_column_line(lines[0]);
+        assert_eq!(p0.time, Some("11-06 18:00:00.123"));
+        assert_eq!(p0.pid, Some("1000"));
+        assert_eq!(p0.tid, Some("1000"));
+        assert_eq!(p0.level_char, Some('E'));
+        assert_eq!(p0.level_severity, LineSeverity::Error);
+        assert_eq!(p0.tag, Some("AndroidRuntime"));
+        assert_eq!(p0.message, "FATAL EXCEPTION: main");
+
+        // 2. Multiline stack trace line
+        let p2 = parse_logcat_column_line(lines[2]);
+        assert_eq!(p2.time, None);
+        assert_eq!(p2.pid, None);
+        assert_eq!(p2.level_char, None);
+        assert_eq!(p2.tag, None);
+        assert_eq!(p2.message, lines[2]);
+
+        // 3. Threadtime warning line
+        let p3 = parse_logcat_column_line(lines[3]);
+        assert_eq!(p3.time, Some("11-06 18:00:01.000"));
+        assert_eq!(p3.pid, Some("500"));
+        assert_eq!(p3.tid, Some("500"));
+        assert_eq!(p3.level_char, Some('W'));
+        assert_eq!(p3.level_severity, LineSeverity::Warning);
+        assert_eq!(p3.tag, Some("AudioFlinger"));
+        assert_eq!(p3.message, "Buffer underrun occurred");
     }
 }

@@ -11,6 +11,7 @@ pub use adb::{
     scan_adb_devices, start_logcat_stream, stream_log_lines, AdbDeviceInfo, LogcatStreamHandle,
 };
 pub use buffer::{
+    column::parse_logcat_column_line, column::ParsedColumnLine,
     correlation::find_nearest_timestamp_row, file_buffer::FileLogBuffer, stream_buffer::StreamLogBuffer,
     timestamp::compute_delta_micros, timestamp::extract_timestamp, timestamp::format_delta_micros,
     timestamp::LatencyLevel, timestamp::LogTimestamp, ActiveLogSource, LogSource,

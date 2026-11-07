@@ -1,3 +1,4 @@
+pub mod column;
 pub mod correlation;
 pub mod file_buffer;
 pub mod stream_buffer;
@@ -6,6 +7,7 @@ pub mod timestamp;
 use std::borrow::Cow;
 use std::sync::Arc;
 
+pub use column::{parse_logcat_column_line, ParsedColumnLine};
 pub use correlation::find_nearest_timestamp_row;
 pub use file_buffer::FileLogBuffer;
 pub use stream_buffer::StreamLogBuffer;
