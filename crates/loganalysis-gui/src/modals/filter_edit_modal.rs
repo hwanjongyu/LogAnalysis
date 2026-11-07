@@ -599,11 +599,15 @@ pub fn render_filter_edit_modal(
                                     .hover(move |s| s.bg(theme.btn_hover))
                                     .text_size(px(11.5))
                                     .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1p5()
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.close_filter_modal(cx);
                                         cx.stop_propagation();
                                     }))
-                                    .child("Cancel (Esc)"),
+                                    .child("Cancel")
+                                    .child(crate::components::toolbar::render_kbd_badge("Esc", theme)),
                             )
                             .child(
                                 div()
@@ -616,15 +620,15 @@ pub fn render_filter_edit_modal(
                                     .text_size(px(11.5))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1p5()
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.save_modal_filter(cx);
                                         cx.stop_propagation();
                                     }))
-                                    .child(if is_edit {
-                                        "Update Rule (Enter)"
-                                    } else {
-                                        "Save Rule (Enter)"
-                                    }),
+                                    .child(if is_edit { "Update Rule" } else { "Save Rule" })
+                                    .child(crate::components::toolbar::render_kbd_badge_on_accent("Enter")),
                             ),
                     ),
             ),

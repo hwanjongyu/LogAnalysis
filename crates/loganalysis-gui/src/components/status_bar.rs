@@ -290,6 +290,29 @@ pub fn render_status_bar(
                                 .child("+"),
                         ),
                 )
+                // Shortcut Guide / Command Palette Quick Trigger
+                .child(
+                    div()
+                        .id("btn-status-help")
+                        .px(px(6.0))
+                        .py_0p5()
+                        .rounded_xs()
+                        .bg(theme.bg_card)
+                        .border_1()
+                        .border_color(theme.border_subtle)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.btn_hover).text_color(theme.text_primary))
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.text_muted)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_command_palette(cx);
+                            if this.is_command_palette_open {
+                                window.focus(&this.palette_input.read(cx).focus_handle);
+                            }
+                        }))
+                        .child("?"),
+                )
                 // App Version Badge
                 .child(
                     div()

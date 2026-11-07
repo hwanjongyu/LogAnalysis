@@ -1244,10 +1244,12 @@ fn render_onboarding_empty_state(
                                         .flex()
                                         .items_center()
                                         .justify_center()
+                                        .gap_1p5()
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.prompt_open_file(Some(window), cx);
                                         }))
-                                        .child("📂 Open File (Ctrl+O)"),
+                                        .child("📂 Open File")
+                                        .child(crate::components::toolbar::render_kbd_badge_on_accent("Ctrl+O")),
                                 ),
                         )
                         // Right Pillar: Live Android ADB Stream
