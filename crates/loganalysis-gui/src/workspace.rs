@@ -11,13 +11,6 @@ use crate::selection::SelectionModel;
 use crate::theme::Theme;
 use crate::types::{FilterEditState, FilterPanelPosition, InputFocusTarget};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamingAnalyticsState {
-    Computed,
-    Pending,
-    NoOp,
-}
-
 pub struct LogAnalysisWorkspace {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) log_source: Option<Arc<ActiveLogSource>>,
@@ -25,6 +18,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) heatmap_data: Option<Arc<HeatmapData>>,
     pub(crate) timeline_data: Option<Arc<EpsTimelineData>>,
     pub(crate) is_timeline_visible: bool,
+    pub(crate) analytics_seq: u64,
     pub(crate) scroll_handle: UniformListScrollHandle,
     pub(crate) selection: SelectionModel,
     pub(crate) theme: Theme,
@@ -247,6 +241,7 @@ impl LogAnalysisWorkspace {
             heatmap_data: None,
             timeline_data: None,
             is_timeline_visible: true,
+            analytics_seq: 0,
             scroll_handle: UniformListScrollHandle::new(),
             selection: SelectionModel::new(),
             theme: Theme::default(),
@@ -679,6 +674,7 @@ impl LogAnalysisWorkspace {
                             .checked_sub(STREAMING_ANALYTICS_THROTTLE)
                             .unwrap_or_else(std::time::Instant::now);
                         let mut pending_analytics_compute = false;
+                        let mut analytics_seq_local = 0u64;
 
                         loop {
                             let mut batch = Vec::new();
@@ -705,10 +701,10 @@ impl LogAnalysisWorkspace {
                                 let should_compute_analytics =
                                     last_analytics_compute.elapsed() >= STREAMING_ANALYTICS_THROTTLE || is_disconnected;
 
-                                let (should_continue, tr, analytics_state) = this
+                                let (should_continue, tr, analytics_payload) = this
                                     .update(&mut async_cx, |workspace, cx| {
                                         let mut trimmed_count = 0;
-                                        let mut analytics_state = StreamingAnalyticsState::NoOp;
+                                        let mut analytics_payload = None;
 
                                         if workspace.is_stream_paused {
                                             // Buffer chunks with bounded capacity to prevent OOM
@@ -778,25 +774,15 @@ impl LogAnalysisWorkspace {
                                                 let visible_count = res_mut.visible_indices.len();
                                                 let total_matched = res_mut.total_matched_lines;
 
-                                                // P1 Fix: Throttle HeatmapData::compute and EpsTimelineData::compute
+                                                // Offload heavy Rayon HeatmapData & EpsTimelineData computation to background executor
                                                 if should_compute_analytics {
-                                                    workspace.heatmap_data = Some(Arc::new(HeatmapData::compute(
-                                                        &**src_ref,
-                                                        &res_mut.visible_indices,
-                                                        &res_mut.visible_styles,
-                                                        200,
-                                                    )));
-                                                    if workspace.is_timeline_visible {
-                                                        workspace.timeline_data = Some(Arc::new(EpsTimelineData::compute(
-                                                            &**src_ref,
-                                                            &res_mut.visible_indices,
-                                                            &res_mut.visible_styles,
-                                                            80,
-                                                        )));
-                                                    }
-                                                    analytics_state = StreamingAnalyticsState::Computed;
-                                                } else {
-                                                    analytics_state = StreamingAnalyticsState::Pending;
+                                                    let is_tl = workspace.is_timeline_visible;
+                                                    analytics_payload = Some((
+                                                        Arc::clone(src_ref),
+                                                        res_mut.visible_indices.clone(),
+                                                        res_mut.visible_styles.clone(),
+                                                        is_tl,
+                                                    ));
                                                 }
 
                                                 workspace.status_text = format!(
@@ -808,7 +794,6 @@ impl LogAnalysisWorkspace {
                                             } else {
                                                 // Initial pass if filter_result was not yet computed
                                                 workspace.reapply_filters(cx);
-                                                analytics_state = StreamingAnalyticsState::Computed;
                                             }
 
                                             if workspace.facet_tags.is_empty() && new_total_len >= 100 {
@@ -835,19 +820,39 @@ impl LogAnalysisWorkspace {
                                         }
 
                                         cx.notify();
-                                        (workspace.is_streaming, trimmed_count, analytics_state)
+                                        (workspace.is_streaming, trimmed_count, analytics_payload)
                                     })
-                                    .unwrap_or((false, 0, StreamingAnalyticsState::NoOp));
+                                    .unwrap_or((false, 0, None));
 
-                                match analytics_state {
-                                    StreamingAnalyticsState::Computed => {
-                                        last_analytics_compute = std::time::Instant::now();
-                                        pending_analytics_compute = false;
-                                    }
-                                    StreamingAnalyticsState::Pending => {
-                                        pending_analytics_compute = true;
-                                    }
-                                    StreamingAnalyticsState::NoOp => {}
+                                if let Some((src_arc, indices, styles, is_tl)) = analytics_payload {
+                                    analytics_seq_local += 1;
+                                    let seq = analytics_seq_local;
+
+                                    let (heatmap, timeline) = timer_executor.spawn(async move {
+                                        let hm = Arc::new(HeatmapData::compute(&*src_arc, &indices, &styles, 200));
+                                        let tl = if is_tl {
+                                            Some(Arc::new(EpsTimelineData::compute(&*src_arc, &indices, &styles, 80)))
+                                        } else {
+                                            None
+                                        };
+                                        (hm, tl)
+                                    }).await;
+
+                                    let _ = this.update(&mut async_cx, |workspace, cx| {
+                                        if workspace.analytics_seq <= seq {
+                                            workspace.analytics_seq = seq;
+                                            workspace.heatmap_data = Some(heatmap);
+                                            if timeline.is_some() {
+                                                workspace.timeline_data = timeline;
+                                            }
+                                            cx.notify();
+                                        }
+                                    });
+
+                                    last_analytics_compute = std::time::Instant::now();
+                                    pending_analytics_compute = false;
+                                } else {
+                                    pending_analytics_compute = !should_compute_analytics;
                                 }
 
                                 if tr > 0 {
@@ -862,14 +867,50 @@ impl LogAnalysisWorkspace {
                                 }
                             } else if is_disconnected {
                                 // Subprocess closed pipe: cleanly exit streaming state and terminate async loop
-                                let _ = this.update(&mut async_cx, |workspace, cx| {
-                                    if pending_analytics_compute {
-                                        workspace.update_analytics_data();
-                                    }
+                                let analytics_payload = this.update(&mut async_cx, |workspace, cx| {
                                     workspace.is_streaming = false;
                                     workspace.status_text = "ADB stream disconnected".into();
                                     cx.notify();
-                                });
+
+                                    if pending_analytics_compute {
+                                        if let (Some(filter_res), Some(src_ref)) = (&workspace.filter_result, &workspace.log_source) {
+                                            let is_tl = workspace.is_timeline_visible;
+                                            return Some((
+                                                Arc::clone(src_ref),
+                                                filter_res.visible_indices.clone(),
+                                                filter_res.visible_styles.clone(),
+                                                is_tl,
+                                            ));
+                                        }
+                                    }
+                                    None
+                                }).unwrap_or(None);
+
+                                if let Some((src_arc, indices, styles, is_tl)) = analytics_payload {
+                                    analytics_seq_local += 1;
+                                    let seq = analytics_seq_local;
+
+                                    let (heatmap, timeline) = timer_executor.spawn(async move {
+                                        let hm = Arc::new(HeatmapData::compute(&*src_arc, &indices, &styles, 200));
+                                        let tl = if is_tl {
+                                            Some(Arc::new(EpsTimelineData::compute(&*src_arc, &indices, &styles, 80)))
+                                        } else {
+                                            None
+                                        };
+                                        (hm, tl)
+                                    }).await;
+
+                                    let _ = this.update(&mut async_cx, |workspace, cx| {
+                                        if workspace.analytics_seq <= seq {
+                                            workspace.analytics_seq = seq;
+                                            workspace.heatmap_data = Some(heatmap);
+                                            if timeline.is_some() {
+                                                workspace.timeline_data = timeline;
+                                            }
+                                            cx.notify();
+                                        }
+                                    });
+                                }
                                 break;
                             } else {
                                 // Flush any pending throttled filter reapply when channel is empty
@@ -884,11 +925,47 @@ impl LogAnalysisWorkspace {
                                     accumulated_trimmed = 0;
                                     pending_analytics_compute = false;
                                 } else if pending_analytics_compute {
-                                    // Flush pending throttled heatmap/timeline compute when channel is idle or paused
-                                    let _ = this.update(&mut async_cx, |workspace, cx| {
-                                        workspace.update_analytics_data();
-                                        cx.notify();
-                                    });
+                                    // Flush pending throttled heatmap/timeline compute asynchronously when channel is idle or paused
+                                    let analytics_payload = this.update(&mut async_cx, |workspace, _cx| {
+                                        if let (Some(filter_res), Some(src_ref)) = (&workspace.filter_result, &workspace.log_source) {
+                                            let is_tl = workspace.is_timeline_visible;
+                                            Some((
+                                                Arc::clone(src_ref),
+                                                filter_res.visible_indices.clone(),
+                                                filter_res.visible_styles.clone(),
+                                                is_tl,
+                                            ))
+                                        } else {
+                                            None
+                                        }
+                                    }).unwrap_or(None);
+
+                                    if let Some((src_arc, indices, styles, is_tl)) = analytics_payload {
+                                        analytics_seq_local += 1;
+                                        let seq = analytics_seq_local;
+
+                                        let (heatmap, timeline) = timer_executor.spawn(async move {
+                                            let hm = Arc::new(HeatmapData::compute(&*src_arc, &indices, &styles, 200));
+                                            let tl = if is_tl {
+                                                Some(Arc::new(EpsTimelineData::compute(&*src_arc, &indices, &styles, 80)))
+                                            } else {
+                                                None
+                                            };
+                                            (hm, tl)
+                                        }).await;
+
+                                        let _ = this.update(&mut async_cx, |workspace, cx| {
+                                            if workspace.analytics_seq <= seq {
+                                                workspace.analytics_seq = seq;
+                                                workspace.heatmap_data = Some(heatmap);
+                                                if timeline.is_some() {
+                                                    workspace.timeline_data = timeline;
+                                                }
+                                                cx.notify();
+                                            }
+                                        });
+                                    }
+
                                     last_analytics_compute = std::time::Instant::now();
                                     pending_analytics_compute = false;
                                 }
