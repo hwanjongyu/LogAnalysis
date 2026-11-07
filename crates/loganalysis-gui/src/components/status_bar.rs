@@ -2,6 +2,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use loganalysis_core::LogSource;
 
+use crate::components::tooltip::render_tooltip;
 use crate::workspace::LogAnalysisWorkspace;
 
 pub fn render_status_bar(
@@ -199,6 +200,7 @@ pub fn render_status_bar(
                             .border_color(theme.accent)
                             .text_color(theme.accent)
                             .hover(|s| s.bg(theme.accent).text_color(rgb(0xffffff)))
+                            .tooltip(render_tooltip("Open triage bookmarks drawer", Some("Ctrl+B"), theme))
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.toggle_bookmark_drawer(cx);
                             }))
@@ -271,6 +273,7 @@ pub fn render_status_bar(
                                 .rounded_sm()
                                 .bg(theme.bg_card)
                                 .cursor_pointer()
+                                .tooltip(render_tooltip("Decrease font size", Some("Ctrl+-"), theme))
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.zoom(-1.0, cx);
                                 }))
@@ -284,6 +287,7 @@ pub fn render_status_bar(
                                 .rounded_sm()
                                 .bg(theme.bg_card)
                                 .cursor_pointer()
+                                .tooltip(render_tooltip("Increase font size", Some("Ctrl+="), theme))
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.zoom(1.0, cx);
                                 }))
@@ -302,6 +306,7 @@ pub fn render_status_bar(
                         .border_color(theme.border_subtle)
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.btn_hover).text_color(theme.text_primary))
+                        .tooltip(render_tooltip("Command Palette & shortcuts", Some("Ctrl+P"), theme))
                         .text_size(px(10.5))
                         .font_weight(FontWeight::BOLD)
                         .text_color(theme.text_muted)

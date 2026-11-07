@@ -439,10 +439,16 @@ pub fn render_command_palette(
                     .rounded_lg()
                     .border_1()
                     .border_color(theme.border)
-                    .shadow_lg()
+                    .shadow_xl()
                     .overflow_hidden()
                     .flex()
                     .flex_col()
+                    .child(
+                        div()
+                            .h(px(1.0))
+                            .w_full()
+                            .bg(theme.border_highlight),
+                    )
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                         if event.keystroke.key == "up" {
                             if this.palette_selected_index > 0 {

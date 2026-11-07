@@ -1,6 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
+use crate::components::tooltip::render_tooltip;
 use crate::types::FilterPanelPosition;
 use crate::workspace::LogAnalysisWorkspace;
 
@@ -95,6 +96,7 @@ pub fn render_filter_dock(
                                 .rounded_sm()
                                 .bg(theme.bg_card)
                                 .hover(move |s| s.bg(theme.btn_hover))
+                                .tooltip(render_tooltip("Add a new filter rule tab", None, theme))
                                 .text_size(px(10.0))
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _window, cx| {
@@ -110,6 +112,7 @@ pub fn render_filter_dock(
                                 .rounded_sm()
                                 .bg(theme.bg_card)
                                 .hover(move |s| s.bg(theme.btn_hover))
+                                .tooltip(render_tooltip("Delete currently active tab", None, theme))
                                 .text_size(px(10.0))
                                 .text_color(theme.error_red)
                                 .cursor_pointer()
@@ -196,6 +199,7 @@ pub fn render_filter_dock(
                         .flex()
                         .items_center()
                         .gap_1p5()
+                        .tooltip(render_tooltip("Create new filter rule", Some("Ctrl+Shift+F"), theme))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_add_filter_modal(cx);
                             window.focus(&this.modal_pattern_input.read(cx).focus_handle);

@@ -107,7 +107,7 @@ impl EpsTimelineData {
             };
         }
 
-        let actual_buckets = bucket_count.max(8).min(128);
+        let actual_buckets = bucket_count.clamp(8, 128);
         let bucket_span_us = (total_duration_us + actual_buckets as i64 - 1) / actual_buckets as i64;
         let bucket_span_us = bucket_span_us.max(1);
 

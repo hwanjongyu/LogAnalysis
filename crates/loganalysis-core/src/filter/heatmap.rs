@@ -139,7 +139,7 @@ impl HeatmapData {
         let mut total_warnings = 0;
         let mut total_matches = 0;
 
-        for (target, computed) in template_buckets.iter_mut().zip(merged_buckets.into_iter()) {
+        for (target, computed) in template_buckets.iter_mut().zip(merged_buckets) {
             target.error_count = computed.error_count;
             target.warn_count = computed.warn_count;
             target.match_count = computed.match_count;
@@ -199,18 +199,18 @@ pub fn detect_line_severity(raw_line: Option<&[u8]>, style: &ResolvedStyle) -> L
 
 #[inline]
 fn is_error_color(hex: u32) -> bool {
-    let r = ((hex >> 16) & 0xff) as u32;
-    let g = ((hex >> 8) & 0xff) as u32;
-    let b = (hex & 0xff) as u32;
+    let r = (hex >> 16) & 0xff;
+    let g = (hex >> 8) & 0xff;
+    let b = hex & 0xff;
     // Dominant red component
     r >= 170 && g <= 100 && b <= 100
 }
 
 #[inline]
 fn is_warn_color(hex: u32) -> bool {
-    let r = ((hex >> 16) & 0xff) as u32;
-    let g = ((hex >> 8) & 0xff) as u32;
-    let b = (hex & 0xff) as u32;
+    let r = (hex >> 16) & 0xff;
+    let g = (hex >> 8) & 0xff;
+    let b = hex & 0xff;
     // Dominant amber/orange/yellow: high red, moderate green, low blue
     r >= 180 && g >= 110 && b <= 90
 }

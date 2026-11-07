@@ -1,4 +1,4 @@
-/// High-performance zero-allocation timestamp extraction and delta time calculation.
+//! High-performance zero-allocation timestamp extraction and delta time calculation.
 
 const DAYS_BEFORE_MONTH: [u32; 13] = [
     0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334,

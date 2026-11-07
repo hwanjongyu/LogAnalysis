@@ -663,9 +663,7 @@ fn render_log_list(
                     .w(px(64.0))
                     .h_full()
                     .flex_shrink_0()
-                    .bg(if is_selected {
-                        theme.accent_muted
-                    } else if is_bookmarked {
+                    .bg(if is_selected || is_bookmarked {
                         theme.accent_muted
                     } else {
                         theme.bg_gutter
@@ -694,7 +692,7 @@ fn render_log_list(
                     .flex()
                     .items_center()
                     .justify_between()
-                    .px(px(4.0))
+                    .px(px(6.0))
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .child(
@@ -702,7 +700,12 @@ fn render_log_list(
                             .text_size(px(10.0))
                             .child(if is_bookmarked { "🔖" } else { "" }),
                     )
-                    .child(div().child(format!("{}", real_idx + 1)));
+                    .child(
+                        div()
+                            .font_family("monospace")
+                            .text_size(px(11.0))
+                            .child(format!("{}", real_idx + 1)),
+                    );
 
                 let mut row_el = div()
                     .id(ElementId::NamedInteger(row_id.into(), idx as u64))
@@ -880,10 +883,15 @@ fn render_log_list(
                             );
                     } else {
                         // Unstructured multiline stack trace fallback
+                        let trimmed = text.as_ref().trim_start();
+                        let is_stack_trace = trimmed.starts_with("at ")
+                            || trimmed.starts_with("Caused by:")
+                            || trimmed.starts_with("...");
                         row_el = row_el.child(
                             div()
                                 .flex_1()
-                                .px(px(12.0))
+                                .when(is_stack_trace, |s| s.pl(px(24.0)).border_l_2().border_color(row_theme.border_subtle))
+                                .when(!is_stack_trace, |s| s.px(px(12.0)))
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .child(render_highlighted_text(
@@ -894,11 +902,16 @@ fn render_log_list(
                         );
                     }
                 } else {
-                    // Raw monospace line
+                    // Raw monospace line with stack trace indentation
+                    let trimmed = text.as_ref().trim_start();
+                    let is_stack_trace = trimmed.starts_with("at ")
+                        || trimmed.starts_with("Caused by:")
+                        || trimmed.starts_with("...");
                     row_el = row_el.child(
                         div()
                             .flex_1()
-                            .px(px(10.0))
+                            .when(is_stack_trace, |s| s.pl(px(22.0)).border_l_2().border_color(theme.border_subtle))
+                            .when(!is_stack_trace, |s| s.px(px(10.0)))
                             .whitespace_nowrap()
                             .child(render_highlighted_text(
                                 text.clone(),

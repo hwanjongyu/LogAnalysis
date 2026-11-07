@@ -1,4 +1,4 @@
-#![recursion_limit = "1024"]
+#![recursion_limit = "2048"]
 #![windows_subsystem = "windows"]
 
 mod actions;
@@ -578,7 +578,7 @@ mod tests {
             .iter()
             .filter_map(|c| fuzzy_match("open", c.title).map(|score| (c, score)))
             .collect();
-        open_matches.sort_by(|a, b| b.1.cmp(&a.1));
+        open_matches.sort_by_key(|a| std::cmp::Reverse(a.1));
         assert!(!open_matches.is_empty());
         assert_eq!(open_matches[0].0.id, PaletteCommandId::OpenFile);
 
@@ -587,7 +587,7 @@ mod tests {
             .iter()
             .filter_map(|c| fuzzy_match("theme", c.title).map(|score| (c, score)))
             .collect();
-        theme_matches.sort_by(|a, b| b.1.cmp(&a.1));
+        theme_matches.sort_by_key(|a| std::cmp::Reverse(a.1));
         assert!(!theme_matches.is_empty());
         assert_eq!(theme_matches[0].0.id, PaletteCommandId::ToggleTheme);
 
@@ -931,5 +931,21 @@ mod tests {
         // 3. With matcher but no matches
         let no_matcher = std::sync::Arc::new(CompiledMatcher::new("NonExistentPattern", false, false).unwrap());
         let _elem3 = render_highlighted_text(text, &Some(no_matcher), style);
+    }
+
+    #[test]
+    fn test_simple_tooltip_initialization() {
+        use crate::components::tooltip::SimpleTooltip;
+        use crate::theme::Theme;
+
+        let theme = Theme::dark();
+        let tooltip = SimpleTooltip {
+            text: "Open File".into(),
+            shortcut: Some("Ctrl+O"),
+            theme,
+        };
+        assert_eq!(tooltip.text.as_ref(), "Open File");
+        assert_eq!(tooltip.shortcut, Some("Ctrl+O"));
+        assert!(tooltip.theme.border.a > 0.0);
     }
 }

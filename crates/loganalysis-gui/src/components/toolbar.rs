@@ -1,6 +1,7 @@
 use gpui::*;
 use loganalysis_core::LogSource;
 
+use crate::components::tooltip::render_tooltip;
 use crate::theme::Theme;
 use crate::types::FilterPanelPosition;
 use crate::workspace::LogAnalysisWorkspace;
@@ -108,6 +109,7 @@ pub fn render_toolbar(
                                 .rounded_sm()
                                 .bg(theme.accent)
                                 .hover(move |s| s.bg(theme.accent_muted).text_color(theme.accent))
+                                .tooltip(render_tooltip("Open log file from disk", Some("Ctrl+O"), theme))
                                 .text_color(rgb(0xffffff))
                                 .text_size(px(11.0))
                                 .font_weight(FontWeight::MEDIUM)
@@ -128,6 +130,7 @@ pub fn render_toolbar(
                                 .py(px(4.0))
                                 .rounded_sm()
                                 .hover(move |s| s.bg(theme.btn_hover))
+                                .tooltip(render_tooltip("Load saved filter preset profile", Some("Ctrl+Shift+O"), theme))
                                 .text_size(px(11.0))
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -142,6 +145,7 @@ pub fn render_toolbar(
                                 .py(px(4.0))
                                 .rounded_sm()
                                 .hover(move |s| s.bg(theme.btn_hover))
+                                .tooltip(render_tooltip("Save current filter rules to file", Some("Ctrl+S"), theme))
                                 .text_size(px(11.0))
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -156,6 +160,7 @@ pub fn render_toolbar(
                                 .py(px(4.0))
                                 .rounded_sm()
                                 .hover(move |s| s.bg(theme.btn_hover))
+                                .tooltip(render_tooltip("Clear current log buffer", Some("Ctrl+K"), theme))
                                 .text_size(px(11.0))
                                 .text_color(theme.text_muted)
                                 .cursor_pointer()
@@ -227,6 +232,7 @@ pub fn render_toolbar(
                                         s
                                     }
                                 })
+                                .tooltip(render_tooltip("Display all ingested log lines", Some("F"), theme))
                                 .text_color(if !workspace.show_only_filtered {
                                     rgb(0xffffff)
                                 } else {
@@ -260,6 +266,7 @@ pub fn render_toolbar(
                                         s
                                     }
                                 })
+                                .tooltip(render_tooltip("Display only lines matching active filters", Some("Ctrl+H"), theme))
                                 .text_color(if workspace.show_only_filtered {
                                     rgb(0xffffff)
                                 } else {
@@ -303,6 +310,7 @@ pub fn render_toolbar(
                                     rgba(0x00000000)
                                 })
                                 .hover(move |s| s.bg(theme.btn_hover))
+                                .tooltip(render_tooltip("Toggle horizontal scrolling vs clipping", Some("Alt+Z"), theme))
                                 .text_color(if workspace.full_line_display {
                                     theme.accent
                                 } else {
@@ -331,6 +339,7 @@ pub fn render_toolbar(
                                     rgba(0x00000000)
                                 })
                                 .hover(move |s| s.bg(theme.btn_hover))
+                                .tooltip(render_tooltip("Lock view to tail (auto-scroll)", Some("End"), theme))
                                 .text_color(if workspace.auto_scroll {
                                     theme.accent
                                 } else {
@@ -360,6 +369,7 @@ pub fn render_toolbar(
                                     },
                                 )
                                 .hover(move |s| s.bg(theme.btn_hover))
+                                .tooltip(render_tooltip("Toggle filter dock between Left and Bottom", Some("Ctrl+Shift+L"), theme))
                                 .text_color(
                                     if workspace.filter_panel_position
                                         == FilterPanelPosition::Bottom
@@ -378,9 +388,9 @@ pub fn render_toolbar(
                                     if workspace.filter_panel_position
                                         == FilterPanelPosition::Bottom
                                     {
-                                        "⬒ Bottom (Ctrl+Shift+L)"
+                                        "⬒ Bottom"
                                     } else {
-                                        "◨ Left (Ctrl+Shift+L)"
+                                        "◨ Left"
                                     },
                                 ),
                         ),
@@ -403,6 +413,7 @@ pub fn render_toolbar(
                                 .py(px(3.0))
                                 .rounded_sm()
                                 .hover(move |s| s.bg(theme.btn_hover))
+                                .tooltip(render_tooltip("Copy selected log line to clipboard", Some("Ctrl+C"), theme))
                                 .text_size(px(11.0))
                                 .cursor_pointer()
                                 .flex()
@@ -421,6 +432,7 @@ pub fn render_toolbar(
                                 .py(px(3.0))
                                 .rounded_sm()
                                 .hover(move |s| s.bg(theme.btn_hover))
+                                .tooltip(render_tooltip("Create instant filter rule from current selection", None, theme))
                                 .text_size(px(11.0))
                                 .text_color(theme.accent)
                                 .cursor_pointer()
@@ -462,6 +474,7 @@ pub fn render_toolbar(
                                 s
                             }
                         })
+                        .tooltip(render_tooltip("Search text in log buffer", Some("Ctrl+F"), theme))
                         .text_color(if workspace.is_search_visible {
                             theme.accent
                         } else {
@@ -489,6 +502,7 @@ pub fn render_toolbar(
                         .border_1()
                         .border_color(theme.border_subtle)
                         .hover(move |s| s.bg(theme.btn_hover))
+                        .tooltip(render_tooltip("Toggle Dark / Light theme", Some("F10"), theme))
                         .text_size(px(11.0))
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _window, cx| {
@@ -520,6 +534,11 @@ pub fn render_toolbar(
                             })
                             .border_1()
                             .border_color(theme.border_subtle)
+                            .tooltip(render_tooltip(
+                                if workspace.is_stream_paused { "Resume streaming logcat" } else { "Pause streaming logcat" },
+                                Some("Space"),
+                                theme,
+                            ))
                             .text_size(px(11.0))
                             .font_weight(FontWeight::MEDIUM)
                             .cursor_pointer()
@@ -557,6 +576,7 @@ pub fn render_toolbar(
                                     theme.border_subtle
                                 })
                                 .hover(move |s| s.bg(theme.btn_hover))
+                                .tooltip(render_tooltip("Select connected Android device or emulator", None, theme))
                                 .text_size(px(11.0))
                                 .cursor_pointer()
                                 .flex()
@@ -625,6 +645,11 @@ pub fn render_toolbar(
                                 s.bg(rgb(0x16a34a))
                             }
                         })
+                        .tooltip(render_tooltip(
+                            if workspace.is_streaming { "Stop live ADB logcat stream" } else { "Start live ADB logcat stream" },
+                            Some("Ctrl+R"),
+                            theme,
+                        ))
                         .text_color(rgb(0xffffff))
                         .text_size(px(11.0))
                         .font_weight(FontWeight::SEMIBOLD)

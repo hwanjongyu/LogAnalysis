@@ -14,6 +14,7 @@ pub struct Theme {
     pub row_hover: Rgba,
     pub border: Rgba,
     pub border_subtle: Rgba,
+    pub border_highlight: Rgba,
     pub text_primary: Rgba,
     pub text_muted: Rgba,
     pub text_gutter: Rgba,
@@ -113,8 +114,9 @@ impl Theme {
             bg_card: rgb(0x1c1e2a),         // Layer 3: Filter cards & floating popovers
             bg_badge: rgb(0x232636),        // Layer 4: Micro pills & kbd badges
             row_hover: rgb(0x1c1e29),       // Subtle log line hover
-            border: rgba(0xffffff14),       // 1px structural divider border
-            border_subtle: rgba(0xffffff0a),// 1px subtle inner border
+            border: rgba(0xffffff18),       // 1px structural divider border (translucent white)
+            border_subtle: rgba(0xffffff0d),// 1px subtle inner border
+            border_highlight: rgba(0xffffff26), // 1px glassy top highlight reflection
             text_primary: rgb(0xe6e7ee),    // High-contrast crisp white-gray
             text_muted: rgb(0x8b8e9f),      // Secondary labels & telemetry hints
             text_gutter: rgb(0x56596e),     // Muted line numbers
@@ -144,8 +146,9 @@ impl Theme {
             bg_card: rgb(0xffffff),
             bg_badge: rgb(0xe2e8f0),
             row_hover: rgb(0xf1f5f9),
-            border: rgb(0xe2e8f0),
-            border_subtle: rgb(0xedf2f7),
+            border: rgba(0x00000014),
+            border_subtle: rgba(0x0000000a),
+            border_highlight: rgba(0xffffffcc),
             text_primary: rgb(0x0f172a),
             text_muted: rgb(0x64748b),
             text_gutter: rgb(0x94a3b8),

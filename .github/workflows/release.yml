@@ -86,7 +86,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             arch: aarch64
             target: aarch64-apple-darwin
           - os: macos-13
@@ -164,6 +164,7 @@ jobs:
   publish-release:
     name: Publish Release & SHA256 Checksums
     needs: [build-linux, build-macos, build-windows]
+    if: always() && !cancelled() && (needs.build-linux.result == 'success' || needs.build-macos.result == 'success' || needs.build-windows.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - name: Create Release Staging Directory

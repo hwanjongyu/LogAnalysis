@@ -223,7 +223,7 @@ pub fn render_bookmark_drawer(
                     .bg(theme.bg_card)
                     .border_l_1()
                     .border_color(theme.border)
-                    .shadow_lg()
+                    .shadow_xl()
                     .flex()
                     .flex_col()
                     .on_mouse_down(MouseButton::Left, |_, _window, cx| {

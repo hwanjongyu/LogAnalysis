@@ -54,7 +54,14 @@ pub fn render_note_edit_modal(
                     .rounded_lg()
                     .border_1()
                     .border_color(theme.border)
-                    .shadow_lg()
+                    .shadow_xl()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h(px(1.0))
+                            .w_full()
+                            .bg(theme.border_highlight),
+                    )
                     .overflow_hidden()
                     .on_mouse_down(MouseButton::Left, |_, _window, cx| {
                         cx.stop_propagation();

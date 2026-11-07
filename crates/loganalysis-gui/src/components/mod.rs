@@ -7,4 +7,4 @@ pub mod text_input;
 pub mod timeline_sparkline;
 pub mod titlebar;
 pub mod toolbar;
-
+pub mod tooltip;

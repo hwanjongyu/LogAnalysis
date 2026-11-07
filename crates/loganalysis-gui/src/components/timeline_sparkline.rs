@@ -36,9 +36,7 @@ pub fn render_timeline_sparkline(
                 .pb(px(4.0))
                 .children(data.buckets.iter().enumerate().map(|(idx, bucket)| {
                     let height_px = (bucket.total_count as f32 / peak_count as f32 * 22.0).max(2.0);
-                    let (bar_bg, bar_border) = if bucket.is_anomaly {
-                        (rgb(0xef4444), rgb(0xdc2626))
-                    } else if bucket.error_count > 0 {
+                    let (bar_bg, bar_border) = if bucket.is_anomaly || bucket.error_count > 0 {
                         (rgb(0xef4444), rgb(0xdc2626))
                     } else if bucket.warn_count > 0 {
                         (rgb(0xf59e0b), rgb(0xd97706))

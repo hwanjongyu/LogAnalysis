@@ -54,9 +54,16 @@ pub fn render_filter_edit_modal(
                     .w(px(520.0))
                     .bg(theme.bg_panel)
                     .border_1()
-                    .border_color(theme.accent)
+                    .border_color(theme.border)
                     .rounded_xl()
-                    .shadow_lg()
+                    .shadow_xl()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h(px(1.0))
+                            .w_full()
+                            .bg(theme.border_highlight),
+                    )
                     .p(px(20.0))
                     .flex()
                     .flex_col()
