@@ -1,10 +1,11 @@
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::buffer::LogSource;
 use crate::filter::engine::ResolvedStyle;
 
 /// Visual severity category for heatmap overview.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LineSeverity {
     Error,
     Warning,

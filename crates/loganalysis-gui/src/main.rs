@@ -180,6 +180,21 @@ impl Render for LogAnalysisWorkspace {
                     window.focus(&this.palette_input.read(cx).focus_handle);
                 }
             }))
+            .on_action(cx.listener(|this, _: &ToggleBookmark, _window, cx| {
+                this.toggle_bookmark_on_selected(cx);
+            }))
+            .on_action(cx.listener(|this, _: &NextBookmark, _window, cx| {
+                this.jump_next_bookmark(cx);
+            }))
+            .on_action(cx.listener(|this, _: &PrevBookmark, _window, cx| {
+                this.jump_prev_bookmark(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ClearBookmarks, _window, cx| {
+                this.clear_all_bookmarks(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ExportHtmlReport, window, cx| {
+                this.prompt_export_html_report(Some(window), cx);
+            }))
             .relative()
             .flex()
             .flex_col()
@@ -336,6 +351,10 @@ fn main() {
             KeyBinding::new("cmd-p", ToggleCommandPalette, None),
             KeyBinding::new("ctrl-shift-p", ToggleCommandPalette, None),
             KeyBinding::new("cmd-shift-p", ToggleCommandPalette, None),
+            KeyBinding::new("f2", ToggleBookmark, None),
+            KeyBinding::new("shift-f2", PrevBookmark, None),
+            KeyBinding::new("ctrl-f2", ToggleBookmark, None),
+            KeyBinding::new("alt-f2", NextBookmark, None),
         ]);
 
         // Register Scoped TextInput Key Bindings (Cut, Copy, Paste, Arrows, Selection, etc.)
@@ -507,5 +526,73 @@ mod tests {
             .filter_map(|c| fuzzy_match("nonexistent123xyz", c.title).map(|score| (c, score)))
             .collect();
         assert!(none_matches.is_empty());
+
+        // Bookmark and Export categories check
+        assert!(categories.contains(&"BOOKMARK"));
+        assert!(categories.contains(&"EXPORT"));
+
+        // Fuzzy search for "bookmark" -> should find bookmark commands
+        let bookmark_matches: Vec<_> = commands
+            .iter()
+            .filter_map(|c| fuzzy_match("bookmark", c.title).map(|score| (c, score)))
+            .collect();
+        assert!(bookmark_matches.len() >= 4);
+
+        // Fuzzy search for "export" -> should find export command
+        let export_matches: Vec<_> = commands
+            .iter()
+            .filter_map(|c| fuzzy_match("export", c.title).map(|score| (c, score)))
+            .collect();
+        assert!(!export_matches.is_empty());
+        assert_eq!(export_matches[0].0.id, PaletteCommandId::ExportHtmlReport);
+    }
+
+    #[test]
+    fn test_bookmark_and_html_report_pipeline() {
+        use loganalysis_core::*;
+
+        let mut manager = BookmarkManager::new();
+        assert!(manager.is_empty());
+
+        // Add bookmarks
+        assert!(manager.toggle(10, "11-06 18:00:00 I Tag: System init".into(), LineSeverity::Normal));
+        assert!(manager.toggle(50, "11-06 18:00:05 W Tag: Memory warning".into(), LineSeverity::Warning));
+        assert!(manager.toggle(100, "11-06 18:00:10 E Tag: Fatal crash occurred".into(), LineSeverity::Error));
+
+        assert_eq!(manager.len(), 3);
+        assert!(manager.is_bookmarked(10));
+        assert!(manager.is_bookmarked(50));
+        assert!(manager.is_bookmarked(100));
+        assert!(!manager.is_bookmarked(99));
+
+        // Navigation tests
+        assert_eq!(manager.next_bookmark(10), Some(50));
+        assert_eq!(manager.next_bookmark(50), Some(100));
+        assert_eq!(manager.next_bookmark(100), Some(10)); // Cyclic wrap to first
+
+        assert_eq!(manager.prev_bookmark(100), Some(50));
+        assert_eq!(manager.prev_bookmark(50), Some(10));
+        assert_eq!(manager.prev_bookmark(10), Some(100)); // Cyclic wrap to last
+
+        // HTML report generation
+        let options = HtmlReportOptions {
+            file_name: "test_session.log".to_string(),
+            total_lines: 500,
+            bookmarks: manager.items().to_vec(),
+        };
+
+        let report = generate_html_report(&options);
+        assert!(report.contains("test_session.log"));
+        assert!(report.contains("Fatal crash occurred"));
+        assert!(report.contains("Memory warning"));
+        assert!(report.contains("System init"));
+        assert!(report.contains("data-severity=\"error\""));
+        assert!(report.contains("data-severity=\"warning\""));
+        assert!(report.contains("data-severity=\"info\""));
+
+        // Toggle removes bookmark
+        assert!(!manager.toggle(50, "".into(), LineSeverity::Warning));
+        assert_eq!(manager.len(), 2);
+        assert!(!manager.is_bookmarked(50));
     }
 }

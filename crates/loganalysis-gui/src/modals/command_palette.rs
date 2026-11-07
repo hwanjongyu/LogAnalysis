@@ -27,6 +27,11 @@ pub enum PaletteCommandId {
     ZoomIn,
     ZoomOut,
     ResetZoom,
+    ToggleBookmark,
+    NextBookmark,
+    PrevBookmark,
+    ClearBookmarks,
+    ExportHtmlReport,
 }
 
 #[derive(Clone, Debug)]
@@ -169,6 +174,36 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             id: PaletteCommandId::ResetZoom,
             title: "View: Reset Zoom (Default 13px)",
             category: "VIEW",
+            shortcut: None,
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ToggleBookmark,
+            title: "Bookmark: Toggle Bookmark on Selected Line",
+            category: "BOOKMARK",
+            shortcut: Some("F2"),
+        },
+        PaletteCommand {
+            id: PaletteCommandId::NextBookmark,
+            title: "Bookmark: Jump to Next Bookmark",
+            category: "BOOKMARK",
+            shortcut: Some("F2"),
+        },
+        PaletteCommand {
+            id: PaletteCommandId::PrevBookmark,
+            title: "Bookmark: Jump to Previous Bookmark",
+            category: "BOOKMARK",
+            shortcut: Some("Shift+F2"),
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ClearBookmarks,
+            title: "Bookmark: Clear All Bookmarks",
+            category: "BOOKMARK",
+            shortcut: None,
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ExportHtmlReport,
+            title: "Export: Generate & Export HTML Incident Report...",
+            category: "EXPORT",
             shortcut: None,
         },
     ]

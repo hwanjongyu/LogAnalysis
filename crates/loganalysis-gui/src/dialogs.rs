@@ -9,6 +9,9 @@ pub const ALL_FILES_EXTENSIONS: &[&str] = &["*"];
 pub const PROFILE_FILTER_LABEL: &str = "JSON Profile (*.json)";
 pub const PROFILE_FILTER_EXTENSIONS: &[&str] = &["json"];
 
+pub const HTML_FILTER_LABEL: &str = "HTML Report (*.html)";
+pub const HTML_FILTER_EXTENSIONS: &[&str] = &["html"];
+
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CustomX11WindowHandle(pub(crate) std::os::raw::c_ulong);
@@ -157,6 +160,15 @@ pub fn build_save_filters_dialog_base() -> rfd::AsyncFileDialog {
         .add_filter(ALL_FILES_LABEL, ALL_FILES_EXTENSIONS)
 }
 
+/// Builds the base Export Incident Report (HTML) dialog.
+pub fn build_export_html_report_dialog_base(default_name: &str) -> rfd::AsyncFileDialog {
+    rfd::AsyncFileDialog::new()
+        .set_title("Export Incident Report (HTML)")
+        .set_file_name(default_name)
+        .add_filter(HTML_FILTER_LABEL, HTML_FILTER_EXTENSIONS)
+        .add_filter(ALL_FILES_LABEL, ALL_FILES_EXTENSIONS)
+}
+
 /// Builds the base Load Filter Profile dialog with mandatory extensions (*.json and *.*).
 pub fn build_load_filters_dialog_base() -> rfd::AsyncFileDialog {
     rfd::AsyncFileDialog::new()
@@ -196,6 +208,7 @@ mod tests {
 
         // Enforce [INV-01-A]: Profile files must include json extension
         assert!(PROFILE_FILTER_EXTENSIONS.contains(&"json"));
+        assert!(HTML_FILTER_EXTENSIONS.contains(&"html"));
     }
 
     #[test]
@@ -204,6 +217,7 @@ mod tests {
         let _open_dlg = build_open_log_dialog(None);
         let _save_dlg = build_save_filters_dialog(None);
         let _load_dlg = build_load_filters_dialog(None);
+        let _report_dlg = build_export_html_report_dialog_base("incident_report.html");
 
         // Test base dialogs and X11 ID attachment without panic
         let base_open = build_open_log_dialog_base();

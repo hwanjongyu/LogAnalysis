@@ -31,5 +31,10 @@ actions!(
         ToggleAutoScroll,
         ToggleFilterPanelPosition,
         ToggleCommandPalette,
+        ToggleBookmark,
+        NextBookmark,
+        PrevBookmark,
+        ClearBookmarks,
+        ExportHtmlReport,
     ]
 );

@@ -67,6 +67,9 @@ pub struct LogAnalysisWorkspace {
     pub(crate) is_command_palette_open: bool,
     pub(crate) palette_input: Entity<TextInput>,
     pub(crate) palette_selected_index: usize,
+
+    // Bookmark state
+    pub(crate) bookmarks: BookmarkManager,
 }
 
 impl LogAnalysisWorkspace {
@@ -229,6 +232,7 @@ impl LogAnalysisWorkspace {
             is_command_palette_open: false,
             palette_input,
             palette_selected_index: 0,
+            bookmarks: BookmarkManager::new(),
         }
     }
 
@@ -309,6 +313,7 @@ impl LogAnalysisWorkspace {
                             let arc_buf = Arc::new(ActiveLogSource::File(buf));
                             workspace.log_source = Some(arc_buf.clone());
                             workspace.active_file_name = Some(file_name);
+                            workspace.bookmarks.clear();
                             workspace.status_text =
                                 format!("Loaded {} lines from {:?}", arc_buf.line_count(), path_buf)
                                     .into();
@@ -1168,6 +1173,13 @@ impl LogAnalysisWorkspace {
                 self.status_text = "Font size reset to default (12px)".into();
                 cx.notify();
             }
+            PaletteCommandId::ToggleBookmark => self.toggle_bookmark_on_selected(cx),
+            PaletteCommandId::NextBookmark => self.jump_next_bookmark(cx),
+            PaletteCommandId::PrevBookmark => self.jump_prev_bookmark(cx),
+            PaletteCommandId::ClearBookmarks => self.clear_all_bookmarks(cx),
+            PaletteCommandId::ExportHtmlReport => {
+                self.prompt_export_html_report(window.as_deref(), cx)
+            }
         }
     }
 
@@ -1535,6 +1547,7 @@ impl LogAnalysisWorkspace {
         self.filter_result = None;
         self.heatmap_data = None;
         self.selection.clear();
+        self.bookmarks.clear();
         self.active_file_name = None;
         self.status_text = "Logs cleared".into();
         cx.notify();
@@ -1758,6 +1771,221 @@ impl LogAnalysisWorkspace {
             FilterPanelPosition::Bottom => "Filter Panel docked to BOTTOM".into(),
         };
         cx.notify();
+    }
+
+    /// Toggles bookmark on the currently selected row (F2)
+    pub fn toggle_bookmark_on_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(sel_row) = self.selection.selected_row else {
+            self.status_text = "Select a log line first to bookmark".into();
+            cx.notify();
+            return;
+        };
+
+        let (src_idx, line_text, severity) = if let (Some(filter_res), Some(source)) =
+            (&self.filter_result, &self.log_source)
+        {
+            if let Some(&idx) = filter_res.visible_indices.get(sel_row) {
+                let text = source.get_line(idx).map(|s| s.to_string()).unwrap_or_default();
+                let raw = source.get_raw_line(idx);
+                let style = filter_res.visible_styles.get(sel_row).copied().unwrap_or_default();
+                let sev = detect_line_severity(raw, &style);
+                (idx, text, sev)
+            } else {
+                return;
+            }
+        } else {
+            return;
+        };
+
+        let line_num = src_idx + 1;
+        let added = self.bookmarks.toggle(src_idx, line_text, severity);
+        if added {
+            self.status_text = format!("🔖 Added bookmark on line {line_num}").into();
+        } else {
+            self.status_text = format!("Removed bookmark on line {line_num}").into();
+        }
+        cx.notify();
+    }
+
+    /// Jumps to the next bookmark cyclically (F2 / palette)
+    pub fn jump_next_bookmark(&mut self, cx: &mut Context<Self>) {
+        if self.bookmarks.is_empty() {
+            self.status_text = "No bookmarks set (press F2 to add bookmark)".into();
+            cx.notify();
+            return;
+        }
+
+        let curr_src_idx = self.selection.anchor_source_idx.unwrap_or(0);
+        let next_idx = self.bookmarks.next_bookmark(curr_src_idx)
+            .or_else(|| self.bookmarks.items().first().map(|b| b.source_idx));
+
+        let Some(target_source_idx) = next_idx else {
+            return;
+        };
+
+        if let Some(res) = &self.filter_result {
+            if let Some(vis_row) = res
+                .visible_indices
+                .iter()
+                .position(|&idx| idx == target_source_idx)
+            {
+                self.selection.select(vis_row, target_source_idx);
+                self.scroll_handle
+                    .scroll_to_item(vis_row, ScrollStrategy::Center);
+                self.refresh_status_line(cx);
+                self.status_text =
+                    format!("Jumped to bookmark on line {}", target_source_idx + 1).into();
+                cx.notify();
+                return;
+            }
+        }
+
+        self.status_text = format!(
+            "Bookmark on line {} is hidden by active filter",
+            target_source_idx + 1
+        )
+        .into();
+        cx.notify();
+    }
+
+    /// Jumps to the previous bookmark cyclically (Shift+F2)
+    pub fn jump_prev_bookmark(&mut self, cx: &mut Context<Self>) {
+        if self.bookmarks.is_empty() {
+            self.status_text = "No bookmarks set (press F2 to add bookmark)".into();
+            cx.notify();
+            return;
+        }
+
+        let curr_src_idx = self.selection.anchor_source_idx.unwrap_or(usize::MAX);
+        let prev_idx = self.bookmarks.prev_bookmark(curr_src_idx)
+            .or_else(|| self.bookmarks.items().last().map(|b| b.source_idx));
+
+        let Some(target_source_idx) = prev_idx else {
+            return;
+        };
+
+        if let Some(res) = &self.filter_result {
+            if let Some(vis_row) = res
+                .visible_indices
+                .iter()
+                .position(|&idx| idx == target_source_idx)
+            {
+                self.selection.select(vis_row, target_source_idx);
+                self.scroll_handle
+                    .scroll_to_item(vis_row, ScrollStrategy::Center);
+                self.refresh_status_line(cx);
+                self.status_text =
+                    format!("Jumped to bookmark on line {}", target_source_idx + 1).into();
+                cx.notify();
+                return;
+            }
+        }
+
+        self.status_text = format!(
+            "Bookmark on line {} is hidden by active filter",
+            target_source_idx + 1
+        )
+        .into();
+        cx.notify();
+    }
+
+    /// Clears all bookmarks
+    pub fn clear_all_bookmarks(&mut self, cx: &mut Context<Self>) {
+        let count = self.bookmarks.len();
+        self.bookmarks.clear();
+        self.status_text = format!("Cleared {count} bookmarks").into();
+        cx.notify();
+    }
+
+    /// Prompts user to export an interactive HTML incident report via native file dialog
+    pub fn prompt_export_html_report(&mut self, parent: Option<&Window>, cx: &mut Context<Self>) {
+        if self.bookmarks.is_empty() {
+            self.status_text = "No bookmarks to export - bookmark lines first with F2".into();
+            cx.notify();
+            return;
+        }
+
+        let file_name = self
+            .active_file_name
+            .as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "incident_report".to_string());
+        let clean_name = file_name
+            .trim_end_matches(".log")
+            .trim_end_matches(".txt");
+        let default_export_name = format!("{clean_name}_incident_report.html");
+
+        let total_lines = self
+            .log_source
+            .as_ref()
+            .map(|s| s.line_count())
+            .unwrap_or(0);
+        let options = HtmlReportOptions {
+            file_name,
+            total_lines,
+            bookmarks: self.bookmarks.items().to_vec(),
+        };
+        let html_content = generate_html_report(&options);
+
+        let base_dialog =
+            crate::dialogs::build_export_html_report_dialog_base(&default_export_name);
+        let is_x11 = crate::dialogs::is_x11_session();
+        let dialog = if !is_x11 {
+            crate::dialogs::attach_dialog_parent(base_dialog, parent)
+        } else {
+            base_dialog
+        };
+
+        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
+            let mut async_cx = cx.clone();
+            async move {
+                let dialog = if is_x11 {
+                    let xid = bg_executor
+                        .spawn(async move {
+                            #[cfg(target_os = "linux")]
+                            {
+                                crate::dialogs::get_active_x11_window_id()
+                            }
+                            #[cfg(not(target_os = "linux"))]
+                            {
+                                None
+                            }
+                        })
+                        .await;
+                    crate::dialogs::attach_dialog_x11_id(dialog, xid)
+                } else {
+                    dialog
+                };
+
+                let file = dialog.save_file().await;
+                if let Some(handle) = file {
+                    let path = handle.path().to_path_buf();
+                    let write_res = bg_executor
+                        .spawn(async move {
+                            std::fs::write(&path, html_content.as_bytes()).map(|_| path)
+                        })
+                        .await;
+
+                    let _ = this.update(&mut async_cx, |workspace, cx| match write_res {
+                        Ok(p) => {
+                            workspace.status_text = format!(
+                                "✓ Exported HTML incident report to {:?}",
+                                p.file_name().unwrap_or_default()
+                            )
+                            .into();
+                            cx.notify();
+                        }
+                        Err(e) => {
+                            workspace.status_text =
+                                format!("Failed to export HTML report: {e}").into();
+                            cx.notify();
+                        }
+                    });
+                }
+            }
+        })
+        .detach();
     }
 }
 

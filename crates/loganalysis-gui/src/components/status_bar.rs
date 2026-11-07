@@ -33,6 +33,7 @@ pub fn render_status_bar(
     let font_size = workspace.font_size;
     let font_size_f32: f32 = font_size.into();
     let selected_real_line = workspace.selection.anchor_source_idx;
+    let bookmark_count = workspace.bookmarks.len();
 
     let visible_pct = if total_lines > 0 {
         (row_count as f64 / total_lines as f64) * 100.0
@@ -138,6 +139,23 @@ pub fn render_status_bar(
                                         .child(format!("{} warn", total_warnings)),
                                 )
                             }),
+                    )
+                })
+                .when(bookmark_count > 0, |parent| {
+                    parent.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded_xs()
+                            .bg(theme.accent_muted)
+                            .border_1()
+                            .border_color(theme.accent)
+                            .text_color(theme.accent)
+                            .child("🔖")
+                            .child(format!("{} bm", bookmark_count)),
                     )
                 })
                 .child(if let Some(line_idx) = selected_real_line {

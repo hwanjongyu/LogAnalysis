@@ -2,6 +2,7 @@ pub mod adb;
 pub mod buffer;
 pub mod constants;
 pub mod error;
+pub mod export;
 pub mod filter;
 pub mod search;
 
@@ -19,6 +20,7 @@ pub use constants::{
     TEXT_COLOR_MAP,
 };
 pub use error::{AdbError, FilterError, SearchError};
+pub use export::{escape_html, generate_html_report, Bookmark, BookmarkManager, HtmlReportOptions};
 pub use uuid;
 pub use filter::{
     append_streaming_batch, contrast_ratio, detect_line_severity, evaluate_and_style_line,

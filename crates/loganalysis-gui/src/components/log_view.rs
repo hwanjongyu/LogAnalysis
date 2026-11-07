@@ -82,6 +82,9 @@ pub fn render_log_viewport(
                                 (0, SharedString::default())
                             };
 
+                        let is_bookmarked =
+                            ws.map(|w| w.bookmarks.is_bookmarked(real_idx)).unwrap_or(false);
+
                         let (has_custom_bg, bg_color, fg_color) = if let Some(res) = filter_res {
                             if let Some(style) = res.visible_styles.get(idx) {
                                 (
@@ -145,6 +148,8 @@ pub fn render_log_viewport(
                                     .flex_shrink_0()
                                     .bg(if is_selected {
                                         theme.accent_muted
+                                    } else if is_bookmarked {
+                                        theme.accent_muted
                                     } else {
                                         theme.bg_gutter
                                     })
@@ -152,26 +157,35 @@ pub fn render_log_viewport(
                                     .border_r_1()
                                     .border_color(if is_selected {
                                         theme.accent
+                                    } else if is_bookmarked {
+                                        rgb(0x3b82f6)
                                     } else {
                                         theme.border_subtle
                                     })
                                     .text_color(if is_selected {
                                         theme.accent
+                                    } else if is_bookmarked {
+                                        rgb(0x3b82f6)
                                     } else {
                                         theme.text_gutter
                                     })
-                                    .font_weight(if is_selected {
+                                    .font_weight(if is_selected || is_bookmarked {
                                         FontWeight::BOLD
                                     } else {
                                         FontWeight::NORMAL
                                     })
                                     .flex()
                                     .items_center()
-                                    .justify_end()
-                                    .pr(px(8.0))
+                                    .justify_between()
+                                    .px(px(4.0))
                                     .whitespace_nowrap()
                                     .overflow_hidden()
-                                    .child(format!("{}", real_idx + 1)),
+                                    .child(
+                                        div()
+                                            .text_size(px(10.0))
+                                            .child(if is_bookmarked { "🔖" } else { "" }),
+                                    )
+                                    .child(div().child(format!("{}", real_idx + 1))),
                             )
                             // Monospace Log Content
                             .child(
