@@ -132,6 +132,10 @@ impl FileLogBuffer {
         &self.path
     }
 
+    pub fn byte_size(&self) -> usize {
+        self.storage.as_bytes().len()
+    }
+
     pub fn max_line_len(&self) -> usize {
         self.max_line_len
     }

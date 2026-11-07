@@ -1,3 +1,5 @@
+pub mod activity_bar;
+pub mod facets_bar;
 pub mod filter_dock;
 pub mod find_bar;
 pub mod log_view;

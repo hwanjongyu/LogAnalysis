@@ -22,6 +22,8 @@ pub enum PaletteCommandId {
     ToggleAutoScroll,
     RescanAdbDevices,
     ToggleFilterPanelPosition,
+    ToggleFilterDock,
+    ToggleFacetsBar,
     ToggleFullLineDisplay,
     ToggleTheme,
     ZoomIn,
@@ -154,6 +156,18 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             title: "View: Toggle Filter Dock Position (Bottom / Right)",
             category: "VIEW",
             shortcut: Some("Ctrl+Shift+L"),
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ToggleFilterDock,
+            title: "View: Toggle Filter Rules Dock Visibility",
+            category: "VIEW",
+            shortcut: Some("Shift+F"),
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ToggleFacetsBar,
+            title: "View: Toggle Forensic Facets Bar",
+            category: "VIEW",
+            shortcut: Some("Alt+F"),
         },
         PaletteCommand {
             id: PaletteCommandId::ToggleFullLineDisplay,

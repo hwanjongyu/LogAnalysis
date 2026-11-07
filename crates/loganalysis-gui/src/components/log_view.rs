@@ -34,6 +34,8 @@ pub fn render_log_viewport(
                     }
                 }),
             )
+            // Forensic Facets Bar
+            .children(crate::components::facets_bar::render_facets_bar(workspace, cx))
             // Single primary viewport content
             .child(render_pane_content(workspace, true, false, cx))
             // Modern Floating Find Widget (over log content without reflow)
@@ -82,6 +84,8 @@ pub fn render_log_viewport(
                     }
                 }),
             )
+            // Forensic Facets Bar
+            .children(crate::components::facets_bar::render_facets_bar(workspace, cx))
             // Dual-Pane Split Container
             .child(split_container)
             // Modern Floating Find Widget (over split container without reflow)

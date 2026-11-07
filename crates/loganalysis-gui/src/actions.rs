@@ -45,5 +45,7 @@ actions!(
         OpenSecondaryLog,
         ToggleColumnView,
         OpenMergedLogs,
+        ToggleFilterDock,
+        ToggleFacetsBar,
     ]
 );

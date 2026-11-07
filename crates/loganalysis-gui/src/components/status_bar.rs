@@ -35,6 +35,7 @@ pub fn render_status_bar(
     let font_size_f32: f32 = font_size.into();
     let selected_real_line = workspace.selection.anchor_source_idx;
     let bookmark_count = workspace.bookmarks.len();
+    let (mem_str, mem_backend) = workspace.get_buffer_memory_display();
 
     let visible_pct = if total_lines > 0 {
         (row_count as f64 / total_lines as f64) * 100.0
@@ -134,6 +135,38 @@ pub fn render_status_bar(
                                     theme.text_muted
                                 })
                                 .child(format!("{}", total_matched)),
+                        ),
+                )
+                // Buffer Storage & Memory Telemetry
+                .child(
+                    div()
+                        .id("status-storage-telemetry")
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .rounded_xs()
+                        .bg(theme.bg_card)
+                        .border_1()
+                        .border_color(theme.border_subtle)
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .tooltip(render_tooltip(
+                            &format!("Buffer storage mode: {mem_backend} zero-copy engine"),
+                            None,
+                            theme,
+                        ))
+                        .child(div().text_color(theme.text_muted).child("💾"))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.text_primary)
+                                .child(mem_str),
+                        )
+                        .child(
+                            div()
+                                .text_color(theme.accent)
+                                .text_size(px(9.0))
+                                .child(format!("[{}]", mem_backend)),
                         ),
                 )
                 .when(total_errors > 0 || total_warnings > 0, |parent| {

@@ -17,6 +17,7 @@ use gpui::*;
 
 use actions::*;
 use cli::handle_cli_version_flag;
+use components::activity_bar::render_activity_bar;
 use components::filter_dock::render_filter_dock;
 use components::log_view::render_log_viewport;
 use components::resize_border::render_window_resize_borders;
@@ -73,6 +74,7 @@ impl Render for LogAnalysisWorkspace {
         let titlebar_el = render_titlebar(self, window, cx);
         let toolbar_el = render_toolbar(self, cx);
         let timeline_ribbon_el = render_timeline_sparkline(self, cx);
+        let activity_bar_el = render_activity_bar(self, cx);
         let filter_panel_el = render_filter_dock(self, cx);
         let log_viewport_el = render_log_viewport(self, cx);
         let status_bar_el = render_status_bar(self, cx);
@@ -82,17 +84,43 @@ impl Render for LogAnalysisWorkspace {
         let note_modal_el = render_note_edit_modal(self, cx);
         let resize_borders = render_window_resize_borders(window, cx);
 
-        let mut body = div()
+        let content_area = if self.is_filter_dock_visible {
+            if !is_bottom_dock {
+                div()
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .flex_row()
+                    .overflow_hidden()
+                    .child(filter_panel_el)
+                    .child(log_viewport_el)
+            } else {
+                div()
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .child(log_viewport_el)
+                    .child(filter_panel_el)
+            }
+        } else {
+            div()
+                .flex_1()
+                .h_full()
+                .flex()
+                .overflow_hidden()
+                .child(log_viewport_el)
+        };
+
+        let body = div()
             .flex_1()
             .w_full()
             .flex()
-            .overflow_hidden();
-
-        if !is_bottom_dock {
-            body = body.flex_row().child(filter_panel_el).child(log_viewport_el);
-        } else {
-            body = body.flex_col().child(log_viewport_el).child(filter_panel_el);
-        }
+            .flex_row()
+            .overflow_hidden()
+            .child(activity_bar_el)
+            .child(content_area);
 
         div()
             .id("workspace-container")
@@ -253,6 +281,12 @@ impl Render for LogAnalysisWorkspace {
             }))
             .on_action(cx.listener(|this, _: &ToggleColumnView, _window, cx| {
                 this.toggle_column_view(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleFilterDock, _window, cx| {
+                this.toggle_filter_dock(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleFacetsBar, _window, cx| {
+                this.toggle_facets_bar(cx);
             }))
             .relative()
             .flex()
@@ -433,6 +467,8 @@ fn main() {
             KeyBinding::new("cmd-g", ToggleColumnView, None),
             KeyBinding::new("ctrl-shift-m", OpenMergedLogs, None),
             KeyBinding::new("cmd-shift-m", OpenMergedLogs, None),
+            KeyBinding::new("shift-f", ToggleFilterDock, None),
+            KeyBinding::new("alt-f", ToggleFacetsBar, None),
         ]);
 
         // Register Scoped TextInput Key Bindings (Cut, Copy, Paste, Arrows, Selection, etc.)
@@ -990,5 +1026,52 @@ mod tests {
         let serialized = serde_json::to_string_pretty(&recents).expect("serialization failed");
         let deserialized: Vec<PathBuf> = serde_json::from_str(&serialized).expect("deserialization failed");
         assert_eq!(deserialized, recents);
+    }
+
+    #[test]
+    fn test_phase3_workstation_facets_and_telemetry() {
+        use loganalysis_core::parse_logcat_column_line;
+        use std::collections::HashMap;
+
+        // 1. Tag extraction and ranking verification
+        let sample_lines = [
+            "11-06 18:00:00.123 1000 1000 I ActivityManager: Starting activity",
+            "11-06 18:00:00.124 1001 1001 D SurfaceFlinger: Frame submitted",
+            "11-06 18:00:00.125 1000 1000 I ActivityManager: Activity displayed",
+            "11-06 18:00:00.126 1002 1002 E AudioFlinger: Underrun detected",
+            "11-06 18:00:00.127 1000 1000 W ActivityManager: Slow binding",
+        ];
+
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for line in sample_lines {
+            let parsed = parse_logcat_column_line(line);
+            if let Some(tag) = parsed.tag {
+                let tag_trimmed = tag.trim();
+                if !tag_trimmed.is_empty() {
+                    *counts.entry(tag_trimmed.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let mut sorted: Vec<(String, usize)> = counts.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        assert_eq!(sorted[0], ("ActivityManager".to_string(), 3));
+        assert_eq!(sorted.len(), 3);
+
+        // 2. Memory telemetry display formatting
+        let format_bytes = |bytes: usize| -> String {
+            if bytes < 1024 * 1024 {
+                format!("{:.1} KB", bytes as f64 / 1024.0)
+            } else if bytes < 1024 * 1024 * 1024 {
+                format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+            } else {
+                format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+            }
+        };
+
+        assert_eq!(format_bytes(512 * 1024), "512.0 KB");
+        assert_eq!(format_bytes(16 * 1024 * 1024), "16.0 MB");
+        assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2.00 GB");
     }
 }

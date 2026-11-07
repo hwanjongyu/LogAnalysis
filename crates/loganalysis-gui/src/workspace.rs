@@ -91,6 +91,11 @@ pub struct LogAnalysisWorkspace {
 
     // Column View state
     pub(crate) is_column_view: bool,
+
+    // Workstation & Facets state
+    pub(crate) is_filter_dock_visible: bool,
+    pub(crate) is_facets_visible: bool,
+    pub(crate) facet_tags: Vec<(String, usize)>,
 }
 
 impl LogAnalysisWorkspace {
@@ -289,6 +294,9 @@ impl LogAnalysisWorkspace {
             secondary_selection: SelectionModel::new(),
 
             is_column_view: false,
+            is_filter_dock_visible: true,
+            is_facets_visible: true,
+            facet_tags: Vec::new(),
         }
     }
 
@@ -371,6 +379,7 @@ impl LogAnalysisWorkspace {
                             workspace.active_file_name = Some(file_name);
                             workspace.bookmarks.clear();
                             workspace.add_recent_file(path_buf.clone());
+                            workspace.refresh_facet_tags();
                             workspace.status_text =
                                 format!("Loaded {} lines from {:?}", arc_buf.line_count(), path_buf)
                                     .into();
@@ -1323,6 +1332,8 @@ impl LogAnalysisWorkspace {
             PaletteCommandId::ToggleAutoScroll => self.toggle_auto_scroll(cx),
             PaletteCommandId::RescanAdbDevices => self.refresh_adb_devices(cx),
             PaletteCommandId::ToggleFilterPanelPosition => self.toggle_filter_panel_position(cx),
+            PaletteCommandId::ToggleFilterDock => self.toggle_filter_dock(cx),
+            PaletteCommandId::ToggleFacetsBar => self.toggle_facets_bar(cx),
             PaletteCommandId::ToggleFullLineDisplay => self.toggle_full_line_display(cx),
             PaletteCommandId::ToggleTheme => self.toggle_theme(cx),
             PaletteCommandId::ZoomIn => self.zoom(1.0, cx),
@@ -1991,6 +2002,132 @@ impl LogAnalysisWorkspace {
             FilterPanelPosition::Bottom => "Filter Panel docked to BOTTOM".into(),
         };
         cx.notify();
+    }
+
+    /// Toggles filter dock visibility between shown and hidden
+    pub fn toggle_filter_dock(&mut self, cx: &mut Context<Self>) {
+        self.is_filter_dock_visible = !self.is_filter_dock_visible;
+        self.status_text = if self.is_filter_dock_visible {
+            "Filter Dock: Visible".into()
+        } else {
+            "Filter Dock: Hidden (Full Viewport)".into()
+        };
+        cx.notify();
+    }
+
+    /// Toggles forensic facets bar visibility
+    pub fn toggle_facets_bar(&mut self, cx: &mut Context<Self>) {
+        self.is_facets_visible = !self.is_facets_visible;
+        self.status_text = if self.is_facets_visible {
+            "Forensic Facets Bar: Visible".into()
+        } else {
+            "Forensic Facets Bar: Hidden".into()
+        };
+        cx.notify();
+    }
+
+    /// Fast-samples the active buffer (up to 25,000 lines) to extract top 7 tags
+    pub fn refresh_facet_tags(&mut self) {
+        let Some(source) = &self.log_source else {
+            self.facet_tags.clear();
+            return;
+        };
+
+        let total = source.line_count();
+        if total == 0 {
+            self.facet_tags.clear();
+            return;
+        }
+
+        let sample_limit = total.min(25_000);
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+        for i in 0..sample_limit {
+            if let Some(line) = source.get_line(i) {
+                let parsed = loganalysis_core::parse_logcat_column_line(&line);
+                if let Some(tag) = parsed.tag {
+                    let tag_trimmed = tag.trim();
+                    if !tag_trimmed.is_empty() && tag_trimmed.len() <= 32 {
+                        *counts.entry(tag_trimmed.to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        let mut sorted: Vec<(String, usize)> = counts.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        sorted.truncate(7);
+        self.facet_tags = sorted;
+    }
+
+    /// Adds a quick filter rule directly from a facet tag chip
+    pub fn add_facet_filter(&mut self, tag: &str, is_exclude: bool, cx: &mut Context<Self>) {
+        let palette = ["Cyan", "Green", "Magenta", "Yellow", "Blue"];
+        let color_idx = tag.bytes().map(|b| b as usize).sum::<usize>() % palette.len();
+        let bg_color = if is_exclude {
+            "None".to_string()
+        } else {
+            palette[color_idx].to_string()
+        };
+        let text_color = if is_exclude {
+            "None".to_string()
+        } else {
+            "Black".to_string()
+        };
+
+        let rule = FilterRule {
+            text: tag.to_string(),
+            exclude: is_exclude,
+            regex: false,
+            case_sensitive: false,
+            bg_color,
+            text_color,
+            active: true,
+            ..Default::default()
+        };
+
+        self.add_filter_rule(rule, cx);
+        self.status_text = format!(
+            "Added {} facet filter for '{}'",
+            if is_exclude { "exclude" } else { "include" },
+            tag
+        )
+        .into();
+        cx.notify();
+    }
+
+    /// Returns human-readable buffer memory footprint and storage mechanism
+    pub fn get_buffer_memory_display(&self) -> (String, &'static str) {
+        if let Some(source) = &self.log_source {
+            match &**source {
+                ActiveLogSource::File(fb) => {
+                    let bytes = fb.byte_size();
+                    if bytes < 1024 * 1024 {
+                        (format!("{:.1} KB", bytes as f64 / 1024.0), "MMap")
+                    } else if bytes < 1024 * 1024 * 1024 {
+                        (format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0)), "MMap")
+                    } else {
+                        (format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0)), "MMap")
+                    }
+                }
+                ActiveLogSource::Stream(sb) => {
+                    let lines = sb.line_count();
+                    let approx_bytes = lines * 128;
+                    if approx_bytes < 1024 * 1024 {
+                        (format!("{:.1} KB", approx_bytes as f64 / 1024.0), "Heap")
+                    } else {
+                        (format!("{:.1} MB", approx_bytes as f64 / (1024.0 * 1024.0)), "Heap")
+                    }
+                }
+                ActiveLogSource::Merged(mb) => {
+                    let lines = mb.line_count();
+                    let approx_bytes = lines * 128;
+                    (format!("{:.1} MB", approx_bytes as f64 / (1024.0 * 1024.0)), "Merged")
+                }
+            }
+        } else {
+            ("0 MB".to_string(), "Idle")
+        }
     }
 
     /// Toggles bookmark on the currently selected row (F2)
@@ -2712,6 +2849,7 @@ impl LogAnalysisWorkspace {
                             workspace.log_source = Some(arc_buf.clone());
                             workspace.active_file_name = Some(summary_name);
                             workspace.bookmarks.clear();
+                            workspace.refresh_facet_tags();
                             workspace.status_text = format!(
                                 "Merged {} lines chronologically across {} files",
                                 arc_buf.line_count(),
