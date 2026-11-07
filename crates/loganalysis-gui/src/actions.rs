@@ -39,5 +39,9 @@ actions!(
         ToggleBookmarkDrawer,
         EditBookmarkNote,
         ToggleEpsTimeline,
+        ToggleSplitView,
+        ToggleSplitOrientation,
+        ToggleSyncedScroll,
+        OpenSecondaryLog,
     ]
 );

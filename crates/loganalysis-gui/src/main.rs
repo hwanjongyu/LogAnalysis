@@ -218,6 +218,18 @@ impl Render for LogAnalysisWorkspace {
             .on_action(cx.listener(|this, _: &ToggleEpsTimeline, _window, cx| {
                 this.toggle_eps_timeline(cx);
             }))
+            .on_action(cx.listener(|this, _: &ToggleSplitView, _window, cx| {
+                this.toggle_split_view(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSplitOrientation, _window, cx| {
+                this.toggle_split_orientation(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSyncedScroll, _window, cx| {
+                this.toggle_synced_scroll(cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenSecondaryLog, window, cx| {
+                this.prompt_open_secondary_file(Some(window), cx);
+            }))
             .relative()
             .flex()
             .flex_col()
@@ -386,6 +398,10 @@ fn main() {
             KeyBinding::new("alt-enter", EditBookmarkNote, None),
             KeyBinding::new("ctrl-shift-t", ToggleEpsTimeline, None),
             KeyBinding::new("cmd-shift-t", ToggleEpsTimeline, None),
+            KeyBinding::new("ctrl-\\", ToggleSplitView, None),
+            KeyBinding::new("cmd-\\", ToggleSplitView, None),
+            KeyBinding::new("ctrl-alt-\\", ToggleSplitOrientation, None),
+            KeyBinding::new("ctrl-alt-s", ToggleSyncedScroll, None),
         ]);
 
         // Register Scoped TextInput Key Bindings (Cut, Copy, Paste, Arrows, Selection, etc.)
@@ -586,6 +602,24 @@ mod tests {
             .collect();
         assert!(!timeline_matches.is_empty());
         assert_eq!(timeline_matches[0].0.id, PaletteCommandId::ToggleEpsTimeline);
+
+        // Fuzzy search for "split" -> should find split view commands
+        let split_matches: Vec<_> = commands
+            .iter()
+            .filter_map(|c| fuzzy_match("split", c.title).map(|score| (c, score)))
+            .collect();
+        assert!(split_matches.len() >= 3, "Expected at least 3 split view commands");
+        assert!(commands.iter().any(|c| c.id == PaletteCommandId::ToggleSplitView));
+        assert!(commands.iter().any(|c| c.id == PaletteCommandId::ToggleSplitOrientation));
+        assert!(commands.iter().any(|c| c.id == PaletteCommandId::OpenSecondaryLog));
+
+        // Fuzzy search for "synced" -> should find timestamp sync command
+        let sync_matches: Vec<_> = commands
+            .iter()
+            .filter_map(|c| fuzzy_match("synced", c.title).map(|score| (c, score)))
+            .collect();
+        assert!(!sync_matches.is_empty());
+        assert_eq!(sync_matches[0].0.id, PaletteCommandId::ToggleSyncedScroll);
     }
 
     #[test]
@@ -652,5 +686,60 @@ mod tests {
         assert!(!manager.toggle(50, "".into(), LineSeverity::Warning));
         assert_eq!(manager.len(), 2);
         assert!(!manager.is_bookmarked(50));
+    }
+
+    #[test]
+    fn test_dual_pane_split_and_timestamp_lockstep_correlation() {
+        use loganalysis_core::*;
+
+        // Pane A Source (Primary client log)
+        let pane_a_data = b"01-01 10:00:00.100 D Client start\n\
+                            01-01 10:00:01.200 I Client request sent\n\
+                            01-01 10:00:05.500 E Client timeout\n";
+
+        // Pane B Source (Secondary server log)
+        let pane_b_data = b"01-01 10:00:00.050 I Server booted\n\
+                            01-01 10:00:01.210 D Server received request\n\
+                            01-01 10:00:01.220 D Parsing payload\n\
+                            \tat com.example.Server.parse(Server.java:42)\n\
+                            01-01 10:00:06.000 W Server cleanup\n";
+
+        let mut a_dir = std::env::temp_dir();
+        a_dir.push(format!("pane_a_test_{}.log", uuid::Uuid::new_v4()));
+        std::fs::write(&a_dir, pane_a_data).unwrap();
+        let buf_a = FileLogBuffer::open(&a_dir).unwrap();
+
+        let mut b_dir = std::env::temp_dir();
+        b_dir.push(format!("pane_b_test_{}.log", uuid::Uuid::new_v4()));
+        std::fs::write(&b_dir, pane_b_data).unwrap();
+        let buf_b = FileLogBuffer::open(&b_dir).unwrap();
+
+        let source_a = ActiveLogSource::File(buf_a);
+        let source_b = ActiveLogSource::File(buf_b);
+
+        let vis_a: Vec<usize> = (0..source_a.line_count()).collect();
+        let vis_b: Vec<usize> = (0..source_b.line_count()).collect();
+
+        // 1. Primary selects line 1: "Client request sent" at 10:00:01.200 (1_200_000 µs into the second)
+        let raw_a1 = source_a.get_raw_line(1).unwrap();
+        let ts_a1 = extract_timestamp(raw_a1).unwrap();
+
+        // Correlate to Secondary (Pane B):
+        // Nearest should be line 1: "Server received request" at 10:00:01.210 (10ms diff)
+        let correlated_b = find_nearest_timestamp_row(&source_b, &vis_b, ts_a1.total_micros);
+        assert_eq!(correlated_b, Some(1));
+
+        // 2. Secondary selects line 4: "Server cleanup" at 10:00:06.000
+        let raw_b4 = source_b.get_raw_line(4).unwrap();
+        let ts_b4 = extract_timestamp(raw_b4).unwrap();
+
+        // Correlate back to Primary (Pane A):
+        // Nearest should be line 2: "Client timeout" at 10:00:05.500
+        let correlated_a = find_nearest_timestamp_row(&source_a, &vis_a, ts_b4.total_micros);
+        assert_eq!(correlated_a, Some(2));
+
+        // Clean up temp files
+        let _ = std::fs::remove_file(a_dir);
+        let _ = std::fs::remove_file(b_dir);
     }
 }

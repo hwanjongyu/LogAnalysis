@@ -35,6 +35,10 @@ pub enum PaletteCommandId {
     ToggleBookmarkDrawer,
     EditBookmarkNote,
     ToggleEpsTimeline,
+    ToggleSplitView,
+    ToggleSplitOrientation,
+    ToggleSyncedScroll,
+    OpenSecondaryLog,
 }
 
 #[derive(Clone, Debug)]
@@ -166,6 +170,30 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             title: "View: Toggle Throughput & EPS Timeline Sparkline",
             category: "VIEW",
             shortcut: Some("Ctrl+Shift+T"),
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ToggleSplitView,
+            title: "View: Toggle Dual Split View (Side-by-Side)",
+            category: "VIEW",
+            shortcut: Some("Ctrl+\\"),
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ToggleSplitOrientation,
+            title: "View: Toggle Split Orientation (Vertical / Horizontal)",
+            category: "VIEW",
+            shortcut: Some("Ctrl+Alt+\\"),
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ToggleSyncedScroll,
+            title: "View: Toggle Synchronized Timestamp Scrolling",
+            category: "VIEW",
+            shortcut: Some("Ctrl+Alt+S"),
+        },
+        PaletteCommand {
+            id: PaletteCommandId::OpenSecondaryLog,
+            title: "File: Open Log in Secondary Split Pane...",
+            category: "FILE",
+            shortcut: None,
         },
         PaletteCommand {
             id: PaletteCommandId::ZoomIn,

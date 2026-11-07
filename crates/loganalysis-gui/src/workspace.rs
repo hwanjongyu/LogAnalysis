@@ -77,6 +77,16 @@ pub struct LogAnalysisWorkspace {
     pub(crate) is_note_modal_open: bool,
     pub(crate) note_editing_source_idx: Option<usize>,
     pub(crate) note_input: Entity<TextInput>,
+
+    // Split View state
+    pub(crate) is_split_view: bool,
+    pub(crate) is_split_vertical: bool,
+    pub(crate) is_scroll_synced: bool,
+    pub(crate) secondary_log_source: Option<Arc<ActiveLogSource>>,
+    pub(crate) secondary_file_name: Option<SharedString>,
+    pub(crate) secondary_filter_result: Option<Arc<FilterResult>>,
+    pub(crate) secondary_scroll_handle: UniformListScrollHandle,
+    pub(crate) secondary_selection: SelectionModel,
 }
 
 impl LogAnalysisWorkspace {
@@ -263,6 +273,15 @@ impl LogAnalysisWorkspace {
             is_note_modal_open: false,
             note_editing_source_idx: None,
             note_input,
+
+            is_split_view: false,
+            is_split_vertical: true,
+            is_scroll_synced: true,
+            secondary_log_source: None,
+            secondary_file_name: None,
+            secondary_filter_result: None,
+            secondary_scroll_handle: UniformListScrollHandle::new(),
+            secondary_selection: SelectionModel::new(),
         }
     }
 
@@ -362,6 +381,10 @@ impl LogAnalysisWorkspace {
 
     /// Re-evaluates active filters in the background using Rayon
     pub fn reapply_filters(&mut self, cx: &mut Context<Self>) {
+        if self.is_split_view && self.secondary_log_source.is_some() {
+            self.reapply_secondary_filters(cx);
+        }
+
         let Some(source) = self.log_source.clone() else {
             return;
         };
@@ -1024,6 +1047,40 @@ impl LogAnalysisWorkspace {
                 return;
             }
         }
+
+        // Navigate log lines with Up and Down arrows
+        if self.input_focus == InputFocusTarget::None
+            && !self.filter_edit_modal.is_open
+            && !self.is_note_modal_open
+            && !self.is_bookmark_drawer_open
+            && !self.is_command_palette_open
+        {
+            if key == "up" {
+                if let Some(res) = &self.filter_result {
+                    let total_rows = res.visible_indices.len();
+                    if total_rows > 0 {
+                        let cur_row = self.selection.selected_row.unwrap_or(0);
+                        let new_row = cur_row.saturating_sub(1);
+                        if let Some(&src_idx) = res.visible_indices.get(new_row) {
+                            self.select_log_row(new_row, src_idx, cx);
+                            self.scroll_handle.scroll_to_item(new_row, ScrollStrategy::Center);
+                        }
+                    }
+                }
+            } else if key == "down" {
+                if let Some(res) = &self.filter_result {
+                    let total_rows = res.visible_indices.len();
+                    if total_rows > 0 {
+                        let cur_row = self.selection.selected_row.map(|r| r + 1).unwrap_or(0);
+                        let new_row = cur_row.min(total_rows.saturating_sub(1));
+                        if let Some(&src_idx) = res.visible_indices.get(new_row) {
+                            self.select_log_row(new_row, src_idx, cx);
+                            self.scroll_handle.scroll_to_item(new_row, ScrollStrategy::Center);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Adds a new filter rule to the active tab
@@ -1275,6 +1332,12 @@ impl LogAnalysisWorkspace {
             PaletteCommandId::ToggleBookmarkDrawer => self.toggle_bookmark_drawer(cx),
             PaletteCommandId::EditBookmarkNote => self.open_note_modal_for_selected(cx),
             PaletteCommandId::ToggleEpsTimeline => self.toggle_eps_timeline(cx),
+            PaletteCommandId::ToggleSplitView => self.toggle_split_view(cx),
+            PaletteCommandId::ToggleSplitOrientation => self.toggle_split_orientation(cx),
+            PaletteCommandId::ToggleSyncedScroll => self.toggle_synced_scroll(cx),
+            PaletteCommandId::OpenSecondaryLog => {
+                self.prompt_open_secondary_file(window.as_deref(), cx)
+            }
         }
     }
 
@@ -1371,6 +1434,19 @@ impl LogAnalysisWorkspace {
     pub fn select_log_row(&mut self, visible_idx: usize, source_idx: usize, cx: &mut Context<Self>) {
         self.selection.select(visible_idx, source_idx);
         self.input_focus = InputFocusTarget::None;
+        if self.is_split_view && self.is_scroll_synced {
+            self.sync_scroll_to_secondary(source_idx, cx);
+        }
+        self.refresh_status_line(cx);
+    }
+
+    /// Selects a log row in the secondary pane and syncs primary pane if lockstep is enabled
+    pub fn select_secondary_log_row(&mut self, visible_idx: usize, source_idx: usize, cx: &mut Context<Self>) {
+        self.secondary_selection.select(visible_idx, source_idx);
+        self.input_focus = InputFocusTarget::None;
+        if self.is_split_view && self.is_scroll_synced {
+            self.sync_scroll_to_primary(source_idx, cx);
+        }
         self.refresh_status_line(cx);
     }
 
@@ -1716,6 +1792,40 @@ impl LogAnalysisWorkspace {
             self.scroll_handle.scroll_to_item_strict(target_idx, ScrollStrategy::Bottom);
         } else {
             self.scroll_handle.scroll_to_item_strict(target_idx, ScrollStrategy::Top);
+        }
+        cx.notify();
+    }
+
+    /// Scrolls the secondary log viewport based on mouse vertical position in the scrollbar track
+    pub fn scroll_secondary_to_ratio_from_mouse_y(&mut self, mouse_y: Pixels, cx: &mut Context<Self>) {
+        let row_count = self
+            .secondary_filter_result
+            .as_ref()
+            .map(|r| r.visible_indices.len())
+            .unwrap_or(0);
+
+        if row_count == 0 {
+            return;
+        }
+
+        let bounds = self.secondary_scroll_handle.0.borrow().base_handle.bounds();
+        let track_top: f32 = bounds.origin.y.into();
+        let track_height: f32 = bounds.size.height.into();
+        let mouse_y_f32: f32 = mouse_y.into();
+
+        if track_height <= 0.0 {
+            return;
+        }
+
+        let relative_y = (mouse_y_f32 - track_top).clamp(0.0, track_height);
+        let ratio = (relative_y / track_height).clamp(0.0, 1.0);
+        let max_idx = row_count.saturating_sub(1);
+        let target_idx = ((ratio * max_idx as f32).round() as usize).min(max_idx);
+
+        if ratio >= 0.98 {
+            self.secondary_scroll_handle.scroll_to_item_strict(target_idx, ScrollStrategy::Bottom);
+        } else {
+            self.secondary_scroll_handle.scroll_to_item_strict(target_idx, ScrollStrategy::Top);
         }
         cx.notify();
     }
@@ -2216,6 +2326,249 @@ impl LogAnalysisWorkspace {
             "Throughput Timeline Ribbon: OFF".into()
         };
         cx.notify();
+    }
+
+    /// Toggles Dual-Pane Split View (Ctrl+\ / Cmd+\)
+    pub fn toggle_split_view(&mut self, cx: &mut Context<Self>) {
+        self.is_split_view = !self.is_split_view;
+        if self.is_split_view {
+            if self.secondary_log_source.is_none() {
+                self.secondary_log_source = self.log_source.clone();
+                self.secondary_file_name = self.active_file_name.clone();
+                self.secondary_filter_result = self.filter_result.clone();
+            }
+            self.status_text = format!(
+                "Split View enabled ({}, {})",
+                if self.is_split_vertical { "Side-by-Side" } else { "Stacked" },
+                if self.is_scroll_synced { "🔗 Synced" } else { "Unlinked" }
+            )
+            .into();
+        } else {
+            self.status_text = "Split View disabled".into();
+        }
+        cx.notify();
+    }
+
+    /// Toggles Split Orientation between Vertical (Side-by-Side) and Horizontal (Stacked) (Ctrl+Alt+\)
+    pub fn toggle_split_orientation(&mut self, cx: &mut Context<Self>) {
+        self.is_split_vertical = !self.is_split_vertical;
+        self.status_text = format!(
+            "Split View orientation: {}",
+            if self.is_split_vertical { "Vertical (Side-by-Side)" } else { "Horizontal (Stacked)" }
+        )
+        .into();
+        cx.notify();
+    }
+
+    /// Toggles Timestamp-Synchronized Lockstep Scrolling (Ctrl+Alt+S)
+    pub fn toggle_synced_scroll(&mut self, cx: &mut Context<Self>) {
+        self.is_scroll_synced = !self.is_scroll_synced;
+        self.status_text = format!(
+            "Timestamp Sync: {}",
+            if self.is_scroll_synced { "🔗 Synced (Lockstep active)" } else { "Unlinked (Independent scrolling)" }
+        )
+        .into();
+        cx.notify();
+    }
+
+    /// Prompts user to select a log file for the secondary split pane
+    pub fn prompt_open_secondary_file(&mut self, parent: Option<&Window>, cx: &mut Context<Self>) {
+        let base_dialog = crate::dialogs::build_open_log_dialog_base();
+        let is_x11 = crate::dialogs::is_x11_session();
+        let dialog = if !is_x11 {
+            crate::dialogs::attach_dialog_parent(base_dialog, parent)
+        } else {
+            base_dialog
+        };
+
+        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
+            let mut async_cx = cx.clone();
+            async move {
+                let dialog = if is_x11 {
+                    let xid = bg_executor
+                        .spawn(async move {
+                            #[cfg(target_os = "linux")]
+                            {
+                                crate::dialogs::get_active_x11_window_id()
+                            }
+                            #[cfg(not(target_os = "linux"))]
+                            {
+                                None
+                            }
+                        })
+                        .await;
+                    crate::dialogs::attach_dialog_x11_id(dialog, xid)
+                } else {
+                    dialog
+                };
+
+                let file = dialog.pick_file().await;
+                if let Some(handle) = file {
+                    let path = handle.path().to_path_buf();
+                    let _ = this.update(&mut async_cx, |workspace, cx| {
+                        workspace.open_secondary_file(&path, cx);
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Loads a log file for the secondary pane asynchronously and runs filtering
+    pub fn open_secondary_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        let path_buf = path.to_path_buf();
+        let file_name: SharedString = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+            .into();
+
+        self.status_text = format!("Opening secondary log {:?}...", file_name).into();
+        self.secondary_selection.clear();
+        self.is_split_view = true;
+        cx.notify();
+
+        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
+            let mut async_cx = cx.clone();
+            let path_for_bg = path_buf.clone();
+
+            async move {
+                let open_result = bg_executor
+                    .spawn(async move { FileLogBuffer::open(&path_for_bg) })
+                    .await;
+
+                let _ = this.update(&mut async_cx, |workspace, cx| {
+                    match open_result {
+                        Ok(buf) => {
+                            let arc_buf = Arc::new(ActiveLogSource::File(buf));
+                            workspace.secondary_log_source = Some(arc_buf.clone());
+                            workspace.secondary_file_name = Some(file_name);
+                            workspace.status_text = format!(
+                                "Secondary pane loaded {} lines from {:?}",
+                                arc_buf.line_count(),
+                                path_buf
+                            )
+                            .into();
+                            workspace.reapply_secondary_filters(cx);
+                        }
+                        Err(e) => {
+                            workspace.status_text = format!("Failed to open secondary file: {}", e).into();
+                            cx.notify();
+                        }
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Re-evaluates active filters on the secondary log source in the background
+    pub fn reapply_secondary_filters(&mut self, cx: &mut Context<Self>) {
+        let Some(source) = self.secondary_log_source.clone() else {
+            return;
+        };
+
+        let mut active_filters = Vec::new();
+        for tab in &self.filter_tabs {
+            if tab.enabled {
+                for rule in &tab.filters {
+                    if rule.active {
+                        active_filters.push(rule.clone());
+                    }
+                }
+            }
+        }
+
+        let show_only = self.show_only_filtered;
+        let source_for_bg = source.clone();
+
+        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
+            let mut async_cx = cx.clone();
+
+            async move {
+                let result = bg_executor
+                    .spawn(async move {
+                        execute_filtering(
+                            &*source_for_bg,
+                            &active_filters,
+                            show_only,
+                            None,
+                            0,
+                        )
+                    })
+                    .await;
+
+                if let Some(res) = result {
+                    let _ = this.update(&mut async_cx, |workspace, cx| {
+                        workspace.secondary_filter_result = Some(Arc::new(res));
+                        cx.notify();
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Synchronizes secondary scroll position to match the timestamp of `primary_source_idx`
+    pub fn sync_scroll_to_secondary(&mut self, primary_source_idx: usize, cx: &mut Context<Self>) {
+        let (Some(primary_src), Some(secondary_src), Some(secondary_res)) = (
+            &self.log_source,
+            &self.secondary_log_source,
+            &self.secondary_filter_result,
+        ) else {
+            return;
+        };
+
+        let Some(raw_line) = primary_src.get_raw_line(primary_source_idx) else {
+            return;
+        };
+        let Some(ts) = extract_timestamp(raw_line) else {
+            return;
+        };
+
+        if let Some(target_vis_idx) = find_nearest_timestamp_row(
+            &**secondary_src,
+            &secondary_res.visible_indices,
+            ts.total_micros,
+        ) {
+            let target_source_idx = secondary_res.visible_indices.get(target_vis_idx).copied().unwrap_or(0);
+            self.secondary_selection.select(target_vis_idx, target_source_idx);
+            self.secondary_scroll_handle.scroll_to_item(target_vis_idx, ScrollStrategy::Center);
+            cx.notify();
+        }
+    }
+
+    /// Synchronizes primary scroll position to match the timestamp of `secondary_source_idx`
+    pub fn sync_scroll_to_primary(&mut self, secondary_source_idx: usize, cx: &mut Context<Self>) {
+        let (Some(secondary_src), Some(primary_src), Some(primary_res)) = (
+            &self.secondary_log_source,
+            &self.log_source,
+            &self.filter_result,
+        ) else {
+            return;
+        };
+
+        let Some(raw_line) = secondary_src.get_raw_line(secondary_source_idx) else {
+            return;
+        };
+        let Some(ts) = extract_timestamp(raw_line) else {
+            return;
+        };
+
+        if let Some(target_vis_idx) = find_nearest_timestamp_row(
+            &**primary_src,
+            &primary_res.visible_indices,
+            ts.total_micros,
+        ) {
+            let target_source_idx = primary_res.visible_indices.get(target_vis_idx).copied().unwrap_or(0);
+            self.selection.select(target_vis_idx, target_source_idx);
+            self.scroll_handle.scroll_to_item(target_vis_idx, ScrollStrategy::Center);
+            cx.notify();
+        }
     }
 }
 
