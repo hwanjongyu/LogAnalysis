@@ -2,11 +2,13 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use loganalysis_core::LogSource;
 
+use crate::components::titlebar::should_render_csd;
 use crate::components::tooltip::render_tooltip;
 use crate::theme::Theme;
 use crate::types::FilterPanelPosition;
 use crate::workspace::LogAnalysisWorkspace;
 
+#[allow(dead_code)]
 pub fn render_kbd_badge(shortcut: &'static str, theme: Theme) -> impl IntoElement {
     div()
         .px(px(4.0))
@@ -22,6 +24,7 @@ pub fn render_kbd_badge(shortcut: &'static str, theme: Theme) -> impl IntoElemen
         .child(shortcut)
 }
 
+#[allow(dead_code)]
 pub fn render_kbd_badge_on_accent(shortcut: &'static str) -> impl IntoElement {
     div()
         .px(px(4.0))
@@ -35,14 +38,27 @@ pub fn render_kbd_badge_on_accent(shortcut: &'static str) -> impl IntoElement {
         .child(shortcut)
 }
 
-pub fn render_toolbar(
+/// Target height in logical pixels for the unified compact header bar.
+pub const UNIFIED_HEADER_HEIGHT: f32 = 38.0;
+
+/// Target dimensions in logical pixels for the app branding logo pill.
+pub const LOGO_PILL_SIZE: f32 = 18.0;
+
+/// Renders the unified 38px compact header bar integrating branding, log sources,
+/// centralized draggable breadcrumb status pill, view toggles, find, overflow menu,
+/// and CSD window controls.
+#[allow(clippy::needless_pass_by_ref_mut)]
+pub fn render_unified_header(
     workspace: &LogAnalysisWorkspace,
+    window: &mut Window,
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> impl IntoElement {
     let theme = workspace.theme;
+    let is_csd = should_render_csd(window);
 
     div()
-        .h(px(44.0))
+        .id("unified-header-bar")
+        .h(px(UNIFIED_HEADER_HEIGHT))
         .w_full()
         .bg(theme.bg_header)
         .border_b_1()
@@ -50,143 +66,273 @@ pub fn render_toolbar(
         .flex()
         .items_center()
         .justify_between()
-        .px(px(14.0))
-        // Left Section: Brand + File Actions + Active File Pill
+        .pl(px(10.0))
+        .when(!is_csd, |s| s.pr(px(10.0)))
+        .when(is_csd, |s| s.pr(px(0.0)))
+        // =====================================================================
+        // Left Section: Branding + Open Button + Live ADB Controls
+        // =====================================================================
         .child(
             div()
+                .id("header-left-section")
+                .flex_shrink_0()
                 .flex()
                 .items_center()
                 .gap_2()
-                // Modernized App Brand Pill
+                // App Branding: 18x18px logo pill "L" + "LogAnalysis" (12px semibold)
                 .child(
                     div()
+                        .id("header-branding")
                         .flex()
                         .items_center()
                         .gap_1p5()
-                        .pr(px(6.0))
+                        .pr(px(2.0))
+                        .cursor_default()
+                        .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
+                            if event.click_count == 2 {
+                                window.zoom_window();
+                            } else if event.click_count == 1 {
+                                window.start_window_move();
+                            }
+                        }))
                         .child(
                             div()
-                                .w(px(9.0))
-                                .h(px(9.0))
+                                .w(px(LOGO_PILL_SIZE))
+                                .h(px(LOGO_PILL_SIZE))
                                 .rounded_sm()
                                 .bg(theme.accent)
-                                .shadow_sm(),
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(0xffffff))
+                                .child("L"),
                         )
                         .child(
                             div()
-                                .font_weight(FontWeight::BOLD)
-                                .text_size(px(13.0))
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.text_primary)
                                 .child("LogAnalysis"),
-                        )
-                        .child(
-                            div()
-                                .px(px(4.0))
-                                .py(px(0.5))
-                                .rounded_xs()
-                                .bg(theme.bg_badge)
-                                .text_size(px(8.5))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(theme.accent)
-                                .child("STUDIO"),
                         ),
                 )
-                // File Action Group
+                // File Open Button (btn-toolbar-open, Ctrl+O)
                 .child(
                     div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .p(px(2.0))
-                        .rounded_md()
-                        .bg(theme.bg_panel)
-                        .border_1()
-                        .border_color(theme.border_subtle)
-                        .child(
-                            div()
-                                .id("btn-toolbar-open")
-                                .px(px(8.0))
-                                .py(px(4.0))
-                                .rounded_sm()
-                                .bg(theme.accent)
-                                .hover(move |s| s.bg(theme.accent_muted).text_color(theme.accent))
-                                .tooltip(render_tooltip("Open log file from disk", Some("Ctrl+O"), theme))
-                                .text_color(rgb(0xffffff))
-                                .text_size(px(11.0))
-                                .font_weight(FontWeight::MEDIUM)
-                                .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .gap_1p5()
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.prompt_open_file(Some(window), cx);
-                                }))
-                                .child("Open")
-                                .child(render_kbd_badge_on_accent("Ctrl+O")),
-                        )
-                        .child(
-                            div()
-                                .id("btn-toolbar-load-filters")
-                                .px(px(8.0))
-                                .py(px(4.0))
-                                .rounded_sm()
-                                .hover(move |s| s.bg(theme.btn_hover))
-                                .tooltip(render_tooltip("Load saved filter preset profile", Some("Ctrl+Shift+O"), theme))
-                                .text_size(px(11.0))
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.prompt_load_filters(Some(window), cx);
-                                }))
-                                .child("Load Profile"),
-                        )
-                        .child(
-                            div()
-                                .id("btn-toolbar-save-filters")
-                                .px(px(8.0))
-                                .py(px(4.0))
-                                .rounded_sm()
-                                .hover(move |s| s.bg(theme.btn_hover))
-                                .tooltip(render_tooltip("Save current filter rules to file", Some("Ctrl+S"), theme))
-                                .text_size(px(11.0))
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.prompt_save_filters(Some(window), cx);
-                                }))
-                                .child("Save Profile"),
-                        )
-                        .child(
-                            div()
-                                .id("btn-toolbar-clear-logs")
-                                .px(px(8.0))
-                                .py(px(4.0))
-                                .rounded_sm()
-                                .hover(move |s| s.bg(theme.btn_hover))
-                                .tooltip(render_tooltip("Clear current log buffer", Some("Ctrl+K"), theme))
-                                .text_size(px(11.0))
-                                .text_color(theme.text_muted)
-                                .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .gap_1p5()
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.clear_logs(cx);
-                                }))
-                                .child("Clear")
-                                .child(render_kbd_badge("Ctrl+K", theme)),
-                        ),
+                        .id("btn-toolbar-open")
+                        .px(px(8.0))
+                        .py(px(3.0))
+                        .rounded_sm()
+                        .bg(theme.accent)
+                        .hover(move |s| s.bg(theme.accent_muted).text_color(theme.accent))
+                        .tooltip(render_tooltip("Open log file from disk", Some("Ctrl+O"), theme))
+                        .text_color(rgb(0xffffff))
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.prompt_open_file(Some(window), cx);
+                        }))
+                        .child("Open"),
                 )
-                // Contextual Breadcrumb Trail
+                // Live ADB Control Group (Device selector + Pause + Live ADB toggle)
                 .child(
                     div()
-                        .px(px(10.0))
-                        .py(px(3.5))
-                        .rounded_full()
-                        .bg(theme.bg_badge)
-                        .border_1()
-                        .border_color(theme.border_subtle)
+                        .id("header-adb-controls")
                         .flex()
                         .items_center()
                         .gap_1p5()
+                        // Pause Stream Button (when streaming)
+                        .children(if workspace.is_streaming {
+                            Some(
+                                div()
+                                    .id("btn-toolbar-pause-adb")
+                                    .px(px(7.0))
+                                    .py(px(3.0))
+                                    .rounded_sm()
+                                    .bg(if workspace.is_stream_paused {
+                                        theme.warning_amber
+                                    } else {
+                                        theme.bg_panel
+                                    })
+                                    .text_color(if workspace.is_stream_paused {
+                                        rgb(0x000000)
+                                    } else {
+                                        theme.text_primary
+                                    })
+                                    .border_1()
+                                    .border_color(theme.border_subtle)
+                                    .tooltip(render_tooltip(
+                                        if workspace.is_stream_paused { "Resume streaming logcat" } else { "Pause streaming logcat" },
+                                        Some("Ctrl+Space"),
+                                        theme,
+                                    ))
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.toggle_pause_stream(cx);
+                                    }))
+                                    .child(if workspace.is_stream_paused {
+                                        "▶ Resume"
+                                    } else {
+                                        "⏸ Pause"
+                                    }),
+                            )
+                        } else {
+                            None
+                        })
+                        // ADB Device Selector with Dropdown Popover
+                        .child(
+                            div()
+                                .relative()
+                                .child(
+                                    div()
+                                        .id("btn-toolbar-adb-devices")
+                                        .px(px(7.0))
+                                        .py(px(3.0))
+                                        .rounded_sm()
+                                        .bg(if workspace.is_device_selector_open {
+                                            theme.btn_hover
+                                        } else {
+                                            theme.bg_panel
+                                        })
+                                        .border_1()
+                                        .border_color(if workspace.is_device_selector_open {
+                                            theme.accent
+                                        } else {
+                                            theme.border_subtle
+                                        })
+                                        .hover(move |s| s.bg(theme.btn_hover))
+                                        .tooltip(render_tooltip("Select connected Android device or emulator", None, theme))
+                                        .text_size(px(11.0))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.toggle_device_selector(cx);
+                                        }))
+                                        .child(
+                                            div()
+                                                .w(px(6.0))
+                                                .h(px(6.0))
+                                                .rounded_full()
+                                                .bg(
+                                                    if let Some(info) = workspace.get_selected_device_info() {
+                                                        if info.is_ready() {
+                                                            theme.success_green
+                                                        } else {
+                                                            theme.warning_amber
+                                                        }
+                                                    } else if !workspace.adb_devices.is_empty() {
+                                                        theme.success_green
+                                                    } else {
+                                                        theme.text_muted
+                                                    },
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .max_w(px(180.0))
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .child(
+                                                    if workspace.is_scanning_adb {
+                                                        "📱 Scanning...".to_string()
+                                                    } else if let Some(info) = workspace.get_selected_device_info() {
+                                                        format!("📱 {} ▾", info.short_name())
+                                                    } else if let Some(dev) = &workspace.selected_device {
+                                                        format!("📱 {} ▾", dev)
+                                                    } else if !workspace.adb_devices.is_empty() {
+                                                        format!("📱 ({} found) ▾", workspace.adb_devices.len())
+                                                    } else {
+                                                        "📱 No Device ▾".to_string()
+                                                    },
+                                                ),
+                                        ),
+                                    )
+                                    .children(if workspace.is_device_selector_open {
+                                        Some(render_device_dropdown(workspace, cx))
+                                    } else {
+                                        None
+                                    }),
+                        )
+                        // Start / Stop ADB Stream Button
+                        .child(
+                            div()
+                                .id("btn-toolbar-adb")
+                                .px(px(8.0))
+                                .py(px(3.0))
+                                .rounded_sm()
+                                .bg(if workspace.is_streaming {
+                                    theme.error_red
+                                } else {
+                                    theme.success_green
+                                })
+                                .hover(move |s| {
+                                    if workspace.is_streaming {
+                                        s.bg(rgb(0xdc2626))
+                                    } else {
+                                        s.bg(rgb(0x16a34a))
+                                    }
+                                })
+                                .tooltip(render_tooltip(
+                                    if workspace.is_streaming { "Stop live ADB logcat stream" } else { "Start live ADB logcat stream" },
+                                    Some("Ctrl+Shift+R"),
+                                    theme,
+                                ))
+                                .text_color(rgb(0xffffff))
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    if this.is_streaming {
+                                        this.stop_adb_stream(cx);
+                                    } else {
+                                        this.start_adb_stream(cx);
+                                    }
+                                }))
+                                .child(if workspace.is_streaming {
+                                    "⏹ Stop ADB"
+                                } else {
+                                    "⚡ Live ADB"
+                                }),
+                        ),
+                ),
+        )
+        // =====================================================================
+        // Center Section: Draggable Central Breadcrumb Pill
+        // =====================================================================
+        .child(
+            div()
+                .id("header-center-section")
+                .flex_1()
+                .min_w(px(0.0))
+                .h_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
+                    if event.click_count == 2 {
+                        window.zoom_window();
+                    } else if event.click_count == 1 {
+                        window.start_window_move();
+                    }
+                }))
+                .child(
+                    div()
+                        .id("titlebar-breadcrumb-pill")
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .px(px(10.0))
+                        .py(px(2.5))
+                        .rounded_full()
+                        .bg(theme.bg_card)
+                        .border_1()
+                        .border_color(theme.border_subtle)
                         .text_size(px(11.0))
                         .child(if let Some(name) = &workspace.active_file_name {
                             let lines = workspace.log_source.as_ref().map(|s| s.line_count()).unwrap_or(0);
@@ -205,7 +351,7 @@ pub fn render_toolbar(
                                         .text_color(theme.text_primary)
                                         .child(name.clone()),
                                 )
-                                .child(div().text_color(theme.text_muted).child("›"))
+                                .child(div().text_color(theme.text_muted).child("•"))
                                 .child(
                                     div()
                                         .font_family("monospace")
@@ -214,7 +360,7 @@ pub fn render_toolbar(
                                 )
                                 .when(matched > 0, |parent| {
                                     parent
-                                        .child(div().text_color(theme.text_muted).child("›"))
+                                        .child(div().text_color(theme.text_muted).child("•"))
                                         .child(
                                             div()
                                                 .px(px(5.0))
@@ -236,42 +382,73 @@ pub fn render_toolbar(
                                 .or_else(|| workspace.selected_device.clone())
                                 .unwrap_or_else(|| "Android Device".to_string());
                             let lines = workspace.log_source.as_ref().map(|s| s.line_count()).unwrap_or(0);
+                            let status = if workspace.is_stream_paused { "Paused" } else { "Live" };
                             div()
                                 .flex()
                                 .items_center()
                                 .gap_1p5()
-                                .child(div().text_size(px(12.0)).child("📱"))
                                 .child(
                                     div()
+                                        .w(px(6.5))
+                                        .h(px(6.5))
+                                        .rounded_full()
+                                        .bg(if workspace.is_stream_paused {
+                                            theme.warning_amber
+                                        } else {
+                                            theme.success_green
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .max_w(px(180.0))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(theme.text_primary)
-                                        .child(dev_name),
+                                        .child(format!("📱 {}", dev_name)),
                                 )
-                                .child(div().text_color(theme.text_muted).child("›"))
+                                .child(div().text_color(theme.text_muted).child("•"))
                                 .child(
                                     div()
                                         .font_family("monospace")
-                                        .text_color(theme.success_green)
-                                        .child(format!("Live • {} lines", lines)),
+                                        .text_color(if workspace.is_stream_paused {
+                                            theme.warning_amber
+                                        } else {
+                                            theme.success_green
+                                        })
+                                        .child(format!("{} • {} lines", status, lines)),
                                 )
                                 .into_any_element()
                         } else {
                             div()
-                                .text_color(theme.text_muted)
-                                .child("No active log")
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .child(div().text_size(px(11.0)).child("⚡"))
+                                .child(
+                                    div()
+                                        .text_color(theme.text_muted)
+                                        .child("LogAnalysis — Ready"),
+                                )
                                 .into_any_element()
                         }),
                 ),
         )
-        // Center Section: Segmented View Toggles & Selection Actions
+        // =====================================================================
+        // Right Section: View Toggles + Find + Overflow Menu + Window Controls
+        // =====================================================================
         .child(
             div()
+                .id("header-right-section")
+                .flex_shrink_0()
                 .flex()
                 .items_center()
                 .gap_2()
-                // Segmented Control: All vs Filtered Only
+                .h_full()
+                // Segmented Control: All Lines vs Filtered Only (Ctrl+H)
                 .child(
                     div()
+                        .id("seg-view-toggle")
                         .flex()
                         .items_center()
                         .p(px(2.0))
@@ -283,7 +460,7 @@ pub fn render_toolbar(
                             div()
                                 .id("seg-all-lines")
                                 .px(px(8.0))
-                                .py(px(3.0))
+                                .py(px(2.5))
                                 .rounded_sm()
                                 .bg(if !workspace.show_only_filtered {
                                     theme.accent
@@ -317,7 +494,7 @@ pub fn render_toolbar(
                             div()
                                 .id("seg-filtered-only")
                                 .px(px(8.0))
-                                .py(px(3.0))
+                                .py(px(2.5))
                                 .rounded_sm()
                                 .bg(if workspace.show_only_filtered {
                                     theme.accent
@@ -340,186 +517,20 @@ pub fn render_toolbar(
                                 .text_size(px(11.0))
                                 .font_weight(FontWeight::MEDIUM)
                                 .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .gap_1p5()
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     if !this.show_only_filtered {
                                         this.toggle_filtered_only(cx);
                                     }
                                 }))
-                                .child("Filtered Only")
-                                .child(render_kbd_badge("Ctrl+H", theme)),
+                                .child("Filtered Only"),
                         ),
                 )
-                // View Options Pill Group: Full Width & Auto-Scroll
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .p(px(2.0))
-                        .rounded_md()
-                        .bg(theme.bg_panel)
-                        .border_1()
-                        .border_color(theme.border_subtle)
-                        .child(
-                            div()
-                                .id("btn-toolbar-full-line")
-                                .px(px(8.0))
-                                .py(px(3.0))
-                                .rounded_sm()
-                                .bg(if workspace.full_line_display {
-                                    theme.accent_muted
-                                } else {
-                                    rgba(0x00000000)
-                                })
-                                .hover(move |s| s.bg(theme.btn_hover))
-                                .tooltip(render_tooltip("Toggle horizontal scrolling vs clipping", Some("Alt+Z"), theme))
-                                .text_color(if workspace.full_line_display {
-                                    theme.accent
-                                } else {
-                                    theme.text_muted
-                                })
-                                .text_size(px(11.0))
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.toggle_full_line_display(cx);
-                                }))
-                                .child(if workspace.full_line_display {
-                                    "↔ H-Scroll"
-                                } else {
-                                    "⇥ Clip"
-                                }),
-                        )
-                        .child(
-                            div()
-                                .id("btn-toolbar-auto-scroll")
-                                .px(px(8.0))
-                                .py(px(3.0))
-                                .rounded_sm()
-                                .bg(if workspace.auto_scroll {
-                                    theme.accent_muted
-                                } else {
-                                    rgba(0x00000000)
-                                })
-                                .hover(move |s| s.bg(theme.btn_hover))
-                                .tooltip(render_tooltip("Lock view to tail (auto-scroll)", Some("End"), theme))
-                                .text_color(if workspace.auto_scroll {
-                                    theme.accent
-                                } else {
-                                    theme.text_muted
-                                })
-                                .text_size(px(11.0))
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.toggle_auto_scroll(cx);
-                                }))
-                                .child("⬇ Tail"),
-                        )
-                        // Filter Dock Position Toggle (Left vs Bottom)
-                        .child(
-                            div()
-                                .id("btn-toolbar-filter-dock")
-                                .px(px(8.0))
-                                .py(px(3.0))
-                                .rounded_sm()
-                                .bg(
-                                    if workspace.filter_panel_position
-                                        == FilterPanelPosition::Bottom
-                                    {
-                                        theme.accent_muted
-                                    } else {
-                                        rgba(0x00000000)
-                                    },
-                                )
-                                .hover(move |s| s.bg(theme.btn_hover))
-                                .tooltip(render_tooltip("Toggle filter dock between Left and Bottom", Some("Ctrl+Shift+L"), theme))
-                                .text_color(
-                                    if workspace.filter_panel_position
-                                        == FilterPanelPosition::Bottom
-                                    {
-                                        theme.accent
-                                    } else {
-                                        theme.text_muted
-                                    },
-                                )
-                                .text_size(px(11.0))
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.toggle_filter_panel_position(cx);
-                                }))
-                                .child(
-                                    if workspace.filter_panel_position
-                                        == FilterPanelPosition::Bottom
-                                    {
-                                        "⬒ Bottom"
-                                    } else {
-                                        "◨ Left"
-                                    },
-                                ),
-                        ),
-                )
-                // Selection Quick Actions
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .p(px(2.0))
-                        .rounded_md()
-                        .bg(theme.bg_panel)
-                        .border_1()
-                        .border_color(theme.border_subtle)
-                        .child(
-                            div()
-                                .id("btn-toolbar-copy-line")
-                                .px(px(8.0))
-                                .py(px(3.0))
-                                .rounded_sm()
-                                .hover(move |s| s.bg(theme.btn_hover))
-                                .tooltip(render_tooltip("Copy selected log line to clipboard", Some("Ctrl+C"), theme))
-                                .text_size(px(11.0))
-                                .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .gap_1p5()
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.copy_selection(cx);
-                                }))
-                                .child("Copy")
-                                .child(render_kbd_badge("Ctrl+C", theme)),
-                        )
-                        .child(
-                            div()
-                                .id("btn-toolbar-quick-filter")
-                                .px(px(8.0))
-                                .py(px(3.0))
-                                .rounded_sm()
-                                .hover(move |s| s.bg(theme.btn_hover))
-                                .tooltip(render_tooltip("Create instant filter rule from current selection", None, theme))
-                                .text_size(px(11.0))
-                                .text_color(theme.accent)
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.add_quick_filter_from_selection(false, cx);
-                                }))
-                                .child("+ Filter Sel"),
-                        ),
-                ),
-        )
-        // Right Section: Search, Theme Toggle, and ADB Live Stream Pill
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                // Find Toggle Button
+                // Find Toggle Button (btn-toolbar-find, Ctrl+F)
                 .child(
                     div()
                         .id("btn-toolbar-find")
-                        .px(px(10.0))
-                        .py(px(4.0))
+                        .px(px(8.0))
+                        .py(px(3.0))
                         .rounded_md()
                         .border_1()
                         .border_color(if workspace.is_search_visible {
@@ -547,192 +558,275 @@ pub fn render_toolbar(
                         })
                         .text_size(px(11.0))
                         .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
                         .on_click(cx.listener(|this, _, _window, cx| {
                             this.toggle_search_bar(cx);
                         }))
-                        .child("🔍 Find")
-                        .child(render_kbd_badge("Ctrl+F", theme)),
+                        .child("🔍 Find"),
                 )
-                // Theme Switcher
-                .child(
-                    div()
-                        .id("btn-toolbar-theme-toggle")
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .rounded_md()
-                        .bg(theme.bg_panel)
-                        .border_1()
-                        .border_color(theme.border_subtle)
-                        .hover(move |s| s.bg(theme.btn_hover))
-                        .tooltip(render_tooltip("Toggle Dark / Light theme", Some("Ctrl+U"), theme))
-                        .text_size(px(11.0))
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            this.toggle_theme(cx);
-                        }))
-                        .child(if workspace.is_dark_theme {
-                            "☀ Light"
-                        } else {
-                            "🌙 Dark"
-                        }),
-                )
-                // Pause Stream Button (when streaming)
-                .children(if workspace.is_streaming {
-                    Some(
-                        div()
-                            .id("btn-toolbar-pause-adb")
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .rounded_md()
-                            .bg(if workspace.is_stream_paused {
-                                theme.warning_amber
-                            } else {
-                                theme.bg_panel
-                            })
-                            .text_color(if workspace.is_stream_paused {
-                                rgb(0x000000)
-                            } else {
-                                theme.text_primary
-                            })
-                            .border_1()
-                            .border_color(theme.border_subtle)
-                            .tooltip(render_tooltip(
-                                if workspace.is_stream_paused { "Resume streaming logcat" } else { "Pause streaming logcat" },
-                                Some("Ctrl+Space"),
-                                theme,
-                            ))
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.toggle_pause_stream(cx);
-                            }))
-                            .child(if workspace.is_stream_paused {
-                                "▶ Resume"
-                            } else {
-                                "⏸ Pause"
-                            }),
-                    )
-                } else {
-                    None
-                })
-                // ADB Device Selector with Floating Dropdown Menu
+                // Overflow Menu Button (btn-toolbar-overflow-menu, ⋯)
                 .child(
                     div()
                         .relative()
                         .child(
                             div()
-                                .id("btn-toolbar-adb-devices")
+                                .id("btn-toolbar-overflow-menu")
                                 .px(px(8.0))
-                                .py(px(4.0))
+                                .py(px(3.0))
                                 .rounded_md()
-                                .bg(if workspace.is_device_selector_open {
+                                .bg(if workspace.is_overflow_menu_open {
                                     theme.btn_hover
                                 } else {
                                     theme.bg_panel
                                 })
                                 .border_1()
-                                .border_color(if workspace.is_device_selector_open {
+                                .border_color(if workspace.is_overflow_menu_open {
                                     theme.accent
                                 } else {
                                     theme.border_subtle
                                 })
                                 .hover(move |s| s.bg(theme.btn_hover))
-                                .tooltip(render_tooltip("Select connected Android device or emulator", None, theme))
-                                .text_size(px(11.0))
+                                .tooltip(render_tooltip("More options and actions", None, theme))
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(if workspace.is_overflow_menu_open {
+                                    theme.accent
+                                } else {
+                                    theme.text_primary
+                                })
                                 .cursor_pointer()
                                 .flex()
                                 .items_center()
-                                .gap_1p5()
+                                .justify_center()
                                 .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.toggle_device_selector(cx);
+                                    this.toggle_overflow_menu(cx);
                                 }))
-                                .child(
-                                    div()
-                                        .w(px(6.5))
-                                        .h(px(6.5))
-                                        .rounded_full()
-                                        .bg(
-                                            if let Some(info) = workspace.get_selected_device_info() {
-                                                if info.is_ready() {
-                                                    theme.success_green
-                                                } else {
-                                                    theme.warning_amber
-                                                }
-                                            } else if !workspace.adb_devices.is_empty() {
-                                                theme.success_green
-                                            } else {
-                                                theme.text_muted
-                                            },
-                                        ),
-                                )
-                                .child(
-                                    div().child(
-                                        if workspace.is_scanning_adb {
-                                            "📱 Scanning...".to_string()
-                                        } else if let Some(info) = workspace.get_selected_device_info() {
-                                            format!("📱 {} ▾", info.short_name())
-                                        } else if let Some(dev) = &workspace.selected_device {
-                                            format!("📱 {} ▾", dev)
-                                        } else if !workspace.adb_devices.is_empty() {
-                                            format!("📱 ({} found) ▾", workspace.adb_devices.len())
-                                        } else {
-                                            "📱 No Device ▾".to_string()
-                                        },
-                                    ),
-                                ),
+                                .child("⋯"),
                         )
-                        .children(if workspace.is_device_selector_open {
-                            Some(render_device_dropdown(workspace, cx))
-                        } else {
-                            None
-                        }),
+                        .children(render_overflow_menu(workspace, cx)),
                 )
-                // Start / Stop ADB Stream Pill
-                .child(
-                    div()
-                        .id("btn-toolbar-adb")
-                        .px(px(10.0))
-                        .py(px(4.0))
-                        .rounded_md()
-                        .bg(if workspace.is_streaming {
-                            theme.error_red
-                        } else {
-                            theme.success_green
-                        })
-                        .hover(move |s| {
-                            if workspace.is_streaming {
-                                s.bg(rgb(0xdc2626))
-                            } else {
-                                s.bg(rgb(0x16a34a))
-                            }
-                        })
-                        .tooltip(render_tooltip(
-                            if workspace.is_streaming { "Stop live ADB logcat stream" } else { "Start live ADB logcat stream" },
-                            Some("Ctrl+R"),
-                            theme,
-                        ))
-                        .text_color(rgb(0xffffff))
-                        .text_size(px(11.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            if this.is_streaming {
-                                this.stop_adb_stream(cx);
-                            } else {
-                                this.start_adb_stream(cx);
-                            }
-                        }))
-                        .child(if workspace.is_streaming {
-                            "⏹ Stop ADB"
-                        } else {
-                            "⚡ Live ADB"
-                        }),
-                ),
+                // CSD Window Controls (Min, Max, Close) when should_render_csd is true
+                .children(crate::components::titlebar::render_window_controls(window, theme, cx)),
         )
+}
+
+/// Backwards compatibility wrapper for render_toolbar
+#[allow(dead_code)]
+pub fn render_toolbar(
+    workspace: &LogAnalysisWorkspace,
+    _cx: &mut Context<LogAnalysisWorkspace>,
+) -> impl IntoElement {
+    let theme = workspace.theme;
+    div()
+        .id("toolbar-deprecated")
+        .h(px(0.0))
+        .w_full()
+        .bg(theme.bg_header)
+}
+
+/// Renders the floating Overflow Menu popover for consolidated secondary toolbar actions.
+pub fn render_overflow_menu(
+    workspace: &LogAnalysisWorkspace,
+    cx: &mut Context<LogAnalysisWorkspace>,
+) -> Option<impl IntoElement> {
+    if !workspace.is_overflow_menu_open {
+        return None;
+    }
+    let theme = workspace.theme;
+
+    Some(
+        div()
+            .id("popover-toolbar-overflow-menu")
+            .occlude()
+            .absolute()
+            .top(px(32.0))
+            .right(px(0.0))
+            .w(px(220.0))
+            .bg(theme.bg_panel)
+            .border_1()
+            .border_color(theme.border)
+            .rounded_lg()
+            .shadow_xl()
+            .p(px(4.0))
+            .flex()
+            .flex_col()
+            .gap_1()
+            // Item 1: Load Profile... (Ctrl+Shift+O)
+            .child(
+                div()
+                    .id("menu-item-load-profile")
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .rounded_md()
+                    .hover(move |s| s.bg(theme.btn_hover))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.close_overflow_menu(cx);
+                        this.prompt_load_filters(Some(window), cx);
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .child("Load Profile..."),
+                    )
+                    .child(render_kbd_badge("Ctrl+Shift+O", theme)),
+            )
+            // Item 2: Save Profile... (Ctrl+S)
+            .child(
+                div()
+                    .id("menu-item-save-profile")
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .rounded_md()
+                    .hover(move |s| s.bg(theme.btn_hover))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.close_overflow_menu(cx);
+                        this.prompt_save_filters(Some(window), cx);
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .child("Save Profile..."),
+                    )
+                    .child(render_kbd_badge("Ctrl+S", theme)),
+            )
+            // Item 3: Clear Logs (Ctrl+K)
+            .child(
+                div()
+                    .id("menu-item-clear-logs")
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .rounded_md()
+                    .hover(move |s| s.bg(theme.btn_hover))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.close_overflow_menu(cx);
+                        this.clear_logs(cx);
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .child("Clear Logs"),
+                    )
+                    .child(render_kbd_badge("Ctrl+K", theme)),
+            )
+            // Divider
+            .child(
+                div()
+                    .h(px(1.0))
+                    .w_full()
+                    .bg(theme.border_subtle)
+                    .my(px(2.0)),
+            )
+            // Item 4: Dock Position: Bottom / Left (Ctrl+Shift+L)
+            .child(
+                div()
+                    .id("menu-item-toggle-dock")
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .rounded_md()
+                    .hover(move |s| s.bg(theme.btn_hover))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.close_overflow_menu(cx);
+                        this.toggle_filter_panel_position(cx);
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .child(
+                                if workspace.filter_panel_position == FilterPanelPosition::Bottom {
+                                    "Dock: Bottom"
+                                } else {
+                                    "Dock: Left"
+                                },
+                            ),
+                    )
+                    .child(render_kbd_badge("Ctrl+Shift+L", theme)),
+            )
+            // Item 5: Toggle Horizontal Scroll (Alt+Z)
+            .child(
+                div()
+                    .id("menu-item-toggle-hscroll")
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .rounded_md()
+                    .hover(move |s| s.bg(theme.btn_hover))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.close_overflow_menu(cx);
+                        this.toggle_full_line_display(cx);
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .child(
+                                if workspace.full_line_display {
+                                    "H-Scroll: On"
+                                } else {
+                                    "H-Scroll: Off"
+                                },
+                            ),
+                    )
+                    .child(render_kbd_badge("Alt+Z", theme)),
+            )
+            // Item 6: Toggle Theme (Ctrl+U)
+            .child(
+                div()
+                    .id("menu-item-toggle-theme")
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .rounded_md()
+                    .hover(move |s| s.bg(theme.btn_hover))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.close_overflow_menu(cx);
+                        this.toggle_theme(cx);
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .child(
+                                if workspace.is_dark_theme {
+                                    "Theme: Light"
+                                } else {
+                                    "Theme: Dark"
+                                },
+                            ),
+                    )
+                    .child(render_kbd_badge("Ctrl+U", theme)),
+            ),
+    )
 }
 
 /// Renders the floating ADB device selector popover menu

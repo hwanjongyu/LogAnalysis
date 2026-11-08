@@ -34,3 +34,7 @@ perf.data.old
 # Release distribution builds
 dist/
 
+# AI Agent runtime artifacts & scratchpads
+.agents/
+PROJECT.md
+

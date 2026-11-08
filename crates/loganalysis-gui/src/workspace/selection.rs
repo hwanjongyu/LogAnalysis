@@ -143,4 +143,12 @@ impl LogAnalysisWorkspace {
 
         None
     }
+
+    /// Clears the active log row selection and refreshes status line
+    pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        self.selection.clear();
+        self.secondary_selection.clear();
+        self.refresh_status_line(cx);
+        cx.notify();
+    }
 }

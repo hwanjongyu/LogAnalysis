@@ -47,5 +47,6 @@ actions!(
         OpenMergedLogs,
         ToggleFilterDock,
         ToggleFacetsBar,
+        ToggleZenMode,
     ]
 );

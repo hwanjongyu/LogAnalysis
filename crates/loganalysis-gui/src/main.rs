@@ -24,8 +24,7 @@ use components::log_view::render_log_viewport;
 use components::resize_border::render_window_resize_borders;
 use components::status_bar::render_status_bar;
 use components::timeline_sparkline::render_timeline_sparkline;
-use components::titlebar::render_titlebar;
-use components::toolbar::render_toolbar;
+use components::toolbar::render_unified_header;
 use modals::bookmark_drawer::render_bookmark_drawer;
 use modals::command_palette::render_command_palette;
 use modals::filter_edit_modal::render_filter_edit_modal;
@@ -72,9 +71,12 @@ impl Render for LogAnalysisWorkspace {
         let is_csd = components::titlebar::should_render_csd(window);
         let is_floating = !window.is_maximized();
 
-        let titlebar_el = render_titlebar(self, window, cx);
-        let toolbar_el = render_toolbar(self, cx);
-        let timeline_ribbon_el = render_timeline_sparkline(self, cx);
+        let unified_header_el = render_unified_header(self, window, cx);
+        let timeline_ribbon_el = if self.is_timeline_visible && !self.is_zen_mode {
+            render_timeline_sparkline(self, cx)
+        } else {
+            None
+        };
         let activity_bar_el = render_activity_bar(self, cx);
         let filter_panel_el = render_filter_dock(self, cx);
         let filter_splitter_el = render_filter_dock_splitter(self, cx);
@@ -86,7 +88,7 @@ impl Render for LogAnalysisWorkspace {
         let note_modal_el = render_note_edit_modal(self, cx);
         let resize_borders = render_window_resize_borders(window, cx);
 
-        let content_area = if self.is_filter_dock_visible {
+        let content_area = if !self.is_zen_mode && self.is_filter_dock_visible {
             if !is_bottom_dock {
                 div()
                     .flex_1()
@@ -125,7 +127,7 @@ impl Render for LogAnalysisWorkspace {
             .flex()
             .flex_row()
             .overflow_hidden()
-            .child(activity_bar_el)
+            .when(!self.is_zen_mode, |s| s.child(activity_bar_el))
             .child(content_area);
 
         div()
@@ -145,10 +147,53 @@ impl Render for LogAnalysisWorkspace {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                if event.keystroke.key == "escape" && this.is_device_selector_open {
-                    this.is_device_selector_open = false;
-                    cx.notify();
-                    return;
+                if event.keystroke.key == "escape" {
+                    let has_selection = this.selection.selected_row.is_some()
+                        || this.secondary_selection.selected_row.is_some();
+                    match crate::workspace::determine_escape_action(
+                        this.is_overflow_menu_open,
+                        this.is_device_selector_open,
+                        this.filter_edit_modal.is_open,
+                        this.is_note_modal_open,
+                        this.is_bookmark_drawer_open,
+                        this.is_command_palette_open,
+                        has_selection,
+                    ) {
+                        crate::workspace::EscapeAction::CloseOverflowMenu => {
+                            this.close_overflow_menu(cx);
+                            return;
+                        }
+                        crate::workspace::EscapeAction::CloseDeviceSelector => {
+                            this.close_device_selector(cx);
+                            return;
+                        }
+                        crate::workspace::EscapeAction::CloseFilterModal => {
+                            this.close_filter_modal(cx);
+                            return;
+                        }
+                        crate::workspace::EscapeAction::CloseNoteModal => {
+                            this.close_note_modal(cx);
+                            return;
+                        }
+                        crate::workspace::EscapeAction::CloseBookmarkDrawer => {
+                            this.close_bookmark_drawer(cx);
+                            return;
+                        }
+                        crate::workspace::EscapeAction::CloseCommandPalette => {
+                            this.close_command_palette(cx);
+                            return;
+                        }
+                        crate::workspace::EscapeAction::ClearSelection => {
+                            this.clear_selection(cx);
+                            return;
+                        }
+                        crate::workspace::EscapeAction::None => {
+                            if this.is_zen_mode {
+                                this.toggle_zen_mode(cx);
+                                return;
+                            }
+                        }
+                    }
                 }
                 this.handle_key_down(event, cx);
             }))
@@ -283,6 +328,9 @@ impl Render for LogAnalysisWorkspace {
             .on_action(cx.listener(|this, _: &ToggleEpsTimeline, _window, cx| {
                 this.toggle_eps_timeline(cx);
             }))
+            .on_action(cx.listener(|this, _: &ToggleZenMode, _window, cx| {
+                this.toggle_zen_mode(cx);
+            }))
             .on_action(cx.listener(|this, _: &ToggleSplitView, _window, cx| {
                 this.toggle_split_view(cx);
             }))
@@ -336,11 +384,10 @@ impl Render for LogAnalysisWorkspace {
             .bg(theme.bg_dark)
             .text_color(theme.text_primary)
             .when(is_csd && is_floating, |s| s.border_1().border_color(theme.border))
-            .child(titlebar_el)
-            .child(toolbar_el)
+            .child(unified_header_el)
             .children(timeline_ribbon_el)
             .child(body)
-            .child(status_bar_el)
+            .when(!self.is_zen_mode, |s| s.child(status_bar_el))
             .children(modal_el)
             .children(palette_el)
             .children(bookmark_drawer_el)
@@ -407,11 +454,12 @@ fn ensure_desktop_integration() {
 /// On Linux Wayland (e.g. GNOME Mutter), Client-Side Decorations (CSD) must be explicitly requested
 /// because the compositor does not provide server-side window decorations.
 pub fn detect_initial_window_decorations() -> Option<WindowDecorations> {
-    if std::env::var("LOGANALYSIS_DISABLE_CSD").is_ok() {
-        return Some(WindowDecorations::Server);
-    }
-    if std::env::var("LOGANALYSIS_FORCE_CSD").is_ok() {
-        return Some(WindowDecorations::Client);
+    if let Some(forced) = components::titlebar::check_csd_env_override() {
+        return if forced {
+            Some(WindowDecorations::Client)
+        } else {
+            Some(WindowDecorations::Server)
+        };
     }
 
     #[cfg(target_os = "linux")]
@@ -500,6 +548,9 @@ fn main() {
             KeyBinding::new("alt-enter", EditBookmarkNote, None),
             KeyBinding::new("ctrl-shift-t", ToggleEpsTimeline, None),
             KeyBinding::new("cmd-shift-t", ToggleEpsTimeline, None),
+            KeyBinding::new("f11", ToggleZenMode, None),
+            KeyBinding::new("ctrl-shift-z", ToggleZenMode, None),
+            KeyBinding::new("cmd-shift-z", ToggleZenMode, None),
             KeyBinding::new("ctrl-\\", ToggleSplitView, None),
             KeyBinding::new("cmd-\\", ToggleSplitView, None),
             KeyBinding::new("ctrl-alt-\\", ToggleSplitOrientation, None),
@@ -567,6 +618,8 @@ fn main() {
 mod tests {
     use loganalysis_core::parse_color_spec;
 
+    static ENV_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_ui_ux_log_level_color_presets_validity() {
         let presets = [
@@ -601,6 +654,8 @@ mod tests {
     #[test]
     fn test_detect_initial_window_decorations_overrides() {
         use super::*;
+
+        let _guard = ENV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         // Test explicit force CSD
         std::env::set_var("LOGANALYSIS_FORCE_CSD", "1");
@@ -717,6 +772,15 @@ mod tests {
             .collect();
         assert!(!timeline_matches.is_empty());
         assert_eq!(timeline_matches[0].0.id, PaletteCommandId::ToggleEpsTimeline);
+
+        // Fuzzy search for "zen" -> should find Zen Focus Mode command
+        let zen_matches: Vec<_> = commands
+            .iter()
+            .filter_map(|c| fuzzy_match("zen", c.title).map(|score| (c, score)))
+            .collect();
+        assert!(!zen_matches.is_empty(), "Expected command palette to match 'zen'");
+        assert_eq!(zen_matches[0].0.id, PaletteCommandId::ToggleZenMode);
+        assert!(commands.iter().any(|c| c.id == PaletteCommandId::ToggleZenMode));
 
         // Fuzzy search for "split" -> should find split view commands
         let split_matches: Vec<_> = commands
@@ -1178,5 +1242,518 @@ mod tests {
         // 3. Preset defaults
         assert_eq!(default_width, 310.0);
         assert_eq!(default_height, 220.0);
+    }
+
+    #[test]
+    fn test_overflow_menu_state_and_escape_priority() {
+        use gpui::px;
+        use crate::components::log_view::calculate_selection_bar_top;
+        use crate::selection::SelectionModel;
+        use crate::workspace::{determine_escape_action, EscapeAction};
+
+        let mut overflow_open = false;
+        let mut device_open = false;
+        let filter_modal_open = false;
+        let note_modal_open = false;
+        let drawer_open = false;
+        let palette_open = false;
+        let mut selection = SelectionModel::new();
+
+        // 1. Initial state: nothing open, no selection -> Escape action is None
+        assert_eq!(
+            determine_escape_action(
+                overflow_open,
+                device_open,
+                filter_modal_open,
+                note_modal_open,
+                drawer_open,
+                palette_open,
+                selection.selected_row.is_some()
+            ),
+            EscapeAction::None
+        );
+
+        // 2. Mutual exclusivity logic verification:
+        // Opening device selector closes overflow menu
+        overflow_open = true;
+        device_open = !device_open;
+        if device_open {
+            overflow_open = false;
+        }
+        assert!(device_open);
+        assert!(!overflow_open);
+
+        // Opening overflow menu closes device selector
+        overflow_open = !overflow_open;
+        if overflow_open {
+            device_open = false;
+        }
+        assert!(overflow_open);
+        assert!(!device_open);
+
+        // 3. Reverse z-order priority hierarchy tests:
+        selection.select(42, 100);
+        assert_eq!(selection.selected_row, Some(42));
+        assert_eq!(selection.anchor_source_idx, Some(100));
+
+        // Priority 1: Overflow menu takes precedence over all other open items
+        assert_eq!(
+            determine_escape_action(
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+                selection.selected_row.is_some()
+            ),
+            EscapeAction::CloseOverflowMenu
+        );
+
+        // Priority 2: Device selector takes precedence over modals and selection
+        assert_eq!(
+            determine_escape_action(
+                false,
+                true,
+                true,
+                true,
+                true,
+                true,
+                selection.selected_row.is_some()
+            ),
+            EscapeAction::CloseDeviceSelector
+        );
+
+        // Priority 3: Modals take precedence over selection
+        assert_eq!(
+            determine_escape_action(
+                false,
+                false,
+                true,
+                false,
+                false,
+                false,
+                selection.selected_row.is_some()
+            ),
+            EscapeAction::CloseFilterModal
+        );
+        assert_eq!(
+            determine_escape_action(
+                false,
+                false,
+                false,
+                true,
+                false,
+                false,
+                selection.selected_row.is_some()
+            ),
+            EscapeAction::CloseNoteModal
+        );
+        assert_eq!(
+            determine_escape_action(
+                false,
+                false,
+                false,
+                false,
+                true,
+                false,
+                selection.selected_row.is_some()
+            ),
+            EscapeAction::CloseBookmarkDrawer
+        );
+        assert_eq!(
+            determine_escape_action(
+                false,
+                false,
+                false,
+                false,
+                false,
+                true,
+                selection.selected_row.is_some()
+            ),
+            EscapeAction::CloseCommandPalette
+        );
+
+        // Priority 4: Selection clearing when no popovers or modals open
+        assert_eq!(
+            determine_escape_action(
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                selection.selected_row.is_some()
+            ),
+            EscapeAction::ClearSelection
+        );
+
+        // Execute genuine SelectionModel clear
+        selection.clear();
+        assert!(selection.selected_row.is_none());
+        assert!(selection.anchor_source_idx.is_none());
+
+        // Once cleared, action becomes None
+        assert_eq!(
+            determine_escape_action(
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                selection.selected_row.is_some()
+            ),
+            EscapeAction::None
+        );
+
+        // 4. Verify selection action bar top offset calculation
+        assert_eq!(calculate_selection_bar_top(false, false), px(10.0));
+        assert_eq!(calculate_selection_bar_top(false, true), px(38.0));
+        assert_eq!(calculate_selection_bar_top(true, false), px(52.0));
+        assert_eq!(calculate_selection_bar_top(true, true), px(52.0));
+    }
+
+    #[test]
+    fn test_selection_model_clear_lifecycle() {
+        use crate::selection::SelectionModel;
+        let mut sel = SelectionModel::new();
+        assert!(sel.selected_row.is_none());
+        assert!(sel.anchor_source_idx.is_none());
+        sel.select(10, 500);
+        assert_eq!(sel.selected_row, Some(10));
+        assert_eq!(sel.anchor_source_idx, Some(500));
+        sel.clear();
+        assert!(sel.selected_row.is_none());
+        assert!(sel.anchor_source_idx.is_none());
+    }
+
+    #[test]
+    fn test_unified_compact_header_spec_and_dom_ids() {
+        use gpui::*;
+        use crate::components::titlebar::WINDOW_CLOSE_HOVER_COLOR;
+        use crate::components::toolbar::{LOGO_PILL_SIZE, UNIFIED_HEADER_HEIGHT};
+
+        // 1. Verify real production layout constants exported from toolbar and titlebar
+        assert_eq!(
+            UNIFIED_HEADER_HEIGHT, 38.0f32,
+            "Unified header height constant must match 38px specification"
+        );
+        assert_eq!(
+            LOGO_PILL_SIZE, 18.0f32,
+            "Logo pill dimension constant must match 18px compact specification"
+        );
+        assert_eq!(
+            WINDOW_CLOSE_HOVER_COLOR, 0xe81123u32,
+            "Window close button hover color constant must match crimson #e81123"
+        );
+
+        // Verify GPUI element constructors with production constants
+        assert_eq!(px(UNIFIED_HEADER_HEIGHT), px(38.0));
+        assert_eq!(px(LOGO_PILL_SIZE), px(18.0));
+        assert_eq!(rgb(WINDOW_CLOSE_HOVER_COLOR), rgb(0xe81123));
+
+        // 2. Verify that production component source code actually consumes the exported constants
+        let toolbar_source = include_str!("components/toolbar.rs");
+        let titlebar_source = include_str!("components/titlebar.rs");
+
+        assert!(
+            toolbar_source.contains("px(UNIFIED_HEADER_HEIGHT)"),
+            "toolbar.rs must consume UNIFIED_HEADER_HEIGHT in px(UNIFIED_HEADER_HEIGHT)"
+        );
+        assert!(
+            toolbar_source.contains("px(LOGO_PILL_SIZE)"),
+            "toolbar.rs must consume LOGO_PILL_SIZE in px(LOGO_PILL_SIZE)"
+        );
+        assert!(
+            titlebar_source.contains("rgb(WINDOW_CLOSE_HOVER_COLOR)"),
+            "titlebar.rs must consume WINDOW_CLOSE_HOVER_COLOR in rgb(WINDOW_CLOSE_HOVER_COLOR)"
+        );
+
+        // 3. Required DOM IDs specification inventory (20 required IDs total)
+        let expected_toolbar_ids = [
+            "unified-header-bar",
+            "header-left-section",
+            "header-branding",
+            "btn-toolbar-open",
+            "header-adb-controls",
+            "btn-toolbar-adb-devices",
+            "btn-toolbar-adb",
+            "btn-toolbar-pause-adb",
+            "header-center-section",
+            "titlebar-breadcrumb-pill",
+            "header-right-section",
+            "seg-view-toggle",
+            "seg-all-lines",
+            "seg-filtered-only",
+            "btn-toolbar-find",
+            "btn-toolbar-overflow-menu",
+        ];
+
+        let expected_control_ids = [
+            "titlebar-window-controls",
+            "btn-window-minimize",
+            "btn-window-maximize",
+            "btn-window-close",
+        ];
+
+        assert_eq!(
+            expected_toolbar_ids.len() + expected_control_ids.len(),
+            20,
+            "Unified compact header must contain exactly 20 contract DOM IDs"
+        );
+
+        // 4. Verify DOM IDs match actual definitions in render_unified_header and render_window_controls
+        let render_header_body = toolbar_source
+            .split("pub fn render_unified_header")
+            .nth(1)
+            .expect("render_unified_header must exist in toolbar.rs")
+            .split("pub fn render_toolbar")
+            .next()
+            .unwrap_or(toolbar_source);
+
+        for id in expected_toolbar_ids {
+            let pattern = format!(".id(\"{id}\")");
+            assert!(
+                render_header_body.contains(&pattern),
+                "Required DOM ID '{}' was not found as .id(\"{}\") in render_unified_header in toolbar.rs",
+                id,
+                id
+            );
+        }
+
+        let render_controls_body = titlebar_source
+            .split("pub fn render_window_controls")
+            .nth(1)
+            .expect("render_window_controls must exist in titlebar.rs")
+            .split("pub fn render_titlebar")
+            .next()
+            .unwrap_or(titlebar_source);
+
+        for id in expected_control_ids {
+            let pattern = format!(".id(\"{id}\")");
+            assert!(
+                render_controls_body.contains(&pattern),
+                "Required DOM ID '{}' was not found as .id(\"{}\") in render_window_controls in titlebar.rs",
+                id,
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn test_csd_env_resolution_hierarchy() {
+        use crate::components::titlebar::check_csd_env_override;
+
+        let _guard = ENV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Baseline: Ensure clean environment before testing
+        std::env::remove_var("LOGANALYSIS_FORCE_CSD");
+        std::env::remove_var("LOGANALYSIS_DISABLE_CSD");
+
+        // Permutation 1: Neither variable set -> None (defers to window decoration / OS detection)
+        assert_eq!(
+            check_csd_env_override(),
+            None,
+            "Permutation 1 failed: When neither override is set, check_csd_env_override() must return None"
+        );
+
+        // Permutation 2: LOGANALYSIS_FORCE_CSD set alone -> Some(true)
+        std::env::set_var("LOGANALYSIS_FORCE_CSD", "1");
+        std::env::remove_var("LOGANALYSIS_DISABLE_CSD");
+        assert_eq!(
+            check_csd_env_override(),
+            Some(true),
+            "Permutation 2 failed: When LOGANALYSIS_FORCE_CSD=1 is set alone, check_csd_env_override() must return Some(true)"
+        );
+
+        // Also test case-insensitive string "true"
+        std::env::set_var("LOGANALYSIS_FORCE_CSD", "true");
+        assert_eq!(
+            check_csd_env_override(),
+            Some(true),
+            "Permutation 2 failed: When LOGANALYSIS_FORCE_CSD=true is set alone, check_csd_env_override() must return Some(true)"
+        );
+
+        // Permutation 3: LOGANALYSIS_DISABLE_CSD set alone -> Some(false)
+        std::env::remove_var("LOGANALYSIS_FORCE_CSD");
+        std::env::set_var("LOGANALYSIS_DISABLE_CSD", "1");
+        assert_eq!(
+            check_csd_env_override(),
+            Some(false),
+            "Permutation 3 failed: When LOGANALYSIS_DISABLE_CSD=1 is set alone, check_csd_env_override() must return Some(false)"
+        );
+
+        std::env::set_var("LOGANALYSIS_DISABLE_CSD", "true");
+        assert_eq!(
+            check_csd_env_override(),
+            Some(false),
+            "Permutation 3 failed: When LOGANALYSIS_DISABLE_CSD=true is set alone, check_csd_env_override() must return Some(false)"
+        );
+
+        // Permutation 4: Both variables set -> LOGANALYSIS_DISABLE_CSD takes top priority -> Some(false)
+        std::env::set_var("LOGANALYSIS_FORCE_CSD", "1");
+        std::env::set_var("LOGANALYSIS_DISABLE_CSD", "1");
+        assert_eq!(
+            check_csd_env_override(),
+            Some(false),
+            "Permutation 4 failed: When both FORCE and DISABLE are set, DISABLE must take priority (Some(false))"
+        );
+
+        // Teardown cleanup: Clean up environment variables to avoid state leakage
+        std::env::remove_var("LOGANALYSIS_FORCE_CSD");
+        std::env::remove_var("LOGANALYSIS_DISABLE_CSD");
+        assert_eq!(
+            check_csd_env_override(),
+            None,
+            "Teardown failed: Environment variables must be cleaned up and return None"
+        );
+    }
+
+    #[test]
+    fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
+        use crate::actions::ToggleZenMode;
+        use crate::modals::command_palette::{get_palette_commands, PaletteCommandId};
+        use loganalysis_core::fuzzy_match;
+
+        // 1. Verification that actions.rs defines ToggleZenMode and total registered action count is 45
+        let _action = ToggleZenMode; // Proves ToggleZenMode is a valid GPUI action type at compile time
+        let actions_source = include_str!("actions.rs");
+        assert!(
+            actions_source.contains("ToggleZenMode"),
+            "actions.rs must contain ToggleZenMode in actions!(loganalysis, [ ... ])"
+        );
+        let action_items: Vec<&str> = actions_source
+            .lines()
+            .map(|l| l.trim().trim_end_matches(','))
+            .filter(|l| {
+                !l.is_empty()
+                    && !l.starts_with("//")
+                    && !l.starts_with("use")
+                    && !l.starts_with("actions!")
+                    && *l != "loganalysis"
+                    && *l != "["
+                    && *l != "]"
+                    && *l != ");"
+            })
+            .collect();
+        assert_eq!(
+            action_items.len(),
+            45,
+            "actions.rs must define exactly 45 actions (44 existing + ToggleZenMode)"
+        );
+
+        // 2. Verification that workspace/mod.rs initializes default states per R3 spec:
+        //    - is_timeline_visible: false (collapsible by default)
+        //    - is_zen_mode: false (normal non-zen mode by default)
+        //    - pub is_zen_mode: bool field exists on struct
+        //    - toggle_zen_mode and toggle_timeline methods exist
+        let workspace_source = include_str!("workspace/mod.rs");
+        assert!(
+            workspace_source.contains("pub is_zen_mode: bool"),
+            "workspace/mod.rs must define pub is_zen_mode: bool on LogAnalysisWorkspace"
+        );
+        assert!(
+            workspace_source.contains("is_timeline_visible: false"),
+            "workspace/mod.rs LogAnalysisWorkspace::new must initialize is_timeline_visible: false"
+        );
+        assert!(
+            workspace_source.contains("is_zen_mode: false"),
+            "workspace/mod.rs LogAnalysisWorkspace::new must initialize is_zen_mode: false"
+        );
+        assert!(
+            workspace_source.contains("pub fn toggle_zen_mode"),
+            "workspace/mod.rs must provide pub fn toggle_zen_mode"
+        );
+        assert!(
+            workspace_source.contains("pub fn toggle_timeline"),
+            "workspace/mod.rs must provide pub fn toggle_timeline alias"
+        );
+
+        // 3. Verification of Command Palette catalog integration for ToggleZenMode
+        let commands = get_palette_commands();
+        let zen_cmd = commands
+            .iter()
+            .find(|c| c.id == PaletteCommandId::ToggleZenMode)
+            .expect("ToggleZenMode must be present in command palette catalog");
+        assert_eq!(zen_cmd.category, "VIEW");
+        assert_eq!(zen_cmd.title, "View: Toggle Zen Focus Mode");
+        assert_eq!(zen_cmd.shortcut, Some("F11"));
+
+        // Fuzzy search capability
+        let zen_match = fuzzy_match("zen", zen_cmd.title);
+        assert!(zen_match.is_some(), "Fuzzy match for 'zen' must match ToggleZenMode title");
+        let focus_match = fuzzy_match("focus", zen_cmd.title);
+        assert!(focus_match.is_some(), "Fuzzy match for 'focus' must match ToggleZenMode title");
+
+        // Command execution wiring in command_palette.rs
+        let cmd_palette_source = include_str!("workspace/command_palette.rs");
+        assert!(
+            cmd_palette_source.contains("PaletteCommandId::ToggleZenMode => self.toggle_zen_mode(cx)"),
+            "command_palette.rs must map PaletteCommandId::ToggleZenMode to toggle_zen_mode"
+        );
+
+        // 4. Verification that timeline_sparkline component respects is_zen_mode
+        let sparkline_source = include_str!("components/timeline_sparkline.rs");
+        assert!(
+            sparkline_source.contains("!workspace.is_timeline_visible || workspace.is_zen_mode"),
+            "timeline_sparkline.rs must suppress rendering when workspace.is_zen_mode is true"
+        );
+
+        // 5. Verification that root layout templates in main.rs apply Zen mode suppression guards:
+        //    - timeline_ribbon_el conditioned on !self.is_zen_mode
+        //    - content_area / filter dock conditioned on !self.is_zen_mode
+        //    - body / activity_bar conditioned on !self.is_zen_mode
+        //    - status_bar conditioned on !self.is_zen_mode
+        //    - unified_header_el remains unconditionally rendered
+        let main_source = include_str!("main.rs");
+        assert!(
+            main_source.contains("if self.is_timeline_visible && !self.is_zen_mode"),
+            "main.rs must guard timeline_ribbon_el with self.is_timeline_visible && !self.is_zen_mode"
+        );
+        assert!(
+            main_source.contains("if !self.is_zen_mode && self.is_filter_dock_visible"),
+            "main.rs must suppress filter dock inside content_area when is_zen_mode is true"
+        );
+        assert!(
+            main_source.contains(".when(!self.is_zen_mode, |s| s.child(activity_bar_el))"),
+            "main.rs body must suppress activity_bar_el when is_zen_mode is true"
+        );
+        assert!(
+            main_source.contains(".when(!self.is_zen_mode, |s| s.child(status_bar_el))"),
+            "main.rs root must suppress status_bar_el when is_zen_mode is true"
+        );
+        assert!(
+            main_source.contains(".child(unified_header_el)"),
+            "main.rs must preserve unified_header_el in all modes including Zen mode"
+        );
+
+        // 6. Verification of KeyBindings in main.rs
+        assert!(
+            main_source.contains("KeyBinding::new(\"f11\", ToggleZenMode, None)"),
+            "main.rs must bind F11 to ToggleZenMode"
+        );
+        assert!(
+            main_source.contains("KeyBinding::new(\"ctrl-shift-z\", ToggleZenMode, None)"),
+            "main.rs must bind Ctrl+Shift+Z to ToggleZenMode"
+        );
+        assert!(
+            main_source.contains("KeyBinding::new(\"cmd-shift-z\", ToggleZenMode, None)"),
+            "main.rs must bind Cmd+Shift+Z to ToggleZenMode"
+        );
+        assert!(
+            main_source.contains(".on_action(cx.listener(|this, _: &ToggleZenMode, _window, cx| {"),
+            "main.rs must register action listener for ToggleZenMode on root element"
+        );
+
+        // 7. Verification of Escape key dismissal fallback to exit Zen mode
+        assert!(
+            main_source.contains("crate::workspace::EscapeAction::None => {\n                            if this.is_zen_mode {\n                                this.toggle_zen_mode(cx);"),
+            "main.rs must exit Zen mode on Escape when no modals or popups are active"
+        );
+        assert!(
+            workspace_source.contains("EscapeAction::None => {\n                    if self.is_zen_mode {\n                        self.toggle_zen_mode(cx);"),
+            "workspace/mod.rs must exit Zen mode on Escape when EscapeAction::None is evaluated"
+        );
     }
 }

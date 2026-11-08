@@ -8,7 +8,7 @@ pub fn render_timeline_sparkline(
     workspace: &LogAnalysisWorkspace,
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> Option<impl IntoElement> {
-    if !workspace.is_timeline_visible {
+    if !workspace.is_timeline_visible || workspace.is_zen_mode {
         return None;
     }
 

@@ -139,6 +139,7 @@ impl LogAnalysisWorkspace {
             PaletteCommandId::OpenMergedLogs => {
                 self.prompt_open_merged_files(window.as_deref(), cx)
             }
+            PaletteCommandId::ToggleZenMode => self.toggle_zen_mode(cx),
         }
     }
 }

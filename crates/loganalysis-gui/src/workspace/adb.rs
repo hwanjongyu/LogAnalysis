@@ -29,7 +29,18 @@ impl LogAnalysisWorkspace {
     /// Toggles the floating device selector dropdown
     pub fn toggle_device_selector(&mut self, cx: &mut Context<Self>) {
         self.is_device_selector_open = !self.is_device_selector_open;
+        if self.is_device_selector_open {
+            self.is_overflow_menu_open = false;
+        }
         cx.notify();
+    }
+
+    /// Closes the floating device selector dropdown if open
+    pub fn close_device_selector(&mut self, cx: &mut Context<Self>) {
+        if self.is_device_selector_open {
+            self.is_device_selector_open = false;
+            cx.notify();
+        }
     }
 
     /// Scans for connected ADB devices asynchronously with rich metadata

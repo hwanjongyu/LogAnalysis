@@ -82,6 +82,8 @@ pub struct LogAnalysisWorkspace {
     pub(crate) filter_panel_position: FilterPanelPosition,
     pub(crate) is_dragging_scrollbar: bool,
     pub(crate) is_dragging_secondary_scrollbar: bool,
+    pub is_overflow_menu_open: bool,
+    pub is_zen_mode: bool,
 
     // Command Palette state
     pub(crate) is_command_palette_open: bool,
@@ -121,6 +123,52 @@ pub struct LogAnalysisWorkspace {
     pub(crate) is_resizing_filter_dock: bool,
     pub(crate) filter_dock_drag_start_pos: Option<Point<Pixels>>,
     pub(crate) filter_dock_drag_start_size: f32,
+}
+
+/// Priority action to execute when Escape key is pressed in the application,
+/// evaluated in strict reverse z-order:
+/// 1. Floating ephemeral menus (Overflow menu -> ADB device selector)
+/// 2. Modals and drawers (Filter modal -> Note modal -> Bookmark drawer -> Command palette)
+/// 3. Active log row selection (Primary / Secondary)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EscapeAction {
+    CloseOverflowMenu,
+    CloseDeviceSelector,
+    CloseFilterModal,
+    CloseNoteModal,
+    CloseBookmarkDrawer,
+    CloseCommandPalette,
+    ClearSelection,
+    None,
+}
+
+/// Evaluates reverse z-order Escape dismissal priority across application UI elements
+pub fn determine_escape_action(
+    is_overflow_menu_open: bool,
+    is_device_selector_open: bool,
+    is_filter_modal_open: bool,
+    is_note_modal_open: bool,
+    is_bookmark_drawer_open: bool,
+    is_command_palette_open: bool,
+    has_selection: bool,
+) -> EscapeAction {
+    if is_overflow_menu_open {
+        EscapeAction::CloseOverflowMenu
+    } else if is_device_selector_open {
+        EscapeAction::CloseDeviceSelector
+    } else if is_filter_modal_open {
+        EscapeAction::CloseFilterModal
+    } else if is_note_modal_open {
+        EscapeAction::CloseNoteModal
+    } else if is_bookmark_drawer_open {
+        EscapeAction::CloseBookmarkDrawer
+    } else if is_command_palette_open {
+        EscapeAction::CloseCommandPalette
+    } else if has_selection {
+        EscapeAction::ClearSelection
+    } else {
+        EscapeAction::None
+    }
 }
 
 impl LogAnalysisWorkspace {
@@ -255,7 +303,7 @@ impl LogAnalysisWorkspace {
             filter_result: None,
             heatmap_data: None,
             timeline_data: None,
-            is_timeline_visible: true,
+            is_timeline_visible: false,
             analytics_seq: 0,
             scroll_handle: UniformListScrollHandle::new(),
             selection: SelectionModel::new(),
@@ -301,6 +349,8 @@ impl LogAnalysisWorkspace {
             filter_panel_position: FilterPanelPosition::Bottom,
             is_dragging_scrollbar: false,
             is_dragging_secondary_scrollbar: false,
+            is_overflow_menu_open: false,
+            is_zen_mode: false,
             is_command_palette_open: false,
             palette_input,
             palette_selected_index: 0,
@@ -541,38 +591,75 @@ impl LogAnalysisWorkspace {
         self.show_only_filtered = !self.show_only_filtered;
         self.reapply_filters(cx);
     }
-    /// Imports filter profile JSON supporting all 3 legacy Python formats
+    /// Handles keyboard events across application components
     pub fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
 
-        // If the filter modal is open, handle Escape and Enter fallback when focus is on non-input elements
-        if self.filter_edit_modal.is_open {
-            if key == "escape" {
-                self.close_filter_modal(cx);
-                return;
-            } else if key == "enter" {
-                self.save_modal_filter(cx);
-                return;
+        // Handle Escape key dismissal using reverse z-order priority
+        if key == "escape" {
+            let has_selection = self.selection.selected_row.is_some()
+                || self.secondary_selection.selected_row.is_some();
+            match determine_escape_action(
+                self.is_overflow_menu_open,
+                self.is_device_selector_open,
+                self.filter_edit_modal.is_open,
+                self.is_note_modal_open,
+                self.is_bookmark_drawer_open,
+                self.is_command_palette_open,
+                has_selection,
+            ) {
+                EscapeAction::CloseOverflowMenu => {
+                    self.close_overflow_menu(cx);
+                    return;
+                }
+                EscapeAction::CloseDeviceSelector => {
+                    self.close_device_selector(cx);
+                    return;
+                }
+                EscapeAction::CloseFilterModal => {
+                    self.close_filter_modal(cx);
+                    return;
+                }
+                EscapeAction::CloseNoteModal => {
+                    self.close_note_modal(cx);
+                    return;
+                }
+                EscapeAction::CloseBookmarkDrawer => {
+                    self.close_bookmark_drawer(cx);
+                    return;
+                }
+                EscapeAction::CloseCommandPalette => {
+                    self.close_command_palette(cx);
+                    return;
+                }
+                EscapeAction::ClearSelection => {
+                    self.clear_selection(cx);
+                    return;
+                }
+                EscapeAction::None => {
+                    if self.is_zen_mode {
+                        self.toggle_zen_mode(cx);
+                        return;
+                    }
+                }
             }
         }
 
-        // If the note modal is open, handle Escape and Enter
-        if self.is_note_modal_open {
-            if key == "escape" {
-                self.close_note_modal(cx);
-                return;
-            } else if key == "enter" {
-                self.save_bookmark_note(cx);
-                return;
-            }
+        // If the filter modal is open, handle Enter fallback when focus is on non-input elements
+        if self.filter_edit_modal.is_open && key == "enter" {
+            self.save_modal_filter(cx);
+            return;
+        }
+
+        // If the note modal is open, handle Enter
+        if self.is_note_modal_open && key == "enter" {
+            self.save_bookmark_note(cx);
+            return;
         }
 
         // If the bookmark drawer is open, handle navigation keys
         if self.is_bookmark_drawer_open {
-            if key == "escape" {
-                self.close_bookmark_drawer(cx);
-                return;
-            } else if key == "up" {
+            if key == "up" {
                 if self.bookmark_drawer_selected_index > 0 {
                     self.bookmark_drawer_selected_index -= 1;
                     cx.notify();
@@ -861,6 +948,23 @@ impl LogAnalysisWorkspace {
         cx.notify();
     }
 
+    /// Toggles the floating overflow menu
+    pub fn toggle_overflow_menu(&mut self, cx: &mut Context<Self>) {
+        self.is_overflow_menu_open = !self.is_overflow_menu_open;
+        if self.is_overflow_menu_open {
+            self.is_device_selector_open = false;
+        }
+        cx.notify();
+    }
+
+    /// Closes the floating overflow menu if open
+    pub fn close_overflow_menu(&mut self, cx: &mut Context<Self>) {
+        if self.is_overflow_menu_open {
+            self.is_overflow_menu_open = false;
+            cx.notify();
+        }
+    }
+
     /// Toggles filter dock visibility between shown and hidden
     /// Returns human-readable buffer memory footprint and storage mechanism
     pub fn get_buffer_memory_display(&self) -> (String, &'static str) {
@@ -932,6 +1036,22 @@ impl LogAnalysisWorkspace {
             "Throughput Timeline Ribbon: ON".into()
         } else {
             "Throughput Timeline Ribbon: OFF".into()
+        };
+        cx.notify();
+    }
+
+    /// Alias for toggle_eps_timeline (Ctrl+Shift+T)
+    pub fn toggle_timeline(&mut self, cx: &mut Context<Self>) {
+        self.toggle_eps_timeline(cx);
+    }
+
+    /// Toggles Zen Focus Mode (F11 / Ctrl+Shift+Z / Cmd+Shift+Z)
+    pub fn toggle_zen_mode(&mut self, cx: &mut Context<Self>) {
+        self.is_zen_mode = !self.is_zen_mode;
+        self.status_text = if self.is_zen_mode {
+            "Zen Focus Mode: ON (F11 to exit)".into()
+        } else {
+            "Zen Focus Mode: OFF".into()
         };
         cx.notify();
     }

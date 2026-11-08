@@ -43,6 +43,7 @@ pub enum PaletteCommandId {
     OpenSecondaryLog,
     ToggleColumnView,
     OpenMergedLogs,
+    ToggleZenMode,
 }
 
 #[derive(Clone, Debug)]
@@ -186,6 +187,12 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             title: "View: Toggle Throughput & EPS Timeline Sparkline",
             category: "VIEW",
             shortcut: Some("Ctrl+Shift+T"),
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ToggleZenMode,
+            title: "View: Toggle Zen Focus Mode",
+            category: "VIEW",
+            shortcut: Some("F11"),
         },
         PaletteCommand {
             id: PaletteCommandId::ToggleSplitView,

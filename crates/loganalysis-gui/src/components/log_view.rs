@@ -3,6 +3,7 @@ use gpui::*;
 use loganalysis_core::{parse_logcat_column_line, LineSeverity, LogSource};
 
 use crate::components::find_bar::render_find_bar;
+use crate::components::tooltip::render_tooltip;
 use crate::workspace::LogAnalysisWorkspace;
 
 pub fn render_log_viewport(
@@ -50,6 +51,8 @@ pub fn render_log_viewport(
             .child(render_pane_content(workspace, true, false, cx))
             // Modern Floating Find Widget (over log content without reflow)
             .children(render_find_bar(workspace, cx))
+            // Contextual Floating Selection Mini-Bar
+            .children(render_selection_action_bar(workspace, cx))
     } else {
         let is_vertical = workspace.is_split_vertical;
         let mut split_container = div()
@@ -110,7 +113,158 @@ pub fn render_log_viewport(
             .child(split_container)
             // Modern Floating Find Widget (over split container without reflow)
             .children(render_find_bar(workspace, cx))
+            // Contextual Floating Selection Mini-Bar
+            .children(render_selection_action_bar(workspace, cx))
     }
+}
+
+/// Calculates the dynamic vertical position of the floating selection action bar
+/// to prevent collision with the Find widget (top: 8px) and Forensic Facets bar (h: 28px).
+pub fn calculate_selection_bar_top(is_search_visible: bool, is_facets_visible: bool) -> Pixels {
+    if is_search_visible {
+        px(52.0)
+    } else if is_facets_visible {
+        px(38.0)
+    } else {
+        px(10.0)
+    }
+}
+
+/// Renders the contextual floating selection mini-bar when a log row is selected
+pub fn render_selection_action_bar(
+    workspace: &LogAnalysisWorkspace,
+    cx: &mut Context<LogAnalysisWorkspace>,
+) -> Option<impl IntoElement> {
+    let sel_row = workspace.selection.selected_row?;
+    let theme = workspace.theme;
+
+    // Smart vertical positioning to avoid collisions with Find bar and Facets bar
+    let is_facets_visible = workspace.is_facets_visible && workspace.log_source.is_some();
+    let top_pos = calculate_selection_bar_top(workspace.is_search_visible, is_facets_visible);
+
+    // Extract human-friendly line index label (1-based)
+    let line_label = if let Some(res) = &workspace.filter_result {
+        if let Some(&r_idx) = res.visible_indices.get(sel_row) {
+            format!("Line {}", r_idx + 1)
+        } else {
+            format!("Row {}", sel_row + 1)
+        }
+    } else {
+        format!("Row {}", sel_row + 1)
+    };
+
+    Some(
+        div()
+            .id("floating-selection-action-bar")
+            .occlude()
+            .absolute()
+            .top(top_pos)
+            .right(px(16.0))
+            .bg(theme.bg_card)
+            .border_1()
+            .border_color(theme.border)
+            .rounded_lg()
+            .shadow_lg()
+            .px(px(6.0))
+            .py(px(3.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            // Selected Line Badge
+            .child(
+                div()
+                    .px(px(6.0))
+                    .py(px(1.5))
+                    .rounded_xs()
+                    .bg(theme.accent_muted)
+                    .text_size(px(10.0))
+                    .font_weight(FontWeight::BOLD)
+                    .font_family("monospace")
+                    .text_color(theme.accent)
+                    .child(line_label),
+            )
+            // Vertical Divider
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h(px(14.0))
+                    .bg(theme.border_subtle),
+            )
+            // Button: [📋 Copy]
+            .child(
+                div()
+                    .id("btn-selection-copy")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .px(px(7.0))
+                    .py(px(2.5))
+                    .rounded_sm()
+                    .hover(move |s| s.bg(theme.btn_hover))
+                    .cursor_pointer()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_primary)
+                    .tooltip(render_tooltip("Copy selected log line to clipboard", Some("Ctrl+C"), theme))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.copy_selection(cx);
+                    }))
+                    .child("📋 Copy"),
+            )
+            // Button: [+🔍 Filter Sel]
+            .child(
+                div()
+                    .id("btn-selection-quick-filter")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .px(px(7.0))
+                    .py(px(2.5))
+                    .rounded_sm()
+                    .hover(move |s| s.bg(theme.btn_hover))
+                    .cursor_pointer()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.accent)
+                    .tooltip(render_tooltip("Create instant filter rule from current selection", None, theme))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.add_quick_filter_from_selection(false, cx);
+                    }))
+                    .child("+🔍 Filter Sel"),
+            )
+            // Vertical Divider
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h(px(14.0))
+                    .bg(theme.border_subtle),
+            )
+            // Button: [✕ Clear]
+            .child(
+                div()
+                    .id("btn-selection-clear")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .px(px(6.0))
+                    .py(px(2.5))
+                    .rounded_sm()
+                    .hover(move |s| s.bg(theme.btn_hover).text_color(theme.error_red))
+                    .cursor_pointer()
+                    .text_size(px(10.5))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme.text_muted)
+                    .tooltip(render_tooltip("Clear selection", Some("Esc"), theme))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.clear_selection(cx);
+                    }))
+                    .child("✕ Clear"),
+            ),
+    )
 }
 
 /// Renders a pane container with top header bar and virtualized log viewport
