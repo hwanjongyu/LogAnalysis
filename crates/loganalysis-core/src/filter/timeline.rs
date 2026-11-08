@@ -1,3 +1,4 @@
+use crate::buffer::merged_buffer::{ONE_YEAR_MICROS, YEAR_ROLLOVER_THRESHOLD_MICROS};
 use crate::buffer::{extract_timestamp, LogSource};
 use crate::filter::engine::ResolvedStyle;
 use crate::filter::heatmap::{detect_line_severity, LineSeverity};
@@ -95,7 +96,11 @@ impl EpsTimelineData {
             }
         }
 
-        let max_micros = max_t.unwrap_or(min_micros);
+        let mut max_micros = max_t.unwrap_or(min_micros);
+        if max_micros < min_micros - YEAR_ROLLOVER_THRESHOLD_MICROS {
+            max_micros += ONE_YEAR_MICROS;
+        }
+
         let total_duration_us = max_micros - min_micros;
         if total_duration_us <= 0 {
             return Self {
@@ -108,7 +113,8 @@ impl EpsTimelineData {
         }
 
         let actual_buckets = bucket_count.clamp(8, 128);
-        let bucket_span_us = (total_duration_us + actual_buckets as i64 - 1) / actual_buckets as i64;
+        let bucket_span_us =
+            (total_duration_us + actual_buckets as i64 - 1) / actual_buckets as i64;
         let bucket_span_us = bucket_span_us.max(1);
 
         let mut buckets = Vec::with_capacity(actual_buckets);
@@ -138,7 +144,12 @@ impl EpsTimelineData {
                 continue;
             };
 
-            let offset = t.total_micros - min_micros;
+            let mut micros = t.total_micros;
+            if micros < min_micros - YEAR_ROLLOVER_THRESHOLD_MICROS {
+                micros += ONE_YEAR_MICROS;
+            }
+
+            let offset = micros - min_micros;
             if offset >= 0 && offset <= total_duration_us {
                 let b_idx = (offset / bucket_span_us) as usize;
                 let b_idx = b_idx.min(actual_buckets - 1);
@@ -249,10 +260,7 @@ mod tests {
         assert_eq!(data.buckets.len(), 0);
 
         let non_timestamped = MockLogSource {
-            lines: vec![
-                "hello world".into(),
-                "second line without time".into(),
-            ],
+            lines: vec!["hello world".into(), "second line without time".into()],
         };
         let data2 = EpsTimelineData::compute(&non_timestamped, &[0, 1], &[], 60);
         assert!(!data2.has_timestamps);
@@ -287,7 +295,10 @@ mod tests {
         let mut lines = Vec::new();
         // 50 lines with 1 line/sec
         for s in 0..50 {
-            lines.push(format!("11-06 18:00:{:02}.000 1 1 I Tag: Normal log line {s}", s));
+            lines.push(format!(
+                "11-06 18:00:{:02}.000 1 1 I Tag: Normal log line {s}",
+                s
+            ));
         }
         // Burst of 100 lines at second 25
         for _ in 0..100 {
@@ -305,6 +316,54 @@ mod tests {
 
         // Verify anomaly was detected on the burst bucket
         let has_anomaly = data.buckets.iter().any(|b| b.is_anomaly);
-        assert!(has_anomaly, "Anomaly threshold should trigger for 100x burst");
+        assert!(
+            has_anomaly,
+            "Anomaly threshold should trigger for 100x burst"
+        );
+    }
+
+    #[test]
+    fn test_timeline_year_rollover_dec31_to_jan01_nonzero_duration_and_accurate_buckets() {
+        let lines = vec![
+            "12-31 23:59:50.000 1 1 I Tag: Step 1 Pre-rollover".into(),
+            "12-31 23:59:55.000 1 1 W Tag: Step 2 Warning before midnight".into(),
+            "01-01 00:00:05.000 1 1 E Tag: Step 3 Error after midnight".into(),
+            "01-01 00:00:10.000 1 1 I Tag: Step 4 Steady new year".into(),
+        ];
+        let buf = MockLogSource { lines };
+        let count = buf.line_count();
+        let vis: Vec<usize> = (0..count).collect();
+        let styles = vec![ResolvedStyle::default(); count];
+
+        let data = EpsTimelineData::compute(&buf, &vis, &styles, 10);
+        assert!(data.has_timestamps);
+        // Duration: 23:59:50 to 00:00:10 is exactly 20 seconds
+        assert!(
+            (data.total_duration_secs - 20.0).abs() < 0.1,
+            "Total duration should be ~20s across year transition, got {}",
+            data.total_duration_secs
+        );
+        assert_eq!(data.buckets.len(), 10);
+
+        // Check error count in the latter half of the buckets
+        let has_err_bucket = data.buckets[5..].iter().any(|b| b.error_count > 0);
+        assert!(
+            has_err_bucket,
+            "Error on Jan 01 must appear in latter buckets"
+        );
+
+        // Check warn count in the first half of the buckets
+        let has_warn_bucket = data.buckets[..5].iter().any(|b| b.warn_count > 0);
+        assert!(
+            has_warn_bucket,
+            "Warn on Dec 31 must appear in early buckets"
+        );
+
+        // Total count across all buckets should equal 4
+        let total_binned: u32 = data.buckets.iter().map(|b| b.total_count).sum();
+        assert_eq!(total_binned, 4);
+
+        // Average EPS should be non-zero and match 4 / 20.0 = 0.2
+        assert!((data.avg_eps - 0.2).abs() < 0.05);
     }
 }

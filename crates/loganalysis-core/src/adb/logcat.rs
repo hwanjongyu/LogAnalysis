@@ -4,13 +4,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use crossbeam_channel::Sender;
+use crossbeam_channel::{SendTimeoutError, Sender};
 
 use super::device::is_valid_device_serial;
 use crate::error::AdbError;
 
 /// RAII handle to a running adb logcat background stream.
-/// Automatically terminates the child process and joins the thread on drop or stop.
+/// Automatically terminates the child process on drop or stop.
 pub struct LogcatStreamHandle {
     thread_handle: Option<thread::JoinHandle<()>>,
     child: Arc<Mutex<Option<Child>>>,
@@ -42,9 +42,11 @@ impl LogcatStreamHandle {
 impl Drop for LogcatStreamHandle {
     fn drop(&mut self) {
         self.stop();
-        if let Some(handle) = self.thread_handle.take() {
-            let _ = handle.join();
-        }
+        // Intentionally do NOT call handle.join() here.
+        // Dropping the JoinHandle detaches the background worker thread.
+        // Because stream_log_lines evaluates stop_flag every 20ms and
+        // child.kill() unblocks reader.read_until, the worker terminates
+        // promptly in the background without blocking or deadlocking the GPUI UI thread.
     }
 }
 
@@ -146,8 +148,21 @@ pub fn stream_log_lines<R: std::io::Read>(
                     || reader.buffer().is_empty()
                     || (last_flush.elapsed() >= Duration::from_millis(16) && !buffer.is_empty());
                 if should_flush {
-                    let to_send = std::mem::replace(&mut buffer, Vec::with_capacity(100));
-                    if chunk_tx.send(to_send).is_err() {
+                    let mut to_send = std::mem::replace(&mut buffer, Vec::with_capacity(100));
+                    let mut disconnected = false;
+                    while !stop_flag.load(Ordering::Relaxed) {
+                        match chunk_tx.send_timeout(to_send, Duration::from_millis(20)) {
+                            Ok(()) => break,
+                            Err(SendTimeoutError::Timeout(msg)) => {
+                                to_send = msg;
+                            }
+                            Err(SendTimeoutError::Disconnected(_)) => {
+                                disconnected = true;
+                                break;
+                            }
+                        }
+                    }
+                    if disconnected || stop_flag.load(Ordering::Relaxed) {
                         break;
                     }
                     last_flush = Instant::now();
@@ -158,8 +173,8 @@ pub fn stream_log_lines<R: std::io::Read>(
         }
     }
 
-    if !buffer.is_empty() {
-        let _ = chunk_tx.send(buffer);
+    if !buffer.is_empty() && !stop_flag.load(Ordering::Relaxed) {
+        let _ = chunk_tx.send_timeout(buffer, Duration::from_millis(20));
     }
 }
 
@@ -201,5 +216,131 @@ mod tests {
 
         let batch = rx.recv().expect("Should receive batch");
         assert_eq!(batch, vec!["Line 1", "Line 2", "Line 3"]);
+    }
+
+    #[test]
+    fn test_stream_log_lines_stop_flag_unblocks_saturated_channel() {
+        let (tx, _rx) = bounded(1);
+        // Saturate the bounded channel with 1 item
+        tx.send(vec!["saturate".to_string()]).unwrap();
+
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stop_flag_clone = stop_flag.clone();
+
+        // Feed multiple lines so buffer flushes
+        let input_lines = "11-08 04:00:00.000 1 1 I Tag: Line 1\n".repeat(150);
+        let worker_tx = tx.clone();
+
+        let worker = thread::spawn(move || {
+            let reader = BufReader::new(input_lines.as_bytes());
+            stream_log_lines(reader, worker_tx, stop_flag_clone);
+        });
+
+        // Allow worker to start and block inside send_timeout on saturated channel
+        thread::sleep(Duration::from_millis(30));
+
+        // Signal stop flag
+        let start = Instant::now();
+        stop_flag.store(true, Ordering::SeqCst);
+
+        // Worker must promptly unblock and exit within 150ms
+        let join_res = worker.join();
+        let elapsed = start.elapsed();
+
+        assert!(join_res.is_ok(), "Worker thread should exit cleanly");
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "Worker thread took too long to unblock: {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn test_logcat_stream_handle_drop_on_saturated_channel_does_not_deadlock() {
+        let (tx, _rx) = bounded(1);
+        tx.send(vec!["saturate".to_string()]).unwrap();
+
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stop_flag_clone = stop_flag.clone();
+
+        let input_lines = "11-08 04:00:00.000 1 1 I Tag: Line\n".repeat(200);
+        let worker_tx = tx.clone();
+
+        let worker = thread::spawn(move || {
+            let reader = BufReader::new(input_lines.as_bytes());
+            stream_log_lines(reader, worker_tx, stop_flag_clone);
+        });
+
+        let handle = LogcatStreamHandle {
+            thread_handle: Some(worker),
+            child: Arc::new(Mutex::new(None)),
+            stop_flag: stop_flag.clone(),
+        };
+
+        // Dropping handle on the UI thread must be non-blocking (< 50ms)
+        let start = Instant::now();
+        drop(handle);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "Dropping LogcatStreamHandle blocked UI thread: {:?}",
+            elapsed
+        );
+        assert!(
+            stop_flag.load(Ordering::SeqCst),
+            "Drop must signal stop_flag to background worker"
+        );
+    }
+
+    #[test]
+    fn test_logcat_stream_handle_explicit_join_on_saturated_channel() {
+        let (tx, _rx) = bounded(1);
+        tx.send(vec!["saturate".to_string()]).unwrap();
+
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stop_flag_clone = stop_flag.clone();
+
+        let input_lines = "11-08 04:00:00.000 1 1 I Tag: Line\n".repeat(200);
+        let worker_tx = tx.clone();
+
+        let worker = thread::spawn(move || {
+            let reader = BufReader::new(input_lines.as_bytes());
+            stream_log_lines(reader, worker_tx, stop_flag_clone);
+        });
+
+        let handle = LogcatStreamHandle {
+            thread_handle: Some(worker),
+            child: Arc::new(Mutex::new(None)),
+            stop_flag: stop_flag.clone(),
+        };
+
+        let start = Instant::now();
+        let res = handle.join();
+        let elapsed = start.elapsed();
+
+        assert!(res.is_ok(), "Explicit join must succeed");
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "Explicit join took too long: {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn test_stream_log_lines_tail_flush_skips_when_stopped() {
+        let (tx, _rx) = bounded(1);
+        tx.send(vec!["saturate".to_string()]).unwrap();
+
+        let stop_flag = Arc::new(AtomicBool::new(true)); // Already stopped
+        let input_lines = "11-08 04:00:00.000 1 1 I ResidualLine\n";
+        let reader = BufReader::new(input_lines.as_bytes());
+
+        let start = Instant::now();
+        stream_log_lines(reader, tx, stop_flag);
+        let elapsed = start.elapsed();
+
+        // Must exit immediately without attempting blocking tail flush
+        assert!(elapsed < Duration::from_millis(50));
     }
 }

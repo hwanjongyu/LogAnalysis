@@ -83,6 +83,29 @@ pub fn utf16_range_to_utf8_in_str(s: &str, range_utf16: &Range<usize>) -> Range<
     utf8_start..utf8_end
 }
 
+/// Clamps a byte range to valid UTF-8 character boundaries within `content`.
+/// Handles empty content (`0..0`), inverted ranges (`start > end`), out-of-bounds offsets,
+/// and interior character offsets.
+pub fn clamp_range_to_char_boundaries(content: &str, range: Range<usize>) -> Range<usize> {
+    if content.is_empty() {
+        return 0..0;
+    }
+    let (raw_start, raw_end) = if range.start <= range.end {
+        (range.start, range.end)
+    } else {
+        (range.end, range.start)
+    };
+
+    if raw_start == raw_end {
+        let clamped = content.floor_char_boundary(raw_start);
+        clamped..clamped
+    } else {
+        let start = content.floor_char_boundary(raw_start);
+        let end = content.ceil_char_boundary(raw_end).max(start);
+        start..end
+    }
+}
+
 impl EventEmitter<TextInputEvent> for TextInput {}
 
 /// A native-grade GPUI text input component supporting full OS IME (Hangul/CJK),
@@ -147,7 +170,7 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        let offset = offset.min(self.content.len());
+        let offset = self.content.floor_char_boundary(offset);
         self.selected_range = offset..offset;
         self.pivot = offset;
         self.selection_reversed = false;
@@ -155,12 +178,13 @@ impl TextInput {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        let offset = offset.min(self.content.len());
-        if offset < self.pivot {
-            self.selected_range = offset..self.pivot;
+        let offset = self.content.floor_char_boundary(offset);
+        let pivot = self.content.floor_char_boundary(self.pivot);
+        if offset < pivot {
+            self.selected_range = offset..pivot;
             self.selection_reversed = true;
         } else {
-            self.selected_range = self.pivot..offset;
+            self.selected_range = pivot..offset;
             self.selection_reversed = false;
         }
         cx.notify();
@@ -339,16 +363,23 @@ impl TextInput {
 
     fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
-            let text = self.content[self.selected_range.clone()].to_string();
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            let clamped = clamp_range_to_char_boundaries(&self.content, self.selected_range.clone());
+            if !clamped.is_empty() {
+                let text = self.content[clamped].to_string();
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
         }
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
-            let text = self.content[self.selected_range.clone()].to_string();
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
-            self.replace_text_in_range(None, "", window, cx);
+            let clamped = clamp_range_to_char_boundaries(&self.content, self.selected_range.clone());
+            if !clamped.is_empty() {
+                let text = self.content[clamped.clone()].to_string();
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                self.selected_range = clamped;
+                self.replace_text_in_range(None, "", window, cx);
+            }
         }
     }
 }
@@ -417,13 +448,15 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
-        let start = range.start.min(self.content.len());
-        let end = range.end.min(self.content.len());
+        let clamped = clamp_range_to_char_boundaries(&self.content, range);
+        let start = clamped.start;
+        let end = clamped.end;
 
         self.content =
             (self.content[0..start].to_owned() + new_text + &self.content[end..]).into();
-        self.selected_range = start + new_text.len()..start + new_text.len();
-        self.pivot = start + new_text.len();
+        let new_cursor = start + new_text.len();
+        self.selected_range = new_cursor..new_cursor;
+        self.pivot = new_cursor;
         self.selection_reversed = false;
         self.marked_range.take();
         cx.emit(TextInputEvent::Change);
@@ -444,8 +477,9 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
-        let start = range.start.min(self.content.len());
-        let end = range.end.min(self.content.len());
+        let clamped = clamp_range_to_char_boundaries(&self.content, range);
+        let start = clamped.start;
+        let end = clamped.end;
 
         self.content =
             (self.content[0..start].to_owned() + new_text + &self.content[end..]).into();
@@ -461,9 +495,8 @@ impl EntityInputHandler for TextInput {
             .map(|r| utf16_range_to_utf8_in_str(new_text, r))
             .map(|new_r| (start + new_r.start)..(start + new_r.end))
             .unwrap_or_else(|| (start + new_text.len())..(start + new_text.len()));
-        let sel_start = self.selected_range.start.min(self.content.len());
-        let sel_end = self.selected_range.end.min(self.content.len());
-        self.selected_range = sel_start..sel_end;
+        let sel_clamped = clamp_range_to_char_boundaries(&self.content, self.selected_range.clone());
+        self.selected_range = sel_clamped;
         self.pivot = self.selected_range.end;
         self.selection_reversed = false;
 
@@ -936,4 +969,228 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_clamp_range_to_char_boundaries_empty_content() {
+        assert_eq!(clamp_range_to_char_boundaries("", 0..0), 0..0);
+        assert_eq!(clamp_range_to_char_boundaries("", 0..5), 0..0);
+        assert_eq!(clamp_range_to_char_boundaries("", 10..2), 0..0);
+        assert_eq!(clamp_range_to_char_boundaries("", 10..10), 0..0);
+    }
+
+    #[test]
+    fn test_clamp_range_to_char_boundaries_ascii() {
+        let text = "hello world";
+        assert_eq!(clamp_range_to_char_boundaries(text, 0..5), 0..5);
+        assert_eq!(clamp_range_to_char_boundaries(text, 5..0), 0..5);
+        assert_eq!(clamp_range_to_char_boundaries(text, 3..3), 3..3);
+        assert_eq!(clamp_range_to_char_boundaries(text, 0..100), 0..11);
+        assert_eq!(clamp_range_to_char_boundaries(text, 50..60), 11..11);
+        assert_eq!(clamp_range_to_char_boundaries(text, 60..50), 11..11);
+    }
+
+    #[test]
+    fn test_clamp_range_to_char_boundaries_korean_hangul_mid_char_slices() {
+        let text = "안녕하세요";
+        // '안' = 0..3, '녕' = 3..6, '하' = 6..9, '세' = 9..12, '요' = 12..15
+        assert_eq!(clamp_range_to_char_boundaries(text, 1..2), 0..3);
+        assert_eq!(&text[clamp_range_to_char_boundaries(text, 1..2)], "안");
+
+        // Inverted range inside '안'
+        assert_eq!(clamp_range_to_char_boundaries(text, 2..1), 0..3);
+
+        // Collapsed cursor inside '안'
+        assert_eq!(clamp_range_to_char_boundaries(text, 1..1), 0..0);
+        assert_eq!(clamp_range_to_char_boundaries(text, 2..2), 0..0);
+
+        // Range spanning mid-char to mid-char across characters
+        assert_eq!(clamp_range_to_char_boundaries(text, 1..4), 0..6);
+        assert_eq!(&text[clamp_range_to_char_boundaries(text, 1..4)], "안녕");
+
+        assert_eq!(clamp_range_to_char_boundaries(text, 4..8), 3..9);
+        assert_eq!(&text[clamp_range_to_char_boundaries(text, 4..8)], "녕하");
+
+        assert_eq!(clamp_range_to_char_boundaries(text, 5..13), 3..15);
+        assert_eq!(&text[clamp_range_to_char_boundaries(text, 5..13)], "녕하세요");
+
+        // Boundary edges and out of bounds
+        assert_eq!(clamp_range_to_char_boundaries(text, 14..20), 12..15);
+        assert_eq!(clamp_range_to_char_boundaries(text, 20..30), 15..15);
+    }
+
+    #[test]
+    fn test_clamp_range_to_char_boundaries_japanese_kana_kanji() {
+        let text = "日本語テスト";
+        // '日' = 0..3, '本' = 3..6, '語' = 6..9, 'テ' = 9..12, 'ス' = 12..15, 'ト' = 15..18
+        assert_eq!(clamp_range_to_char_boundaries(text, 1..2), 0..3);
+        assert_eq!(&text[clamp_range_to_char_boundaries(text, 1..2)], "日");
+
+        assert_eq!(clamp_range_to_char_boundaries(text, 4..5), 3..6);
+        assert_eq!(&text[clamp_range_to_char_boundaries(text, 4..5)], "本");
+
+        assert_eq!(clamp_range_to_char_boundaries(text, 7..11), 6..12);
+        assert_eq!(&text[clamp_range_to_char_boundaries(text, 7..11)], "語テ");
+
+        assert_eq!(clamp_range_to_char_boundaries(text, 10..16), 9..18);
+        assert_eq!(&text[clamp_range_to_char_boundaries(text, 10..16)], "テスト");
+
+        // Inverted
+        assert_eq!(clamp_range_to_char_boundaries(text, 11..7), 6..12);
+    }
+
+    #[test]
+    fn test_clamp_range_to_char_boundaries_chinese_hanzi() {
+        let text = "北京欢迎你";
+        // '北' = 0..3, '京' = 3..6, '欢' = 6..9, '迎' = 9..12, '你' = 12..15
+        assert_eq!(clamp_range_to_char_boundaries(text, 2..8), 0..9);
+        assert_eq!(&text[clamp_range_to_char_boundaries(text, 2..8)], "北京欢");
+
+        assert_eq!(clamp_range_to_char_boundaries(text, 1..1), 0..0);
+
+        assert_eq!(clamp_range_to_char_boundaries(text, 8..14), 6..15);
+        assert_eq!(&text[clamp_range_to_char_boundaries(text, 8..14)], "欢迎你");
+    }
+
+    #[test]
+    fn test_clamp_range_to_char_boundaries_emojis_4bytes() {
+        let text = "🚀🦀🎉🔥";
+        // '🚀' = 0..4, '🦀' = 4..8, '🎉' = 8..12, '🔥' = 12..16
+        assert_eq!(clamp_range_to_char_boundaries(text, 1..3), 0..4);
+        assert_eq!(&text[clamp_range_to_char_boundaries(text, 1..3)], "🚀");
+
+        assert_eq!(clamp_range_to_char_boundaries(text, 2..7), 0..8);
+        assert_eq!(&text[clamp_range_to_char_boundaries(text, 2..7)], "🚀🦀");
+
+        assert_eq!(clamp_range_to_char_boundaries(text, 6..10), 4..12);
+        assert_eq!(&text[clamp_range_to_char_boundaries(text, 6..10)], "🦀🎉");
+
+        // Collapsed cursors inside 4-byte emojis
+        assert_eq!(clamp_range_to_char_boundaries(text, 2..2), 0..0);
+        assert_eq!(clamp_range_to_char_boundaries(text, 7..7), 4..4);
+
+        assert_eq!(clamp_range_to_char_boundaries(text, 10..15), 8..16);
+        assert_eq!(&text[clamp_range_to_char_boundaries(text, 10..15)], "🎉🔥");
+
+        // Inverted
+        assert_eq!(clamp_range_to_char_boundaries(text, 7..2), 0..8);
+    }
+
+    #[test]
+    fn test_clamp_range_to_char_boundaries_mixed_complex() {
+        let text = "Log분석: 🚀 오류(Error 500)発生! 再試行中...";
+        // Slice inside Korean '분' (3..6)
+        let r1 = clamp_range_to_char_boundaries(text, 4..5);
+        assert_eq!(&text[r1], "분");
+
+        // Slice spanning Korean, colon, space, emoji
+        let r2 = clamp_range_to_char_boundaries(text, 5..14);
+        assert!(text.is_char_boundary(r2.start));
+        assert!(text.is_char_boundary(r2.end));
+        let _ = &text[r2];
+    }
+
+    #[test]
+    fn test_clamp_range_to_char_boundaries_exhaustive_fuzz() {
+        let samples = [
+            "LogAnalysis GPU",
+            "대한민국로그분석기",
+            "ログ解析ツールこんにちは",
+            "日志分析工具欢迎使用",
+            "🚀🦀🔥🎉⭐✨",
+            "2026-11-08 [오류] 🚀 Exception in 端末: 接続失敗 (Retry #3) 🔥",
+        ];
+
+        for sample in samples {
+            let len = sample.len();
+            for start in 0..=len + 8 {
+                for end in 0..=len + 8 {
+                    let clamped = clamp_range_to_char_boundaries(sample, start..end);
+                    assert!(
+                        clamped.start <= clamped.end,
+                        "Range must be monotonic: {:?}",
+                        clamped
+                    );
+                    assert!(
+                        clamped.end <= len,
+                        "End bound must not exceed len {}: {:?}",
+                        len,
+                        clamped
+                    );
+                    assert!(
+                        sample.is_char_boundary(clamped.start),
+                        "Start must be char boundary in '{}' at {}",
+                        sample,
+                        clamped.start
+                    );
+                    assert!(
+                        sample.is_char_boundary(clamped.end),
+                        "End must be char boundary in '{}' at {}",
+                        sample,
+                        clamped.end
+                    );
+                    // Safe slicing invariant: must never panic!
+                    let slice = &sample[clamped];
+                    assert!(slice.len() <= len);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_simulated_replace_text_in_range_mid_character_cjk_emoji() {
+        let text = "안녕하세요 세계 🚀";
+        // Slicing inside Korean '안' (0..3) with 1..2
+        let clamped1 = clamp_range_to_char_boundaries(text, 1..2);
+        assert_eq!(clamped1, 0..3);
+        let res1 = format!("{}{}{}", &text[..clamped1.start], "대", &text[clamped1.end..]);
+        assert_eq!(res1, "대녕하세요 세계 🚀");
+
+        // Slicing across '안' and '녕' with 1..4
+        let clamped2 = clamp_range_to_char_boundaries(text, 1..4);
+        assert_eq!(clamped2, 0..6);
+        let res2 = format!("{}{}{}", &text[..clamped2.start], "안녕", &text[clamped2.end..]);
+        assert_eq!(res2, "안녕하세요 세계 🚀");
+
+        // Slicing inside emoji '🚀' (22..26) with 23..25
+        let emoji_pos = text.find('🚀').unwrap();
+        let clamped3 = clamp_range_to_char_boundaries(text, emoji_pos + 1..emoji_pos + 3);
+        assert_eq!(clamped3, emoji_pos..emoji_pos + 4);
+        let res3 = format!("{}{}{}", &text[..clamped3.start], "🔥", &text[clamped3.end..]);
+        assert_eq!(res3, "안녕하세요 세계 🔥");
+
+        // Inverted range replacement
+        let clamped4 = clamp_range_to_char_boundaries(text, 6..3);
+        assert_eq!(clamped4, 3..6); // '녕'
+        let res4 = format!("{}{}{}", &text[..clamped4.start], "심", &text[clamped4.end..]);
+        assert_eq!(res4, "안심하세요 세계 🚀");
+    }
+
+    #[test]
+    fn test_floor_char_boundary_cursor_operations() {
+        let text = "한국어 🚀";
+        // '한' = 0..3, '국' = 3..6, '어' = 6..9, ' ' = 9..10, '🚀' = 10..14
+        assert_eq!(text.floor_char_boundary(0), 0);
+        assert_eq!(text.floor_char_boundary(1), 0);
+        assert_eq!(text.floor_char_boundary(2), 0);
+        assert_eq!(text.floor_char_boundary(3), 3);
+        assert_eq!(text.floor_char_boundary(4), 3);
+        assert_eq!(text.floor_char_boundary(5), 3);
+        assert_eq!(text.floor_char_boundary(6), 6);
+        assert_eq!(text.floor_char_boundary(7), 6);
+        assert_eq!(text.floor_char_boundary(8), 6);
+        assert_eq!(text.floor_char_boundary(9), 9);
+        assert_eq!(text.floor_char_boundary(10), 10);
+        assert_eq!(text.floor_char_boundary(11), 10);
+        assert_eq!(text.floor_char_boundary(12), 10);
+        assert_eq!(text.floor_char_boundary(13), 10);
+        assert_eq!(text.floor_char_boundary(14), 14);
+        assert_eq!(text.floor_char_boundary(99), 14);
+
+        for offset in 0..=text.len() + 20 {
+            let clamped = text.floor_char_boundary(offset);
+            assert!(text.is_char_boundary(clamped));
+            assert!(clamped <= text.len());
+        }
+    }
+
 }
