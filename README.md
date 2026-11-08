@@ -14,11 +14,13 @@
 ### High-Performance Log Viewer & Multi-Layer Highlighting
 ![Active Log View](assets/screenshots/active-log-view.png)
 
-<br/>
-
-| Filter Rule Editor & WCAG 2.1 Contrast Checker | Studio Welcome Screen & ADB Connect |
+| Structured Column View & Real-Time EPS Sparkline | Dual Split View & Cross-Pane Synchronization |
 | :---: | :---: |
-| ![Filter Rule Dialog](assets/screenshots/filter-rule-dialog.png) | ![Studio Welcome Screen](assets/screenshots/welcome-studio.png) |
+| ![Structured Column View & EPS Sparkline](assets/screenshots/column-view-sparkline.png) | ![Dual Split View](assets/screenshots/dual-split-view.png) |
+
+| Studio Welcome Screen & Multi-File Merge | Interactive Bookmark Drawer & Notes |
+| :---: | :---: |
+| ![Studio Welcome Screen](assets/screenshots/welcome-studio.png) | ![Bookmark Drawer](assets/screenshots/bookmarks-drawer.png) |
 
 ---
 
