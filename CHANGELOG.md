@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.3] - 2026-11-08
+
+### Added
+- **Unified 38px Header Bar**: Merged the CSD titlebar (34px) and toolbar (44px) into a single compact header with branding, smart ADB combo button, active document pill, view toggles, find trigger, overflow menu, and integrated window controls.
+- **Zen / Focus Mode (`F11` / `Ctrl+Shift+Z`)**: Hides the activity bar, filter dock, timeline ribbon, and status bar for distraction-free log reading.
+- **Contextual Selection Mini-Bar**: Floating Copy / Filter Selection / Clear actions with dynamic collision offset relative to the Find widget and Forensic Facets bar.
+- **Overflow Menu (`⋯`)**: Low-frequency actions (load/save filter profiles, clear logs, dock layout, H-scroll, theme switch) relocated into a popover.
+- **Collapsible Timeline (`Ctrl+Shift+T`)**: Timeline sparkline can be collapsed to reclaim vertical viewport space.
+- **Resizable Filter Rules Dock**: Drag splitter with `col-resize`/`row-resize` cursors, clamped to 180–800px width / 100–700px height, and double-click reset to defaults (310px / 220px).
+- **Stack Trace Timestamp Probing**: `probe_parent_timestamp` scans up to 10 lines backward so dual-pane lockstep correlation works on multi-line stack trace rows.
+- **Windows Log Paths**: `%LOCALAPPDATA%` / `%APPDATA%` fallbacks in log path resolution.
+
+### Changed
+- **Background Streaming Analytics**: `HeatmapData` and `EpsTimelineData` computation moved off the GPUI main thread, with an `analytics_seq` monotonic guard against out-of-order batch results.
+- **Workspace Modularization**: Split the ~3,200-line `workspace.rs` into focused `src/workspace/` and `src/controllers/` modules (each < 1,000 lines).
+- **Decluttered Toolbar**: Inline shortcut badges removed from action buttons; shortcuts are surfaced via tooltips and the Command Palette.
+- **CI**: macOS runners migrated from `macos-13` to `macos-15`; fixed release workflow input tag fallback.
+
+### Fixed
+- **ADB Stream Shutdown Deadlock (CRIT-01)**: Replaced blocking channel sends with a `send_timeout(20ms)` loop that checks the stop flag, and removed synchronous UI-thread joins in `LogcatStreamHandle::drop`.
+- **TextInput UTF-8 Boundary Panics (CRIT-02)**: All slice and cursor operations clamp to char boundaries, fixing crashes when editing Korean, Japanese, Chinese, and emoji input.
+- **Year-End Rollover Ordering (CRIT-04)**: Backward timestamp jumps across Dec 31 → Jan 01 are normalized with a 1-year offset in `MergedLogBuffer` and the EPS timeline.
+- **Merged Buffer Source Overflow**: `MergedLogBuffer` now rejects more than 255 sources, preventing `u8` source index overflow.
+
+### Security
+- **Regex ReDoS Mitigation (CRIT-03)**: Linear DFA regexes are preferred. The `fancy_regex` fallback rejects nested unbounded quantifiers at compile time and enforces a runtime `backtrack_limit(250)`.
+
+---
+
 ## [0.2.2] - 2026-11-07
 
 ### Added

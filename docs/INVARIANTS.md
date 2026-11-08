@@ -53,8 +53,8 @@
 ## 5. CLI Flags & System Identity
 
 ### `[INV-05]` CLI Version Flag & Early Termination
-- Executing `loganalysis --version`, `-V`, or `-v` in a terminal must immediately output `LogAnalysis 0.2.2` (or `CARGO_PKG_VERSION`) to stdout and terminate cleanly (exit code 0) without initializing the GPU window or GUI runtime.
-- The CSD titlebar and status bar must display consistent version badges (`v0.2.2`).
+- Executing `loganalysis --version`, `-V`, or `-v` in a terminal must immediately output `LogAnalysis 0.2.3` (or `CARGO_PKG_VERSION`) to stdout and terminate cleanly (exit code 0) without initializing the GPU window or GUI runtime.
+- The CSD titlebar and status bar must display consistent version badges (`v0.2.3`).
 
 ---
 
