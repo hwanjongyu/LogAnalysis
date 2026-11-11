@@ -34,6 +34,38 @@ impl raw_window_handle::HasDisplayHandle for CustomX11WindowHandle {
     }
 }
 
+/// Safe wrapper around GPUI's `Window` for Windows platforms.
+///
+/// In GPUI 0.2.2, `WindowsWindow::display_handle` calls `unimplemented!()`, which panics inside
+/// Win32's `CallWindowProcW` callback (`extern "system" fn` cannot unwind) and aborts the process
+/// whenever `rfd::AsyncFileDialog::set_parent` queries `HasDisplayHandle::display_handle()`.
+///
+/// This wrapper forwards `HasWindowHandle::window_handle()` to the underlying `Window` (or any
+/// `HasWindowHandle` source) to preserve the Win32 `HWND` modal parent relationship while
+/// returning a valid `WindowsDisplayHandle` from `display_handle()`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SafeDialogParent<'a, W: ?Sized>(pub(crate) &'a W);
+
+impl<W: raw_window_handle::HasWindowHandle + ?Sized> raw_window_handle::HasWindowHandle
+    for SafeDialogParent<'_, W>
+{
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        self.0.window_handle()
+    }
+}
+
+impl<W: ?Sized> raw_window_handle::HasDisplayHandle for SafeDialogParent<'_, W> {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        let handle = raw_window_handle::WindowsDisplayHandle::new();
+        let raw = raw_window_handle::RawDisplayHandle::Windows(handle);
+        unsafe { Ok(raw_window_handle::DisplayHandle::borrow_raw(raw)) }
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn get_active_x11_window_id() -> Option<std::os::raw::c_ulong> {
     // 1. Try xprop -root _NET_ACTIVE_WINDOW
@@ -77,9 +109,13 @@ pub(crate) fn get_active_x11_window_id() -> Option<std::os::raw::c_ulong> {
 
 /// Safely attaches a parent window handle to an AsyncFileDialog across Linux (X11 & Wayland), macOS, and Windows.
 ///
-/// On Linux X11, GPUI 0.2.2's `X11Window::window_handle` invokes `unimplemented!()`.
-/// To prevent a fatal crash while keeping the file dialog positioned in front of `LogAnalysis`,
-/// this function detects X11, queries the active window XID, and binds via `CustomX11WindowHandle`.
+/// - On Linux X11, GPUI 0.2.2's `X11Window::window_handle` invokes `unimplemented!()`.
+///   To prevent a fatal crash while keeping the file dialog positioned in front of `LogAnalysis`,
+///   X11 attachment is deferred to `attach_dialog_x11_id` via `CustomX11WindowHandle`.
+/// - On Windows, GPUI 0.2.2's `WindowsWindow::display_handle` invokes `unimplemented!()`, which panics
+///   inside `CallWindowProcW` (`extern "system" fn` cannot unwind) when `rfd` calls `display_handle()`.
+///   `SafeDialogParent` wraps the window to forward the Win32 `HWND` (`window_handle()`) while returning
+///   a valid `WindowsDisplayHandle`.
 pub fn attach_dialog_parent(mut dialog: rfd::AsyncFileDialog, parent: Option<&Window>) -> rfd::AsyncFileDialog {
     #[cfg(target_os = "linux")]
     {
@@ -98,7 +134,15 @@ pub fn attach_dialog_parent(mut dialog: rfd::AsyncFileDialog, parent: Option<&Wi
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(w) = parent {
+            let safe_parent = SafeDialogParent(w);
+            dialog = dialog.set_parent(&safe_parent);
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         if let Some(w) = parent {
             dialog = dialog.set_parent(w);
@@ -254,5 +298,56 @@ mod tests {
     fn test_get_active_x11_window_id_no_panic() {
         // Querying X11 active window must be non-panicking even in headless/container environments
         let _ = get_active_x11_window_id();
+    }
+
+    /// Regression test for Windows crash at `gpui-0.2.2\src\platform\windows\window.rs:497:9`.
+    /// Simulates GPUI's `WindowsWindow` where `window_handle()` returns a valid `Win32WindowHandle`
+    /// while `display_handle()` invokes `unimplemented!()`, verifying that `SafeDialogParent`
+    /// intercepts `display_handle()` and allows `rfd::AsyncFileDialog::set_parent` to succeed without panic.
+    #[test]
+    fn test_safe_dialog_parent_prevents_windows_display_handle_panic() {
+        use raw_window_handle::{
+            DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
+            RawWindowHandle, Win32WindowHandle, WindowHandle,
+        };
+        use std::num::NonZeroIsize;
+
+        struct MockWindowsWindowWithUnimplementedDisplay;
+
+        impl HasWindowHandle for MockWindowsWindowWithUnimplementedDisplay {
+            fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+                let raw = RawWindowHandle::Win32(Win32WindowHandle::new(
+                    NonZeroIsize::new(0x0012_3456).unwrap(),
+                ));
+                unsafe { Ok(WindowHandle::borrow_raw(raw)) }
+            }
+        }
+
+        impl HasDisplayHandle for MockWindowsWindowWithUnimplementedDisplay {
+            fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+                unimplemented!("simulates gpui-0.2.2 WindowsWindow::display_handle panic")
+            }
+        }
+
+        let mock_win = MockWindowsWindowWithUnimplementedDisplay;
+        let safe_parent = SafeDialogParent(&mock_win);
+
+        // 1. Verify window_handle forwards the underlying Win32 HWND
+        let wh = safe_parent
+            .window_handle()
+            .expect("window_handle should forward Win32 handle");
+        match wh.as_raw() {
+            RawWindowHandle::Win32(h) => assert_eq!(h.hwnd.get(), 0x0012_3456),
+            _ => panic!("Expected Win32 window handle"),
+        }
+
+        // 2. Verify display_handle returns a valid WindowsDisplayHandle instead of panicking
+        let dh = safe_parent
+            .display_handle()
+            .expect("display_handle should return valid WindowsDisplayHandle");
+        assert!(matches!(dh.as_raw(), RawDisplayHandle::Windows(_)));
+
+        // 3. Verify rfd::AsyncFileDialog::set_parent does not panic when given SafeDialogParent
+        let _dlg = build_open_log_dialog_base().set_parent(&safe_parent);
     }
 }
