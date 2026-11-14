@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -104,13 +104,25 @@ pub fn parse_adb_devices_output(stdout: &str) -> Vec<AdbDeviceInfo> {
     devices
 }
 
-/// Scans connected ADB devices via `adb devices -l` with an enforced timeout and RAII subprocess cleanup.
-/// Uses non-blocking pipe reading to eliminate pipe hangs when the ADB daemon inherits stdout.
-pub fn scan_adb_device_details(timeout: Duration) -> Result<Vec<AdbDeviceInfo>, AdbError> {
+fn cleanup_aborted_command(
+    mut child: Child,
+    rx: crossbeam_channel::Receiver<Vec<u8>>,
+    reader_handle: thread::JoinHandle<()>,
+) {
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(rx);
+    let _ = reader_handle.join();
+}
+
+/// Executes `cmd` with captured stdout and an enforced wall-clock `timeout`.
+/// Uses a dedicated pipe-reader thread and bounded crossbeam channel so pipe reads
+/// cannot block timeout enforcement on any platform (Linux, macOS, Windows).
+pub fn run_command_with_timeout(
+    mut cmd: Command,
+    timeout: Duration,
+) -> Result<Vec<u8>, AdbError> {
     let start_time = Instant::now();
-    let adb_path = super::resolve_adb_path();
-    let mut cmd = Command::new(adb_path);
-    cmd.args(["devices", "-l"]);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
 
@@ -127,83 +139,138 @@ pub fn scan_adb_device_details(timeout: Duration) -> Result<Vec<AdbDeviceInfo>, 
         });
     }
 
-    let mut child = cmd.spawn().map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
 
-    // If timeout already elapsed during spawn
-    let elapsed = start_time.elapsed();
-    if elapsed >= timeout {
+    // If timeout already elapsed during spawn (or timeout is zero)
+    if start_time.elapsed() >= timeout {
         let _ = child.kill();
         let _ = child.wait();
         return Err(AdbError::Timeout(timeout));
     }
 
-    let mut stdout_pipe = child.stdout.take().ok_or(AdbError::IoCaptureFailed)?;
-
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::io::AsRawFd;
-        let fd = stdout_pipe.as_raw_fd();
-        unsafe {
-            let flags = libc::fcntl(fd, libc::F_GETFL, 0);
-            if flags >= 0 {
-                libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-            }
-        }
-    }
-
-    let mut output = Vec::new();
-    let mut buf = [0u8; 4096];
-
-    let status = loop {
-        if start_time.elapsed() >= timeout {
+    let mut stdout_pipe = match child.stdout.take() {
+        Some(p) => p,
+        None => {
             let _ = child.kill();
             let _ = child.wait();
+            return Err(AdbError::IoCaptureFailed);
+        }
+    };
+
+    let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(128);
+    let reader_handle = thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match stdout_pipe.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+    });
+
+    let mut output = Vec::new();
+    let mut pipe_disconnected = false;
+
+    let status = loop {
+        let remaining = timeout.saturating_sub(start_time.elapsed());
+        if remaining.is_zero() {
+            cleanup_aborted_command(child, rx, reader_handle);
             return Err(AdbError::Timeout(timeout));
         }
 
-        // Non-blocking read of available data
-        match stdout_pipe.read(&mut buf) {
-            Ok(0) => {
-                // Pipe closed (clean EOF)
-                let status = child.wait().map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
-                break status;
+        match rx.recv_timeout(remaining.min(Duration::from_millis(20))) {
+            Ok(chunk) => {
+                output.extend_from_slice(&chunk);
             }
-            Ok(n) => {
-                output.extend_from_slice(&buf[..n]);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // No pending data right now
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(AdbError::ExecutionFailed(e.to_string()));
-            }
-        }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                match child
+                    .try_wait()
+                    .map_err(|e| AdbError::ExecutionFailed(e.to_string()))
+                {
+                    Ok(Some(status)) => {
+                        // Drain any chunks already buffered in the channel.
+                        loop {
+                            match rx.try_recv() {
+                                Ok(chunk) => output.extend_from_slice(&chunk),
+                                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                                    pipe_disconnected = true;
+                                    break;
+                                }
+                            }
+                        }
 
-        // Poll child process exit
-        match child.try_wait().map_err(|e| AdbError::ExecutionFailed(e.to_string()))? {
-            Some(status) => {
-                // Child has finished; drain any residual bytes in the kernel pipe buffer
-                loop {
-                    match stdout_pipe.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => output.extend_from_slice(&buf[..n]),
-                        Err(_) => break,
+                        // Bounded grace drain so any chunk read by the worker thread just before
+                        // child exit is not lost under CI scheduler load, without hanging on
+                        // inherited daemon FDs.
+                        if !pipe_disconnected {
+                            let grace_deadline = Instant::now()
+                                + timeout
+                                    .saturating_sub(start_time.elapsed())
+                                    .min(Duration::from_millis(5));
+                            while let Some(grace_rem) =
+                                grace_deadline.checked_duration_since(Instant::now())
+                            {
+                                if grace_rem.is_zero() {
+                                    break;
+                                }
+                                match rx.recv_timeout(grace_rem) {
+                                    Ok(chunk) => output.extend_from_slice(&chunk),
+                                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => break,
+                                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                                        pipe_disconnected = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        break status;
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        cleanup_aborted_command(child, rx, reader_handle);
+                        return Err(err);
                     }
                 }
-                break status;
             }
-            None => {
-                thread::sleep(Duration::from_millis(5));
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                pipe_disconnected = true;
+                let status = child
+                    .wait()
+                    .map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
+                break status;
             }
         }
     };
+
+    drop(rx);
+    if pipe_disconnected {
+        let _ = reader_handle.join();
+    }
 
     if !status.success() {
         return Err(AdbError::NonZeroExit(status.code()));
     }
 
+    Ok(output)
+}
+
+/// Scans connected ADB devices via `adb devices -l` with an enforced timeout and RAII subprocess cleanup.
+/// Uses a dedicated pipe-reader thread to eliminate pipe hangs when the ADB daemon inherits stdout.
+pub fn scan_adb_device_details(timeout: Duration) -> Result<Vec<AdbDeviceInfo>, AdbError> {
+    let adb_path = super::resolve_adb_path();
+    let mut cmd = Command::new(adb_path);
+    cmd.args(["devices", "-l"]);
+    let output = run_command_with_timeout(cmd, timeout)?;
     let stdout_str = String::from_utf8_lossy(&output);
     Ok(parse_adb_devices_output(&stdout_str))
 }
@@ -215,4 +282,144 @@ pub fn scan_adb_devices(timeout: Duration) -> Result<Vec<String>, AdbError> {
         .filter(|d| d.is_ready())
         .map(|d| d.serial)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_run_command_with_timeout_fast_stdout() {
+        #[cfg(unix)]
+        let cmd = {
+            let mut c = Command::new("sh");
+            c.args(["-c", "printf 'adb-ok\\n'"]);
+            c
+        };
+        #[cfg(windows)]
+        let cmd = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "echo adb-ok"]);
+            c
+        };
+
+        let out = run_command_with_timeout(cmd, Duration::from_secs(5))
+            .expect("fast command should succeed");
+        assert_eq!(String::from_utf8_lossy(&out).trim(), "adb-ok");
+    }
+
+    #[test]
+    fn test_run_command_with_timeout_multi_chunk_stdout() {
+        #[cfg(unix)]
+        {
+            let mut cmd = Command::new("sh");
+            // 16 bytes doubled 10 times = 16,384 bytes (> 4096-byte reader buffer)
+            cmd.args([
+                "-c",
+                "s='0123456789abcdef'; i=0; while [ $i -lt 10 ]; do s=\"$s$s\"; i=$((i+1)); done; printf '%s' \"$s\"",
+            ]);
+
+            let out = run_command_with_timeout(cmd, Duration::from_secs(5))
+                .expect("multi-chunk command should succeed");
+            assert_eq!(out.len(), 16_384);
+            assert_eq!(out, b"0123456789abcdef".repeat(1024));
+        }
+
+        #[cfg(windows)]
+        {
+            let mut cmd = Command::new("cmd");
+            // 512 lines * 18 bytes ("0123456789abcdef\r\n") = 9,216 bytes (> 4096-byte reader buffer)
+            cmd.args(["/C", "for /L %i in (1,1,512) do @echo 0123456789abcdef"]);
+
+            let out = run_command_with_timeout(cmd, Duration::from_secs(5))
+                .expect("multi-chunk command should succeed");
+            assert!(out.len() > 4096);
+            let text = String::from_utf8_lossy(&out);
+            let lines: Vec<&str> = text.lines().collect();
+            assert_eq!(lines.len(), 512);
+            assert!(lines.iter().all(|line| *line == "0123456789abcdef"));
+        }
+    }
+
+    #[test]
+    fn test_run_command_with_timeout_nonzero_exit() {
+        #[cfg(unix)]
+        let cmd = {
+            let mut c = Command::new("sh");
+            c.args(["-c", "exit 42"]);
+            c
+        };
+        #[cfg(windows)]
+        let cmd = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "exit 42"]);
+            c
+        };
+
+        let res = run_command_with_timeout(cmd, Duration::from_secs(5));
+        assert_eq!(res, Err(AdbError::NonZeroExit(Some(42))));
+    }
+
+    #[test]
+    fn test_run_command_with_timeout_enforces_timeout_on_hanging_command() {
+        #[cfg(unix)]
+        let cmd = {
+            let mut c = Command::new("sleep");
+            c.arg("5");
+            c
+        };
+        #[cfg(windows)]
+        let cmd = {
+            let mut c = Command::new("powershell");
+            c.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 5"]);
+            c
+        };
+
+        let timeout = Duration::from_millis(50);
+        let start = Instant::now();
+        let res = run_command_with_timeout(cmd, timeout);
+        let elapsed = start.elapsed();
+
+        assert_eq!(res, Err(AdbError::Timeout(timeout)));
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "Timeout took too long ({elapsed:?}); child pipe may have blocked termination"
+        );
+    }
+
+    #[test]
+    fn test_run_command_with_timeout_zero_duration_immediate() {
+        #[cfg(unix)]
+        let cmd = {
+            let mut c = Command::new("sleep");
+            c.arg("5");
+            c
+        };
+        #[cfg(windows)]
+        let cmd = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "exit 0"]);
+            c
+        };
+
+        let start = Instant::now();
+        let res = run_command_with_timeout(cmd, Duration::ZERO);
+        let elapsed = start.elapsed();
+
+        assert_eq!(res, Err(AdbError::Timeout(Duration::ZERO)));
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "Zero timeout should return immediately, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn test_run_command_with_timeout_missing_binary() {
+        let cmd = Command::new("nonexistent_loganalysis_adb_binary_xyz_98765");
+        let res = run_command_with_timeout(cmd, Duration::from_secs(1));
+        assert!(
+            matches!(res, Err(AdbError::ExecutionFailed(_))),
+            "Expected ExecutionFailed for missing binary, got: {res:?}"
+        );
+    }
 }

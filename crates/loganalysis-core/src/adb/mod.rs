@@ -4,8 +4,8 @@ pub mod logcat;
 use std::path::PathBuf;
 
 pub use device::{
-    is_valid_device_serial, parse_adb_devices_output, scan_adb_device_details, scan_adb_devices,
-    AdbDeviceInfo,
+    is_valid_device_serial, parse_adb_devices_output, run_command_with_timeout,
+    scan_adb_device_details, scan_adb_devices, AdbDeviceInfo,
 };
 pub use logcat::{start_logcat_stream, stream_log_lines, LogcatStreamHandle};
 

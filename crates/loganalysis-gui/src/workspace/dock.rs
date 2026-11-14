@@ -4,6 +4,8 @@ use loganalysis_core::*;
 use crate::types::FilterPanelPosition;
 use super::LogAnalysisWorkspace;
 
+pub const FACET_FILTER_PALETTE: [&str; 5] = ["Cyan", "Green", "Orchid", "Yellow", "Blue"];
+
 /// Computes the top 7 tag facets by fast-sampling up to 25,000 lines from `source`.
 pub fn compute_facet_tags(source: &ActiveLogSource) -> Vec<(String, usize)> {
     let total = source.line_count();
@@ -164,12 +166,11 @@ impl LogAnalysisWorkspace {
 
     /// Adds or toggles a quick filter rule directly from a facet tag chip
     pub fn add_facet_filter(&mut self, tag: &str, is_exclude: bool, cx: &mut Context<Self>) {
-        let palette = ["Cyan", "Green", "Magenta", "Yellow", "Blue"];
-        let color_idx = tag.bytes().map(|b| b as usize).sum::<usize>() % palette.len();
+        let color_idx = tag.bytes().map(|b| b as usize).sum::<usize>() % FACET_FILTER_PALETTE.len();
         let bg_color = if is_exclude {
             "None".to_string()
         } else {
-            palette[color_idx].to_string()
+            FACET_FILTER_PALETTE[color_idx].to_string()
         };
         let text_color = if is_exclude {
             "None".to_string()
@@ -217,5 +218,40 @@ impl LogAnalysisWorkspace {
         )
         .into();
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FACET_FILTER_PALETTE;
+    use loganalysis_core::{evaluate_contrast, parse_color_spec, ContrastLevel};
+
+    #[test]
+    fn test_facet_filter_palette_colors_and_wcag_contrast() {
+        assert_eq!(FACET_FILTER_PALETTE.len(), 5);
+        assert!(FACET_FILTER_PALETTE.contains(&"Orchid"));
+        assert!(!FACET_FILTER_PALETTE.contains(&"Magenta"));
+        assert!(
+            parse_color_spec("Magenta", true).is_none(),
+            "'Magenta' is not in COLOR_MAP and must stay excluded from FACET_FILTER_PALETTE"
+        );
+
+        let fg_hex = parse_color_spec("Black", false)
+            .expect("'Black' foreground must resolve in TEXT_COLOR_MAP");
+
+        for color in FACET_FILTER_PALETTE {
+            let bg_hex = parse_color_spec(color, true)
+                .unwrap_or_else(|| panic!("Palette color '{color}' must resolve via parse_color_spec"));
+            let (ratio, level) = evaluate_contrast(bg_hex, fg_hex);
+            assert!(
+                ratio >= 4.5,
+                "Palette color '{color}' contrast ratio {ratio:.2}:1 with Black must be >= 4.5:1"
+            );
+            assert_eq!(
+                level,
+                ContrastLevel::Pass,
+                "Palette color '{color}' must pass WCAG AA contrast with Black"
+            );
+        }
     }
 }

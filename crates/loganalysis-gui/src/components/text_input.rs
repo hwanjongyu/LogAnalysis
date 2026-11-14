@@ -751,9 +751,11 @@ impl Element for TextElement {
             window.paint_quad(selection);
         }
 
-        let line = prepaint.line.take().unwrap();
+        let Some(line) = prepaint.line.take() else {
+            return;
+        };
         let origin = point(bounds.origin.x - scroll, bounds.origin.y);
-        line.paint(origin, window.line_height(), window, cx).unwrap();
+        let _ = line.paint(origin, window.line_height(), window, cx);
 
         if focus_handle.is_focused(window) {
             if let Some(cursor) = prepaint.cursor.take() {
@@ -1231,6 +1233,34 @@ mod tests {
             super::strip_marked_range_from_content(content, 1..999);
         assert_eq!(stripped_interior, "");
         assert_eq!(cursor_interior, 0);
+    }
+
+    #[test]
+    fn test_text_element_paint_has_no_unwrap_panics() {
+        let src = include_str!("text_input.rs");
+        let after_impl = src
+            .split("impl Element for TextElement")
+            .nth(1)
+            .expect("impl Element for TextElement must exist");
+        let paint_section = after_impl
+            .split("fn paint(")
+            .nth(1)
+            .expect("TextElement::paint must exist")
+            .split("impl Render for TextInput")
+            .next()
+            .expect("impl Render for TextInput must follow TextElement");
+        assert!(
+            !paint_section.contains("prepaint.line.take().unwrap()"),
+            "TextElement::paint must not call .unwrap() on prepaint.line.take()"
+        );
+        assert!(
+            !paint_section.contains(".unwrap()"),
+            "TextElement::paint must not contain .unwrap() calls"
+        );
+        assert!(
+            paint_section.contains("let Some(line) = prepaint.line.take() else"),
+            "TextElement::paint must return gracefully when prepaint.line is None"
+        );
     }
 
 }

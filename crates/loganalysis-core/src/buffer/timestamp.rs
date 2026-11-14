@@ -4,7 +4,58 @@ pub const DAYS_BEFORE_MONTH: [u32; 13] = [
     0, 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335,
 ];
 
+pub const NON_LEAP_DAYS_BEFORE_MONTH: [u32; 13] = [
+    0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334,
+];
+
 pub const ONE_YEAR_MICROS: i64 = 366 * 86_400 * 1_000_000;
+
+#[inline]
+pub fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+#[inline]
+pub fn max_days_in_month(month: u32, is_leap: bool) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
+}
+
+#[inline]
+pub fn day_of_year_with_leap(month: u32, day: u32, is_leap: bool) -> u32 {
+    let m = month.clamp(1, 12) as usize;
+    let table = if is_leap {
+        &DAYS_BEFORE_MONTH
+    } else {
+        &NON_LEAP_DAYS_BEFORE_MONTH
+    };
+    table[m] + day.saturating_sub(1)
+}
+
+#[inline]
+fn leap_years_before(year: i64) -> i64 {
+    let y = year - 1;
+    y.div_euclid(4) - y.div_euclid(100) + y.div_euclid(400)
+}
+
+#[inline]
+pub fn days_since_epoch(year: i32, month: u32, day: u32) -> i64 {
+    let y = year as i64;
+    let leap_days = leap_years_before(y) - leap_years_before(1970);
+    (y - 1970) * 365
+        + leap_days
+        + day_of_year_with_leap(month, day, is_leap_year(year)) as i64
+}
 
 /// Represents a microsecond-precision normalized timestamp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -106,7 +157,8 @@ pub fn extract_timestamp(line: &[u8]) -> Option<LogTimestamp> {
         let millis = parse_3_digits(&trimmed[15..18])?;
 
         if !(1..=12).contains(&month)
-            || !(1..=31).contains(&day)
+            || day == 0
+            || day > max_days_in_month(month, true)
             || hour >= 24
             || min >= 60
             || sec > 60
@@ -135,8 +187,11 @@ pub fn extract_timestamp(line: &[u8]) -> Option<LogTimestamp> {
         let min = parse_2_digits(&trimmed[14..16])?;
         let sec = parse_2_digits(&trimmed[17..19])?;
 
+        let year_i32 = year as i32;
+        let is_leap = is_leap_year(year_i32);
         if !(1..=12).contains(&month)
-            || !(1..=31).contains(&day)
+            || day == 0
+            || day > max_days_in_month(month, is_leap)
             || hour >= 24
             || min >= 60
             || sec > 60
@@ -151,7 +206,7 @@ pub fn extract_timestamp(line: &[u8]) -> Option<LogTimestamp> {
             }
         }
 
-        let days = (year as i64 - 1970) * 365 + day_of_year(month, day) as i64;
+        let days = days_since_epoch(year_i32, month, day);
         let total_micros = calc_micros(days, hour as i64, min as i64, sec as i64, micros);
         return Some(LogTimestamp { total_micros });
     }
@@ -238,8 +293,7 @@ fn parse_4_digits(b: &[u8]) -> Option<u32> {
 
 #[inline]
 fn day_of_year(month: u32, day: u32) -> u32 {
-    let m = month.clamp(1, 12) as usize;
-    DAYS_BEFORE_MONTH[m] + day.saturating_sub(1)
+    day_of_year_with_leap(month, day, true)
 }
 
 #[inline]
@@ -366,5 +420,75 @@ mod tests {
         let t_max = LogTimestamp { total_micros: i64::MAX };
         let delta = compute_delta_micros(t_min, t_max);
         assert_eq!(delta, i64::MAX);
+    }
+
+    #[test]
+    fn test_is_leap_year_gregorian_rules() {
+        assert!(is_leap_year(2000));
+        assert!(is_leap_year(2024));
+        assert!(!is_leap_year(1900));
+        assert!(!is_leap_year(2100));
+        assert!(!is_leap_year(2025));
+        assert!(!is_leap_year(2026));
+    }
+
+    #[test]
+    fn test_max_days_in_month_and_calendar_validation() {
+        assert_eq!(max_days_in_month(1, false), 31);
+        assert_eq!(max_days_in_month(2, false), 28);
+        assert_eq!(max_days_in_month(2, true), 29);
+        assert_eq!(max_days_in_month(4, false), 30);
+        assert_eq!(max_days_in_month(12, true), 31);
+        assert_eq!(max_days_in_month(0, false), 0);
+        assert_eq!(max_days_in_month(13, true), 0);
+
+        // Case 2 (ISO-8601 with explicit year): strict Gregorian leap validation
+        assert!(extract_timestamp(b"2025-02-29 12:00:00.000 Msg").is_none());
+        assert!(extract_timestamp(b"2025-02-29T12:00:00").is_none());
+        assert!(extract_timestamp(b"2100-02-29 12:00:00.000 Msg").is_none());
+        assert!(extract_timestamp(b"1900-02-29 12:00:00.000 Msg").is_none());
+        assert!(extract_timestamp(b"2024-02-29 12:00:00.000 Msg").is_some());
+        assert!(extract_timestamp(b"2024-02-29T12:00:00").is_some());
+        assert!(extract_timestamp(b"2000-02-29 12:00:00.000 Msg").is_some());
+        assert!(extract_timestamp(b"2025-02-30 12:00:00.000 Msg").is_none());
+        assert!(extract_timestamp(b"2025-04-31 12:00:00.000 Msg").is_none());
+        assert!(extract_timestamp(b"2025-02-00 12:00:00.000 Msg").is_none());
+
+        // Case 1 (yearless Android logcat): rejects impossible dates, keeps 02-29 valid
+        assert!(extract_timestamp(b"02-30 12:00:00.000 Msg").is_none());
+        assert!(extract_timestamp(b"04-31 12:00:00.000 Msg").is_none());
+        assert!(extract_timestamp(b"02-29 12:00:00.000 Msg").is_some());
+    }
+
+    #[test]
+    fn test_iso8601_feb_to_mar_transitions_no_phantom_day() {
+        // Non-leap year: Feb 28 23:59:59 -> Mar 1 00:00:00 is exactly 1 second (1_000_000 µs)
+        let non_leap_feb28 = extract_timestamp(b"2025-02-28 23:59:59.000 End of Feb").unwrap();
+        let non_leap_mar01 = extract_timestamp(b"2025-03-01 00:00:00.000 Start of Mar").unwrap();
+        assert_eq!(compute_delta_micros(non_leap_feb28, non_leap_mar01), 1_000_000);
+
+        // Leap year: Feb 29 23:59:59 -> Mar 1 00:00:00 is exactly 1 second (1_000_000 µs)
+        let leap_feb29 = extract_timestamp(b"2024-02-29 23:59:59.000 End of Feb 29").unwrap();
+        let leap_mar01 = extract_timestamp(b"2024-03-01 00:00:00.000 Start of Mar").unwrap();
+        assert_eq!(compute_delta_micros(leap_feb29, leap_mar01), 1_000_000);
+
+        // Leap year: Feb 28 23:59:59 -> Feb 29 00:00:00 is also 1 second
+        let leap_feb28 = extract_timestamp(b"2024-02-28 23:59:59.000 End of Feb 28").unwrap();
+        let leap_feb29_start = extract_timestamp(b"2024-02-29 00:00:00.000 Start of Feb 29").unwrap();
+        assert_eq!(compute_delta_micros(leap_feb28, leap_feb29_start), 1_000_000);
+    }
+
+    #[test]
+    fn test_days_since_epoch_accuracy() {
+        assert_eq!(days_since_epoch(1970, 1, 1), 0);
+        assert_eq!(days_since_epoch(1969, 12, 31), -1);
+        assert_eq!(days_since_epoch(2000, 1, 1), 10_957);
+        assert_eq!(days_since_epoch(2026, 11, 6), 20_763);
+
+        let ts_epoch = extract_timestamp(b"1970-01-01 00:00:00.000 Epoch").unwrap();
+        assert_eq!(ts_epoch.total_micros, 0);
+
+        let ts_2026 = extract_timestamp(b"2026-11-06 00:00:00.000 Midnight").unwrap();
+        assert_eq!(ts_2026.total_micros, 20_763 * 86_400 * 1_000_000);
     }
 }

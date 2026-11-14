@@ -8,7 +8,60 @@ use super::LogAnalysisWorkspace;
 
 const ASYNC_SEARCH_THRESHOLD: usize = 50_000;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchOutcomeUpdate {
+    pub matched_location: Option<(usize, usize)>, // (visible_row, real_idx)
+    pub status_text: String,
+    pub match_status: String,
+}
+
+pub fn format_search_outcome(
+    search_res: Result<Option<SearchResult>, SearchError>,
+) -> SearchOutcomeUpdate {
+    match search_res {
+        Ok(Some(found)) => SearchOutcomeUpdate {
+            matched_location: Some((found.visible_row, found.real_idx)),
+            status_text: format!("Found match at line {}", found.real_idx + 1),
+            match_status: format!("Line {}", found.real_idx + 1),
+        },
+        Ok(None) => SearchOutcomeUpdate {
+            matched_location: None,
+            status_text: "Search pattern not found".to_string(),
+            match_status: "0 matches".to_string(),
+        },
+        Err(SearchError::InvalidRegex(err)) => SearchOutcomeUpdate {
+            matched_location: None,
+            status_text: format!("Regex syntax error: {err}"),
+            match_status: "Regex Error".to_string(),
+        },
+        Err(err) => SearchOutcomeUpdate {
+            matched_location: None,
+            status_text: format!("Search error: {err}"),
+            match_status: "Error".to_string(),
+        },
+    }
+}
+
 impl LogAnalysisWorkspace {
+    fn apply_search_result(
+        &mut self,
+        search_res: Result<Option<SearchResult>, SearchError>,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(search_res, Err(SearchError::Cancelled)) {
+            return;
+        }
+        let outcome = format_search_outcome(search_res);
+        if let Some((visible_row, real_idx)) = outcome.matched_location {
+            self.selection.select(visible_row, real_idx);
+            self.scroll_handle
+                .scroll_to_item(visible_row, ScrollStrategy::Center);
+        }
+        self.status_text = outcome.status_text.into();
+        self.search_match_status = Some(outcome.match_status);
+        cx.notify();
+    }
+
     /// Cyclic search forward or backward (with async dispatch for large logs)
     pub fn search(&mut self, forward: bool, cx: &mut Context<Self>) {
         let input_text = self.find_input.read(cx).text().trim().to_string();
@@ -73,37 +126,15 @@ impl LogAnalysisWorkspace {
                             return;
                         }
 
-                        if let Ok(Some(found)) = search_res {
-                            workspace.selection.select(found.visible_row, found.real_idx);
-                            workspace
-                                .scroll_handle
-                                .scroll_to_item(found.visible_row, ScrollStrategy::Center);
-                            workspace.status_text =
-                                format!("Found match at line {}", found.real_idx + 1).into();
-                            workspace.search_match_status =
-                                Some(format!("Line {}", found.real_idx + 1));
-                        } else {
-                            workspace.status_text = "Search pattern not found".into();
-                            workspace.search_match_status = Some("0 matches".into());
-                        }
-                        cx.notify();
+                        workspace.apply_search_result(search_res, cx);
                     });
                 }
             })
             .detach();
-        } else if let Ok(Some(found)) =
-            search_in_log(&*source, &res.visible_indices, &query, start_row, None, 0, None)
-        {
-            self.selection.select(found.visible_row, found.real_idx);
-            self.scroll_handle
-                .scroll_to_item(found.visible_row, ScrollStrategy::Center);
-            self.status_text = format!("Found match at line {}", found.real_idx + 1).into();
-            self.search_match_status = Some(format!("Line {}", found.real_idx + 1));
-            cx.notify();
         } else {
-            self.status_text = "Search pattern not found".into();
-            self.search_match_status = Some("0 matches".into());
-            cx.notify();
+            let search_res =
+                search_in_log(&*source, &res.visible_indices, &query, start_row, None, 0, None);
+            self.apply_search_result(search_res, cx);
         }
     }
 
@@ -146,5 +177,73 @@ impl LogAnalysisWorkspace {
         }
         self.update_cached_search_matcher();
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_search_outcome, SearchOutcomeUpdate};
+    use crate::components::find_bar::is_find_status_error;
+    use loganalysis_core::{SearchError, SearchResult};
+
+    #[test]
+    fn test_format_search_outcome_match_found() {
+        let outcome = format_search_outcome(Ok(Some(SearchResult {
+            visible_row: 3,
+            real_idx: 41,
+        })));
+        assert_eq!(
+            outcome,
+            SearchOutcomeUpdate {
+                matched_location: Some((3, 41)),
+                status_text: "Found match at line 42".to_string(),
+                match_status: "Line 42".to_string(),
+            }
+        );
+        assert!(!is_find_status_error(&outcome.match_status));
+    }
+
+    #[test]
+    fn test_format_search_outcome_not_found() {
+        let outcome = format_search_outcome(Ok(None));
+        assert_eq!(
+            outcome,
+            SearchOutcomeUpdate {
+                matched_location: None,
+                status_text: "Search pattern not found".to_string(),
+                match_status: "0 matches".to_string(),
+            }
+        );
+        assert!(is_find_status_error(&outcome.match_status));
+    }
+
+    #[test]
+    fn test_format_search_outcome_invalid_regex() {
+        let outcome = format_search_outcome(Err(SearchError::InvalidRegex(
+            "unclosed group".to_string(),
+        )));
+        assert_eq!(
+            outcome,
+            SearchOutcomeUpdate {
+                matched_location: None,
+                status_text: "Regex syntax error: unclosed group".to_string(),
+                match_status: "Regex Error".to_string(),
+            }
+        );
+        assert!(is_find_status_error(&outcome.match_status));
+    }
+
+    #[test]
+    fn test_format_search_outcome_cancelled() {
+        let outcome = format_search_outcome(Err(SearchError::Cancelled));
+        assert_eq!(
+            outcome,
+            SearchOutcomeUpdate {
+                matched_location: None,
+                status_text: "Search error: Search cancelled".to_string(),
+                match_status: "Error".to_string(),
+            }
+        );
+        assert!(is_find_status_error(&outcome.match_status));
     }
 }

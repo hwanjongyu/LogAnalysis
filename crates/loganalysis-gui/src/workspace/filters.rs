@@ -92,6 +92,30 @@ pub fn read_filter_profile_bounded(path: &std::path::Path) -> std::io::Result<St
     String::from_utf8(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
+/// Validates a filter rule pattern before saving.
+/// When `is_regex` is true, validates syntax, DFA size limits, and ReDoS nested-repetition rules
+/// identically to `loganalysis_core::CompiledMatcher`.
+pub fn validate_filter_pattern(
+    pattern: &str,
+    is_regex: bool,
+    is_case_sensitive: bool,
+) -> Result<(), String> {
+    if pattern.trim().is_empty() {
+        return Err("Filter pattern cannot be empty".to_string());
+    }
+    if is_regex {
+        loganalysis_core::CompiledMatcher::new(pattern, is_case_sensitive, true).map_err(|e| {
+            match e {
+                loganalysis_core::FilterError::InvalidRegex(msg) => {
+                    format!("Invalid filter regex: {msg}")
+                }
+                other => format!("Invalid filter regex: {other}"),
+            }
+        })?;
+    }
+    Ok(())
+}
+
 impl LogAnalysisWorkspace {
     /// Imports filter profile JSON supporting all 3 legacy Python formats
     pub fn import_filters_json(
@@ -237,8 +261,12 @@ impl LogAnalysisWorkspace {
     /// Saves filter from modal into tab
     pub fn save_modal_filter(&mut self, cx: &mut Context<Self>) {
         let pattern = self.modal_pattern_input.read(cx).text().trim().to_string();
-        if pattern.is_empty() {
-            self.status_text = "Filter pattern cannot be empty".into();
+        if let Err(err) = validate_filter_pattern(
+            &pattern,
+            self.filter_edit_modal.is_regex,
+            self.filter_edit_modal.is_case_sensitive,
+        ) {
+            self.status_text = err.into();
             cx.notify();
             return;
         }
@@ -511,7 +539,7 @@ impl LogAnalysisWorkspace {
 mod tests {
     use super::{
         MAX_FILTER_PROFILE_BYTES, atomic_replace_file, build_unique_temp_path,
-        read_filter_profile_bounded,
+        read_filter_profile_bounded, validate_filter_pattern,
     };
 
     #[test]
@@ -561,5 +589,59 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"second");
 
         let _ = std::fs::remove_file(&target);
+    }
+
+    #[test]
+    fn test_validate_filter_pattern_rejects_empty_and_whitespace() {
+        for empty in ["", "   ", "\t\n"] {
+            assert!(
+                validate_filter_pattern(empty, false, false).is_err(),
+                "Literal empty/whitespace '{empty:?}' should be rejected"
+            );
+            assert!(
+                validate_filter_pattern(empty, true, false).is_err(),
+                "Regex empty/whitespace '{empty:?}' should be rejected"
+            );
+            assert!(
+                validate_filter_pattern(empty, true, true).is_err(),
+                "Case-sensitive regex empty/whitespace '{empty:?}' should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_filter_pattern_rejects_invalid_regex_syntax() {
+        for invalid in ["[unclosed", "(abc"] {
+            let err = validate_filter_pattern(invalid, true, false)
+                .expect_err("Invalid regex syntax should be rejected");
+            assert!(
+                err.contains("Invalid filter regex:"),
+                "Expected 'Invalid filter regex:' in error, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_filter_pattern_rejects_redos_nested_repetition() {
+        let err = validate_filter_pattern("(?=(a+)+)b", true, false)
+            .expect_err("ReDoS lookaround nested repetition should be rejected");
+        assert!(
+            err.contains("Invalid filter regex:"),
+            "Expected 'Invalid filter regex:' in error, got: {err}"
+        );
+        assert!(
+            err.contains("ReDoS"),
+            "Expected ReDoS protection message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_filter_pattern_accepts_valid_regex_and_literal_brackets() {
+        assert_eq!(
+            validate_filter_pattern(r"^E/.*timeout\d+$", true, false),
+            Ok(())
+        );
+        assert_eq!(validate_filter_pattern("[ERROR", false, false), Ok(()));
+        assert_eq!(validate_filter_pattern("foo(", false, true), Ok(()));
     }
 }
