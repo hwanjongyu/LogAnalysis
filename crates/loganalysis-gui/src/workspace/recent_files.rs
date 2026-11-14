@@ -98,7 +98,7 @@ pub(crate) fn save_recent_files(files: &[std::path::PathBuf]) {
         if let Ok(json) = serde_json::to_string_pretty(files) {
             let tmp = crate::workspace::filters::build_unique_temp_path(&path);
             if std::fs::write(&tmp, json).is_ok() {
-                if std::fs::rename(&tmp, &path).is_err() {
+                if crate::workspace::filters::atomic_replace_file(&tmp, &path).is_err() {
                     let _ = std::fs::remove_file(&tmp);
                 }
             } else {

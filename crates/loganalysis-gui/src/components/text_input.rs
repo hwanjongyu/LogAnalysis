@@ -861,6 +861,7 @@ pub fn find_word_range_at(content: &str, offset: usize) -> Range<usize> {
 }
 
 #[cfg(test)]
+#[allow(clippy::reversed_empty_ranges)]
 mod tests {
     use super::*;
 

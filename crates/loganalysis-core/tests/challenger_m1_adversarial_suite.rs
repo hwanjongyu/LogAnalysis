@@ -71,7 +71,7 @@ fn challenge_1_multibyte_utf8_and_emojis_at_all_boundaries() {
         // ZWJ (Zero Width Joiner) emoji sequence (family / flags)
         "11-06 18:00:00.123  1000  2000 I Tag: 👨‍👩‍👧‍👦 complex emoji",
         // Inverted / null / control characters
-        "\0\0\011-06 18:00:00.123  1000  2000 E Tag: Msg\0\0",
+        "\0\0\x0011-06 18:00:00.123  1000  2000 E Tag: Msg\0\0",
         "\t\t  11-06 18:00:00.123 \t 1000 \t 2000 \t E \t Tag: Msg \t\n",
     ];
 
@@ -256,8 +256,8 @@ fn challenge_3_feb29_mar01_monotonicity_and_calendar_math() {
     let mut prev_ts = -1i64;
     let mut total_days_tested = 0;
 
-    for m in 1..=12 {
-        for d in 1..=days_in_month[m] {
+    for (m, &days) in days_in_month.iter().enumerate().skip(1) {
+        for d in 1..=days {
             let line = format!("{:02}-{:02} 00:00:00.000 1 1 I Tag: msg", m, d);
             let ts = extract_timestamp(line.as_bytes()).expect("Day must parse");
             assert!(

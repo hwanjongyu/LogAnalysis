@@ -25,6 +25,7 @@ pub struct StreamLogBuffer {
     trim_batch: usize,
     max_line_len: usize,
     longest_line_text: String,
+    total_trimmed: usize,
 }
 
 impl Default for StreamLogBuffer {
@@ -41,6 +42,7 @@ impl StreamLogBuffer {
             trim_batch,
             max_line_len: 0,
             longest_line_text: String::new(),
+            total_trimmed: 0,
         }
     }
 
@@ -81,6 +83,7 @@ impl StreamLogBuffer {
             .any(|l| UnicodeWidthStr::width(l.trim_end()) >= self.max_line_len);
 
         self.lines.drain(0..excess);
+        self.total_trimmed = self.total_trimmed.saturating_add(excess);
 
         if had_longest {
             self.recalculate_max_line();
@@ -110,6 +113,15 @@ impl StreamLogBuffer {
         self.lines.clear();
         self.max_line_len = 0;
         self.longest_line_text.clear();
+        self.total_trimmed = 0;
+    }
+
+    pub fn total_trimmed(&self) -> usize {
+        self.total_trimmed
+    }
+
+    pub fn head_trimmed_since(&self, prev_total_trimmed: usize) -> usize {
+        self.total_trimmed.saturating_sub(prev_total_trimmed)
     }
 
     pub fn max_line_len(&self) -> usize {

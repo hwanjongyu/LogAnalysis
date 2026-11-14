@@ -64,12 +64,21 @@ echo "==> [3/4] Preparing appimagetool..."
 TOOL_DIR="${PROJECT_ROOT}/target/tools"
 mkdir -p "${TOOL_DIR}"
 APPIMAGETOOL="${TOOL_DIR}/appimagetool-x86_64.AppImage"
+APPIMAGETOOL_VERSION="13"
+APPIMAGETOOL_SHA256="d918b4ed5479b4d8479e03cca93d4073000b028965e43fb2945142f96e5720b4"
+APPIMAGETOOL_URL="https://github.com/AppImage/AppImageKit/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
 
 if [ ! -f "${APPIMAGETOOL}" ]; then
-    echo "Downloading official appimagetool..."
-    curl -fsSL -o "${APPIMAGETOOL}" https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-    chmod 755 "${APPIMAGETOOL}"
+    echo "Downloading official appimagetool (v${APPIMAGETOOL_VERSION})..."
+    curl -fsSL -o "${APPIMAGETOOL}" "${APPIMAGETOOL_URL}"
 fi
+
+if ! echo "${APPIMAGETOOL_SHA256}  ${APPIMAGETOOL}" | sha256sum -c -; then
+    echo "Error: SHA256 checksum verification failed for ${APPIMAGETOOL}" >&2
+    rm -f "${APPIMAGETOOL}"
+    exit 1
+fi
+chmod 755 "${APPIMAGETOOL}"
 
 # 4. Generate AppImage
 echo "==> [4/4] Generating ${OUTPUT_APPIMAGE}..."

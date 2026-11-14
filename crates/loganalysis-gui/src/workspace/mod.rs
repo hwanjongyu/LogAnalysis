@@ -506,6 +506,10 @@ impl LogAnalysisWorkspace {
         let token = self.filter_cancel_gen.clone();
         let show_only = self.show_only_filtered;
 
+        let snapshot_len = source.line_count();
+        let snapshot_trimmed = source.total_trimmed();
+        let filters_for_ui = active_filters.clone();
+
         let source_for_bg = source.clone();
         let source_for_ui = source.clone();
 
@@ -546,10 +550,26 @@ impl LogAnalysisWorkspace {
                             return;
                         }
 
+                        let mut final_res = res;
+                        let Some(src) = &workspace.log_source else {
+                            return;
+                        };
+                        let caught_up = reconcile_snapshot_filter_result(
+                            &mut final_res,
+                            src,
+                            snapshot_len,
+                            snapshot_trimmed,
+                            &filters_for_ui,
+                            show_only,
+                        );
+
                         let prev_anchor = workspace.selection.anchor_source_idx;
-                        workspace.filter_result = Some(Arc::new(res));
+                        workspace.filter_result = Some(Arc::new(final_res));
                         workspace.heatmap_data = Some(Arc::new(heatmap));
                         workspace.timeline_data = Some(Arc::new(timeline));
+                        if caught_up {
+                            workspace.update_analytics_data_async(cx);
+                        }
 
                         // Viewport anchor preservation
                         if let (Some(anchor), Some(res)) = (prev_anchor, &workspace.filter_result) {
@@ -568,7 +588,11 @@ impl LogAnalysisWorkspace {
                             .as_ref()
                             .map(|r| r.visible_indices.len())
                             .unwrap_or(0);
-                        let total_count = source_for_ui.line_count();
+                        let total_count = workspace
+                            .log_source
+                            .as_ref()
+                            .map(|s| s.line_count())
+                            .unwrap_or_else(|| source_for_ui.line_count());
                         workspace.status_text = format!(
                             "Visible: {} / {} lines ({} matched)",
                             visible_count,
@@ -1206,4 +1230,92 @@ impl LogAnalysisWorkspace {
         self.status_text = format!("Added quick filter for tag: {}", trimmed).into();
     }
 
+}
+
+/// Reconciles a background-filtered snapshot result against the live `ActiveLogSource`
+/// so lines appended or ring-buffer-trimmed while background filtering ran are reflected accurately.
+fn reconcile_snapshot_filter_result(
+    final_res: &mut FilterResult,
+    live_src: &ActiveLogSource,
+    snapshot_len: usize,
+    snapshot_trimmed: usize,
+    filters: &[FilterRule],
+    show_only: bool,
+) -> bool {
+    let current_len = live_src.line_count();
+    let delta_trimmed = live_src.head_trimmed_since(snapshot_trimmed);
+    let catchup_start = snapshot_len.saturating_sub(delta_trimmed);
+    if current_len > catchup_start || delta_trimmed > 0 {
+        loganalysis_core::filter::engine::append_streaming_batch(
+            final_res,
+            live_src,
+            catchup_start..current_len,
+            delta_trimmed,
+            filters,
+            show_only,
+        );
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reconcile_snapshot_filter_result;
+    use loganalysis_core::{execute_filtering, ActiveLogSource, FilterRule, LogSource, StreamLogBuffer};
+
+    #[test]
+    fn test_reconcile_snapshot_filter_result_with_append_and_trim() {
+        let mut stream = StreamLogBuffer::new(5, 2);
+        stream.append_chunk(vec![
+            "01-01 00:00:00.000 1 1 E Tag: snap_0".to_string(),
+            "01-01 00:00:01.000 1 1 I Tag: snap_1".to_string(),
+            "01-01 00:00:02.000 1 1 E Tag: snap_2".to_string(),
+            "01-01 00:00:03.000 1 1 I Tag: snap_3".to_string(),
+        ]);
+        assert_eq!(stream.total_trimmed(), 0);
+
+        let filters = vec![FilterRule {
+            text: "E Tag:".to_string(),
+            regex: false,
+            case_sensitive: true,
+            exclude: false,
+            active: true,
+            ..Default::default()
+        }];
+
+        // Snapshot before streaming mutations
+        let snapshot_len = stream.line_count();
+        let snapshot_trimmed = stream.total_trimmed();
+        let mut snapshot_res = execute_filtering(&stream, &filters, true, None, 1).unwrap();
+        assert_eq!(snapshot_res.visible_indices, vec![0, 2]);
+
+        // Stream appends 3 more lines (total 7) and trims 2 leading lines (capacity 5, trim_batch 2)
+        stream.append_chunk(vec![
+            "01-01 00:00:04.000 1 1 E Tag: live_4".to_string(),
+            "01-01 00:00:05.000 1 1 I Tag: live_5".to_string(),
+            "01-01 00:00:06.000 1 1 E Tag: live_6".to_string(),
+        ]);
+        assert_eq!(stream.trim_if_needed(), Some(2));
+        assert_eq!(stream.total_trimmed(), 2);
+        assert_eq!(stream.head_trimmed_since(snapshot_trimmed), 2);
+        assert_eq!(stream.line_count(), 5);
+
+        let live_src = ActiveLogSource::Stream(stream);
+        let caught_up = reconcile_snapshot_filter_result(
+            &mut snapshot_res,
+            &live_src,
+            snapshot_len,
+            snapshot_trimmed,
+            &filters,
+            true,
+        );
+        assert!(caught_up);
+
+        // Surviving lines in live_src:
+        // [0] snap_2 (matched), [1] snap_3, [2] live_4 (matched), [3] live_5, [4] live_6 (matched)
+        assert_eq!(snapshot_res.visible_indices, vec![0, 2, 4]);
+        assert_eq!(snapshot_res.total_matched_lines, 3);
+    }
 }

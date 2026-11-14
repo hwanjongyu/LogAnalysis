@@ -54,5 +54,8 @@ jobs:
       - name: Cargo Check
         run: cargo check --workspace --all-targets
 
+      - name: Cargo Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
       - name: Cargo Test
         run: cargo test --workspace

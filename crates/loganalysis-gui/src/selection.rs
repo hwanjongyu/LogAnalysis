@@ -20,20 +20,25 @@ impl SelectionModel {
         self.anchor_source_idx = None;
     }
 
-    /// Shifts selection indices after `trimmed` leading lines are dropped from a rolling stream buffer.
-    pub fn shift_on_trim(&mut self, trimmed: usize) {
-        if trimmed == 0 {
+    /// Shifts selection indices after `raw_trimmed_count` leading lines are dropped from a rolling stream buffer,
+    /// where `dropped_visible_rows` visible rows fell off the front of `visible_indices`.
+    pub fn shift_on_trim(&mut self, dropped_visible_rows: usize, raw_trimmed_count: usize) {
+        if raw_trimmed_count == 0 && dropped_visible_rows == 0 {
             return;
         }
         if let Some(anchor) = self.anchor_source_idx {
-            if anchor < trimmed {
+            if anchor < raw_trimmed_count {
                 self.clear();
                 return;
             }
-            self.anchor_source_idx = Some(anchor - trimmed);
+            self.anchor_source_idx = Some(anchor - raw_trimmed_count);
         }
         if let Some(row) = self.selected_row {
-            self.selected_row = Some(row.saturating_sub(trimmed));
+            if row < dropped_visible_rows {
+                self.selected_row = None;
+            } else {
+                self.selected_row = Some(row - dropped_visible_rows);
+            }
         }
     }
 }
@@ -47,16 +52,28 @@ mod tests {
         let mut sel = SelectionModel::new();
         sel.select(15, 20);
 
-        sel.shift_on_trim(0);
+        sel.shift_on_trim(0, 0);
         assert_eq!(sel.selected_row, Some(15));
         assert_eq!(sel.anchor_source_idx, Some(20));
 
-        sel.shift_on_trim(5);
+        sel.shift_on_trim(5, 10);
         assert_eq!(sel.selected_row, Some(10));
-        assert_eq!(sel.anchor_source_idx, Some(15));
+        assert_eq!(sel.anchor_source_idx, Some(10));
 
-        sel.shift_on_trim(16);
+        sel.shift_on_trim(5, 11);
         assert_eq!(sel.selected_row, None);
         assert_eq!(sel.anchor_source_idx, None);
+
+        // Verify visible index space is independent from large raw buffer evictions
+        sel.select(50, 25_000);
+        sel.shift_on_trim(5, 20_000);
+        assert_eq!(sel.selected_row, Some(45));
+        assert_eq!(sel.anchor_source_idx, Some(5_000));
+
+        // Verify visible row falling below dropped_visible_rows clears selected_row even if anchor survives
+        sel.select(3, 25_000);
+        sel.shift_on_trim(5, 20_000);
+        assert_eq!(sel.selected_row, None);
+        assert_eq!(sel.anchor_source_idx, Some(5_000));
     }
 }

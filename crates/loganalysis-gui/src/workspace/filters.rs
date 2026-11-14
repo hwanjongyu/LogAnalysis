@@ -24,6 +24,49 @@ pub fn build_unique_temp_path(target: &std::path::Path) -> std::path::PathBuf {
     target.with_file_name(format!(".{file_name}.{pid}.{unique_nanos}.tmp"))
 }
 
+/// Atomically replaces `to` with `from` across platforms (including Windows where `std::fs::rename`
+/// fails if the destination file already exists unless `MOVEFILE_REPLACE_EXISTING` is passed).
+pub fn atomic_replace_file(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn MoveFileExW(
+                lpExistingFileName: *const u16,
+                lpNewFileName: *const u16,
+                dwFlags: u32,
+            ) -> i32;
+        }
+        let from_wide: Vec<u16> = from
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let to_wide: Vec<u16> = to
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let res = unsafe {
+            MoveFileExW(
+                from_wide.as_ptr(),
+                to_wide.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING,
+            )
+        };
+        if res == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(from, to)
+    }
+}
+
 /// Reads a filter profile JSON file up to `MAX_FILTER_PROFILE_BYTES` to prevent OOM on oversized files.
 pub fn read_filter_profile_bounded(path: &std::path::Path) -> std::io::Result<String> {
     use std::io::Read;
@@ -278,7 +321,7 @@ impl LogAnalysisWorkspace {
                         .spawn(async move {
                             let tmp_path = build_unique_temp_path(&path_for_bg);
                             let res = std::fs::write(&tmp_path, &json_bytes)
-                                .and_then(|_| std::fs::rename(&tmp_path, &path_for_bg));
+                                .and_then(|_| atomic_replace_file(&tmp_path, &path_for_bg));
                             if res.is_err() {
                                 let _ = std::fs::remove_file(&tmp_path);
                             }
@@ -467,7 +510,8 @@ impl LogAnalysisWorkspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_FILTER_PROFILE_BYTES, build_unique_temp_path, read_filter_profile_bounded,
+        MAX_FILTER_PROFILE_BYTES, atomic_replace_file, build_unique_temp_path,
+        read_filter_profile_bounded,
     };
 
     #[test]
@@ -497,5 +541,25 @@ mod tests {
         let err = read_filter_profile_bounded(&oversized_path).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         let _ = std::fs::remove_file(&oversized_path);
+    }
+
+    #[test]
+    fn test_atomic_replace_file_overwrites_existing() {
+        let dir = std::env::temp_dir();
+        let target = build_unique_temp_path(&dir.join("atomic_replace_target.json"));
+        let tmp1 = build_unique_temp_path(&target);
+        let tmp2 = build_unique_temp_path(&target);
+
+        std::fs::write(&tmp1, b"first").unwrap();
+        atomic_replace_file(&tmp1, &target).unwrap();
+        assert!(!tmp1.exists());
+        assert_eq!(std::fs::read(&target).unwrap(), b"first");
+
+        std::fs::write(&tmp2, b"second").unwrap();
+        atomic_replace_file(&tmp2, &target).unwrap();
+        assert!(!tmp2.exists());
+        assert_eq!(std::fs::read(&target).unwrap(), b"second");
+
+        let _ = std::fs::remove_file(&target);
     }
 }

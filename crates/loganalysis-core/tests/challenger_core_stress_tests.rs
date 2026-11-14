@@ -352,7 +352,7 @@ fn test_challenge_2_adb_utf8_multiple_consecutive_chunk_boundaries() {
     for boundary in 1..=3 {
         let target_len = boundary * 65536;
         let fill = target_len - stream_bytes.len() - 2; // leave 2 bytes before boundary
-        stream_bytes.extend(std::iter::repeat(b'Z').take(fill));
+        stream_bytes.extend(std::iter::repeat_n(b'Z', fill));
         // Put 2 bytes of emoji at end of chunk, 2 bytes at start of next chunk
         stream_bytes.extend_from_slice(&emoji[0..2]);
         assert_eq!(stream_bytes.len(), target_len);
@@ -377,9 +377,9 @@ fn test_challenge_2_adb_utf8_multiple_consecutive_chunk_boundaries() {
         );
     }
     // Chunks 1, 2, 3 must start with '🔥'
-    for idx in 1..4 {
+    for (idx, line) in lines.iter().enumerate().take(4).skip(1) {
         assert!(
-            lines[idx].starts_with('🔥'),
+            line.starts_with('🔥'),
             "Line {idx} should start with '🔥'"
         );
     }

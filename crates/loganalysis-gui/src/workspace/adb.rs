@@ -238,8 +238,17 @@ impl LogAnalysisWorkspace {
                                             };
                                             trimmed_count = trimmed;
                                             if trimmed > 0 {
+                                                let dropped_visible = workspace
+                                                    .filter_result
+                                                    .as_ref()
+                                                    .map_or(0, |res| {
+                                                        res.visible_indices
+                                                            .partition_point(|&idx| idx < trimmed)
+                                                    });
                                                 workspace.bookmarks.shift_on_trim(trimmed);
-                                                workspace.selection.shift_on_trim(trimmed);
+                                                workspace
+                                                    .selection
+                                                    .shift_on_trim(dropped_visible, trimmed);
                                             }
 
                                             // Incremental filtering: evaluate only newly arrived lines without full buffer Rayon pass
@@ -530,8 +539,15 @@ impl LogAnalysisWorkspace {
                             0
                         };
                         if trimmed > 0 {
+                            let dropped_visible = self
+                                .filter_result
+                                .as_ref()
+                                .map_or(0, |res| {
+                                    res.visible_indices
+                                        .partition_point(|&idx| idx < trimmed)
+                                });
                             self.bookmarks.shift_on_trim(trimmed);
-                            self.selection.shift_on_trim(trimmed);
+                            self.selection.shift_on_trim(dropped_visible, trimmed);
                         }
                         self.reapply_filters(cx);
                     }

@@ -52,6 +52,22 @@ impl ActiveLogSource {
             _ => None,
         }
     }
+
+    /// Returns the cumulative number of leading lines evicted from a streaming buffer.
+    pub fn total_trimmed(&self) -> usize {
+        match self {
+            Self::Stream(s) => s.total_trimmed(),
+            _ => 0,
+        }
+    }
+
+    /// Returns how many leading lines were evicted since `prev_total_trimmed`.
+    pub fn head_trimmed_since(&self, prev_total_trimmed: usize) -> usize {
+        match self {
+            Self::Stream(s) => s.head_trimmed_since(prev_total_trimmed),
+            _ => 0,
+        }
+    }
 }
 
 impl LogSource for ActiveLogSource {
