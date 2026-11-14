@@ -244,7 +244,7 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
         },
         PaletteCommand {
             id: PaletteCommandId::ResetZoom,
-            title: "View: Reset Zoom (Default 13px)",
+            title: "View: Reset Zoom (Default 12px)",
             category: "VIEW",
             shortcut: None,
         },
@@ -432,25 +432,6 @@ pub fn render_command_palette(
                     this.close_command_palette(cx);
                 }),
             )
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" {
-                    this.close_command_palette(cx);
-                } else if event.keystroke.key == "up" {
-                    if this.palette_selected_index > 0 {
-                        this.palette_selected_index -= 1;
-                        cx.notify();
-                    }
-                } else if event.keystroke.key == "down" {
-                    let query = this.palette_input.read(cx).text().to_string();
-                    let matches = this.get_filtered_palette_commands(&query);
-                    if this.palette_selected_index + 1 < matches.len() {
-                        this.palette_selected_index += 1;
-                        cx.notify();
-                    }
-                } else if event.keystroke.key == "enter" {
-                    this.submit_command_palette(Some(window), cx);
-                }
-            }))
             .child(
                 div()
                     .id("command-palette-card")
@@ -470,12 +451,16 @@ pub fn render_command_palette(
                             .w_full()
                             .bg(theme.border_highlight),
                     )
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                        if event.keystroke.key == "up" {
+                    .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        if event.keystroke.key == "escape" {
+                            this.close_command_palette(cx);
+                            cx.stop_propagation();
+                        } else if event.keystroke.key == "up" {
                             if this.palette_selected_index > 0 {
                                 this.palette_selected_index -= 1;
                                 cx.notify();
                             }
+                            cx.stop_propagation();
                         } else if event.keystroke.key == "down" {
                             let query = this.palette_input.read(cx).text().to_string();
                             let matches = this.get_filtered_palette_commands(&query);
@@ -483,8 +468,10 @@ pub fn render_command_palette(
                                 this.palette_selected_index += 1;
                                 cx.notify();
                             }
+                            cx.stop_propagation();
                         } else if event.keystroke.key == "enter" {
                             this.submit_command_palette(Some(window), cx);
+                            cx.stop_propagation();
                         }
                     }))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {

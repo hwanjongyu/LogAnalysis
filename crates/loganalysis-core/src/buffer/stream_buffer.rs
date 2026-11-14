@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use unicode_width::UnicodeWidthStr;
 
+use super::timestamp::extract_timestamp;
 use super::{trim_line_end, LogSource};
 use crate::constants::{MAX_MONITOR_LINES, MONITOR_TRIM_BATCH};
 
@@ -139,5 +140,10 @@ impl LogSource for StreamLogBuffer {
     #[inline]
     fn get_line_arc(&self, idx: usize) -> Option<Arc<str>> {
         self.lines.get(idx).cloned()
+    }
+
+    #[inline]
+    fn get_timestamp_micros(&self, idx: usize) -> Option<i64> {
+        self.get_raw_line(idx).and_then(extract_timestamp).map(|t| t.total_micros)
     }
 }

@@ -1,5 +1,5 @@
 use crate::buffer::merged_buffer::{ONE_YEAR_MICROS, YEAR_ROLLOVER_THRESHOLD_MICROS};
-use crate::buffer::{extract_timestamp, LogSource};
+use crate::buffer::LogSource;
 use crate::filter::engine::ResolvedStyle;
 use crate::filter::heatmap::{detect_line_severity, LineSeverity};
 
@@ -55,20 +55,16 @@ impl EpsTimelineData {
         let mut max_t = None;
 
         for &src_idx in visible_indices.iter().take(2000) {
-            if let Some(raw) = source.get_raw_line(src_idx) {
-                if let Some(t) = extract_timestamp(raw) {
-                    min_t = Some(t.total_micros);
-                    break;
-                }
+            if let Some(micros) = source.get_timestamp_micros(src_idx) {
+                min_t = Some(micros);
+                break;
             }
         }
         if min_t.is_none() {
             for &src_idx in visible_indices.iter() {
-                if let Some(raw) = source.get_raw_line(src_idx) {
-                    if let Some(t) = extract_timestamp(raw) {
-                        min_t = Some(t.total_micros);
-                        break;
-                    }
+                if let Some(micros) = source.get_timestamp_micros(src_idx) {
+                    min_t = Some(micros);
+                    break;
                 }
             }
         }
@@ -78,20 +74,16 @@ impl EpsTimelineData {
         };
 
         for &src_idx in visible_indices.iter().rev().take(2000) {
-            if let Some(raw) = source.get_raw_line(src_idx) {
-                if let Some(t) = extract_timestamp(raw) {
-                    max_t = Some(t.total_micros);
-                    break;
-                }
+            if let Some(micros) = source.get_timestamp_micros(src_idx) {
+                max_t = Some(micros);
+                break;
             }
         }
         if max_t.is_none() {
             for &src_idx in visible_indices.iter().rev() {
-                if let Some(raw) = source.get_raw_line(src_idx) {
-                    if let Some(t) = extract_timestamp(raw) {
-                        max_t = Some(t.total_micros);
-                        break;
-                    }
+                if let Some(micros) = source.get_timestamp_micros(src_idx) {
+                    max_t = Some(micros);
+                    break;
                 }
             }
         }
@@ -137,14 +129,10 @@ impl EpsTimelineData {
 
         // 2. Reduce lines into temporal buckets
         for (vis_idx, &src_idx) in visible_indices.iter().enumerate() {
-            let Some(raw) = source.get_raw_line(src_idx) else {
-                continue;
-            };
-            let Some(t) = extract_timestamp(raw) else {
+            let Some(mut micros) = source.get_timestamp_micros(src_idx) else {
                 continue;
             };
 
-            let mut micros = t.total_micros;
             if micros < min_micros - YEAR_ROLLOVER_THRESHOLD_MICROS {
                 micros += ONE_YEAR_MICROS;
             }
@@ -163,7 +151,8 @@ impl EpsTimelineData {
                 }
 
                 let style = styles.get(vis_idx).copied().unwrap_or_default();
-                match detect_line_severity(Some(raw), &style) {
+                let raw = source.get_raw_line(src_idx);
+                match detect_line_severity(raw, &style) {
                     LineSeverity::Error => buckets[b_idx].error_count += 1,
                     LineSeverity::Warning => buckets[b_idx].warn_count += 1,
                     _ => {}

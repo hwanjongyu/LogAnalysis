@@ -324,7 +324,7 @@ fn test_legitimate_lookarounds_real_world_log_corpus() {
             match_count_3 += 1;
             let ranges = matcher_korean.find_match_ranges(line, 1);
             assert_eq!(ranges.len(), 1);
-            assert!((&line[ranges[0].clone()]).starts_with("USER_"));
+            assert!(line[ranges[0].clone()].starts_with("USER_"));
         } else {
             assert!(!matched);
         }

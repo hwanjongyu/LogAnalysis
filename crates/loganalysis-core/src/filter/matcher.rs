@@ -7,17 +7,20 @@ use smallvec::SmallVec;
 /// before aborting to prevent catastrophic ReDoS CPU starvation.
 pub const FANCY_REGEX_BACKTRACK_LIMIT: usize = 250;
 
+/// Maximum compilation size limit for standard regex DFA tables (2MB) to prevent memory exhaustion.
+pub const REGEX_DFA_SIZE_LIMIT: usize = 2 * 1024 * 1024;
+
 /// Inspects a `fancy_regex::Expr` AST to statically identify nested unbounded repetitions
 /// (e.g., `(a+)+`, `((a+)*)+`, `([0-9]+)+`, `(?=(a+)+)`) that cause $O(2^n)$ catastrophic
 /// backtracking on non-matching inputs.
 pub fn has_nested_repetition(expr: &fancy_regex::Expr, in_repeat: bool) -> bool {
     match expr {
         fancy_regex::Expr::Repeat { child, hi, .. } => {
-            let is_unbounded = *hi == usize::MAX;
-            if in_repeat && is_unbounded {
+            let is_repeat = *hi > 1;
+            if in_repeat && is_repeat {
                 return true;
             }
-            has_nested_repetition(child, in_repeat || is_unbounded)
+            has_nested_repetition(child, in_repeat || is_repeat)
         }
         fancy_regex::Expr::Group(child) => has_nested_repetition(child, in_repeat),
         fancy_regex::Expr::LookAround(child, _) => has_nested_repetition(child, in_repeat),
@@ -41,6 +44,37 @@ pub fn has_nested_repetition(expr: &fancy_regex::Expr, in_repeat: bool) -> bool 
     }
 }
 
+/// Extracts non-empty case-sensitive literals that MUST appear in any matching line
+/// according to the `fancy_regex::Expr` AST. Used as a SIMD pre-filter before running
+/// backtracking evaluation so guaranteed non-matches short-circuit in $O(n)$ time.
+fn extract_required_literals(expr: &fancy_regex::Expr, out: &mut Vec<Vec<u8>>) {
+    match expr {
+        fancy_regex::Expr::Literal { val, casei } => {
+            if !*casei && !val.is_empty() {
+                out.push(val.as_bytes().to_vec());
+            }
+        }
+        fancy_regex::Expr::Group(child) | fancy_regex::Expr::AtomicGroup(child) => {
+            extract_required_literals(child, out);
+        }
+        fancy_regex::Expr::LookAround(
+            child,
+            fancy_regex::LookAround::LookAhead | fancy_regex::LookAround::LookBehind,
+        ) => {
+            extract_required_literals(child, out);
+        }
+        fancy_regex::Expr::Concat(children) => {
+            for c in children {
+                extract_required_literals(c, out);
+            }
+        }
+        fancy_regex::Expr::Repeat { child, lo, .. } if *lo >= 1 => {
+            extract_required_literals(child, out);
+        }
+        _ => {}
+    }
+}
+
 pub enum CompiledMatcher {
     /// Case-sensitive literal search using SIMD memmem
     LiteralCaseSensitive {
@@ -52,7 +86,10 @@ pub enum CompiledMatcher {
     /// Standard regex matching raw bytes directly (SIMD Teddy / Aho-Corasick)
     StandardRegex(regex::bytes::Regex),
     /// Fancy regex fallback for lookaround / backreferences
-    FancyRegex(fancy_regex::Regex),
+    FancyRegex {
+        re: fancy_regex::Regex,
+        required_literals: Vec<memchr::memmem::Finder<'static>>,
+    },
 }
 
 impl CompiledMatcher {
@@ -61,6 +98,8 @@ impl CompiledMatcher {
             // First try standard regex::bytes::Regex (linear-time DFA immune to ReDoS)
             let mut builder = regex::bytes::RegexBuilder::new(text);
             builder.case_insensitive(!case_sensitive);
+            builder.size_limit(REGEX_DFA_SIZE_LIMIT);
+            builder.dfa_size_limit(REGEX_DFA_SIZE_LIMIT);
             match builder.build() {
                 Ok(re) => Ok(Self::StandardRegex(re)),
                 Err(std_err) => {
@@ -71,6 +110,7 @@ impl CompiledMatcher {
                     };
 
                     // Static AST analysis: reject nested unbounded repetitions (ReDoS prevention)
+                    let mut raw_literals = Vec::new();
                     if let Ok(tree) = fancy_regex::Expr::parse_tree(&pattern) {
                         if has_nested_repetition(&tree.expr, false) {
                             return Err(FilterError::InvalidRegex(
@@ -78,12 +118,23 @@ impl CompiledMatcher {
                                     .to_string(),
                             ));
                         }
+                        extract_required_literals(&tree.expr, &mut raw_literals);
                     }
+                    raw_literals.sort();
+                    raw_literals.dedup();
+                    let required_literals = raw_literals
+                        .into_iter()
+                        .take(4)
+                        .map(|lit| memchr::memmem::Finder::new(&lit).into_owned())
+                        .collect();
 
                     let mut fancy_builder = fancy_regex::RegexBuilder::new(&pattern);
                     fancy_builder.backtrack_limit(FANCY_REGEX_BACKTRACK_LIMIT);
                     match fancy_builder.build() {
-                        Ok(fancy_re) => Ok(Self::FancyRegex(fancy_re)),
+                        Ok(fancy_re) => Ok(Self::FancyRegex {
+                            re: fancy_re,
+                            required_literals,
+                        }),
                         Err(_) => Err(FilterError::InvalidRegex(std_err.to_string())),
                     }
                 }
@@ -99,6 +150,8 @@ impl CompiledMatcher {
             let escaped = regex::escape(text);
             let mut builder = regex::bytes::RegexBuilder::new(&escaped);
             builder.case_insensitive(true);
+            builder.size_limit(REGEX_DFA_SIZE_LIMIT);
+            builder.dfa_size_limit(REGEX_DFA_SIZE_LIMIT);
             match builder.build() {
                 Ok(re) => Ok(Self::StandardRegex(re)),
                 Err(_) => {
@@ -129,7 +182,16 @@ impl CompiledMatcher {
                 })
             }
             Self::StandardRegex(re) => re.is_match(raw_line),
-            Self::FancyRegex(re) => {
+            Self::FancyRegex {
+                re,
+                required_literals,
+            } => {
+                if !required_literals
+                    .iter()
+                    .all(|finder| finder.find(raw_line).is_some())
+                {
+                    return false;
+                }
                 let match_result = if let Ok(s) = std::str::from_utf8(raw_line) {
                     re.is_match(s)
                 } else {
@@ -225,7 +287,16 @@ impl CompiledMatcher {
                     }
                 }
             }
-            Self::FancyRegex(re) => {
+            Self::FancyRegex {
+                re,
+                required_literals,
+            } => {
+                if !required_literals
+                    .iter()
+                    .all(|finder| finder.find(text.as_bytes()).is_some())
+                {
+                    return ranges;
+                }
                 for m in re.find_iter(text) {
                     match m {
                         Ok(matched) => {
@@ -617,5 +688,52 @@ mod tests {
             .expect("standard regex should compile");
         assert!(std_re.matches(b"Failed with Error[404]"));
         assert!(!std_re.matches(b"Failed with Warning[404]"));
+    }
+
+    #[test]
+    fn test_redos_bounded_quantifiers_compile_time_rejection() {
+        // Bounded nested repetitions inside lookarounds that can cause catastrophic backtracking
+        let bounded_redos = vec![
+            r"(?=(a{1,5000}){1,5000})test",
+            r"(?=(a{2,100}){2,100})test",
+            r"(?=(a{2,})+)test",
+            r"(?=(a+){2,})test",
+            r"(?!((a{1,10})*)+)test",
+            r"(?<=(a{2,5}){2,5})test",
+        ];
+
+        for pat in bounded_redos {
+            let res = CompiledMatcher::new(pat, true, true);
+            match res {
+                Err(FilterError::InvalidRegex(msg)) => {
+                    assert!(msg.contains("ReDoS") || msg.contains("Catastrophic backtracking"));
+                }
+                _ => panic!("Expected InvalidRegex for pattern '{}'", pat),
+            }
+        }
+    }
+
+    #[test]
+    fn test_has_nested_repetition_ast_bounded_cases() {
+        let tree1 = fancy_regex::Expr::parse_tree(r"(a{1,5000}){1,5000}").unwrap();
+        assert!(has_nested_repetition(&tree1.expr, false));
+
+        let tree2 = fancy_regex::Expr::parse_tree(r"(a{2,100}){2,100}").unwrap();
+        assert!(has_nested_repetition(&tree2.expr, false));
+
+        let tree3 = fancy_regex::Expr::parse_tree(r"(a{2,})+").unwrap();
+        assert!(has_nested_repetition(&tree3.expr, false));
+
+        let tree4 = fancy_regex::Expr::parse_tree(r"(a+){2,}").unwrap();
+        assert!(has_nested_repetition(&tree4.expr, false));
+
+        // Single repeat with bounded quantifier should NOT be rejected
+        let tree_safe = fancy_regex::Expr::parse_tree(r"a{1,5000}").unwrap();
+        assert!(!has_nested_repetition(&tree_safe.expr, false));
+    }
+
+    #[test]
+    fn test_regex_builder_dfa_size_limit_configured() {
+        assert_eq!(REGEX_DFA_SIZE_LIMIT, 2 * 1024 * 1024);
     }
 }

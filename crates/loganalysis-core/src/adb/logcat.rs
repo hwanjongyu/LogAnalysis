@@ -83,14 +83,36 @@ pub fn start_logcat_stream(
         });
     }
 
-    let mut child = cmd.spawn().map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
-    let stdout = child.stdout.take().ok_or(AdbError::IoCaptureFailed)?;
-
-    let child_arc = Arc::new(Mutex::new(Some(child)));
+    let child_arc = Arc::new(Mutex::new(None));
     let child_clone = Arc::clone(&child_arc);
     let stop_flag_clone = Arc::clone(&stop_flag);
+    let (spawn_tx, spawn_rx) = crossbeam_channel::bounded(1);
 
     let handle = thread::spawn(move || {
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = spawn_tx.send(Err(AdbError::ExecutionFailed(e.to_string())));
+                return;
+            }
+        };
+
+        let stdout = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = spawn_tx.send(Err(AdbError::IoCaptureFailed));
+                return;
+            }
+        };
+
+        {
+            let mut lock = child_clone.lock().unwrap_or_else(|e| e.into_inner());
+            *lock = Some(child);
+        }
+        let _ = spawn_tx.send(Ok(()));
+
         let reader = BufReader::new(stdout);
         stream_log_lines(reader, chunk_tx, stop_flag_clone);
 
@@ -102,11 +124,47 @@ pub fn start_logcat_stream(
         }
     });
 
+    spawn_rx
+        .recv()
+        .map_err(|e| AdbError::ExecutionFailed(format!("Spawn thread failed: {}", e)))??;
+
     Ok(LogcatStreamHandle {
         thread_handle: Some(handle),
         child: child_arc,
         stop_flag,
     })
+}
+
+/// Inspects the tail of `bytes` (up to 4 bytes) to determine if it ends with an incomplete multi-byte UTF-8 sequence.
+/// Returns the number of trailing incomplete bytes (1..=3) to carry over, or 0 if complete.
+#[inline]
+pub fn trailing_incomplete_utf8_len(bytes: &[u8]) -> usize {
+    let len = bytes.len();
+    if len == 0 {
+        return 0;
+    }
+
+    for i in 1..=4.min(len) {
+        let byte = bytes[len - i];
+        if (byte & 0x80) != 0 {
+            if (byte & 0xC0) == 0xC0 {
+                let expected_len = if (byte & 0xE0) == 0xC0 {
+                    2
+                } else if (byte & 0xF0) == 0xE0 {
+                    3
+                } else if (byte & 0xF8) == 0xF0 {
+                    4
+                } else {
+                    return 0;
+                };
+
+                return if i < expected_len { i } else { 0 };
+            }
+        } else {
+            return 0;
+        }
+    }
+    0
 }
 
 /// Reads lines from any `BufRead` stream and flushes batches to `chunk_tx`.
@@ -120,6 +178,7 @@ pub fn stream_log_lines<R: std::io::Read>(
     stop_flag: Arc<AtomicBool>,
 ) {
     let mut raw_buf = Vec::with_capacity(512);
+    let mut carry_buf = Vec::new();
     let mut buffer = Vec::with_capacity(100);
     let mut last_flush = Instant::now();
 
@@ -129,9 +188,15 @@ pub fn stream_log_lines<R: std::io::Read>(
         }
 
         raw_buf.clear();
+        if !carry_buf.is_empty() {
+            raw_buf.extend_from_slice(&carry_buf);
+            carry_buf.clear();
+        }
+
+        let max_to_read = (MAX_STREAM_LINE_BYTES.saturating_sub(raw_buf.len())).max(1) as u64;
         match reader
             .by_ref()
-            .take(MAX_STREAM_LINE_BYTES as u64)
+            .take(max_to_read)
             .read_until(b'\n', &mut raw_buf)
         {
             Ok(0) => break, // Clean EOF (subprocess closed pipe or was killed)
@@ -140,6 +205,14 @@ pub fn stream_log_lines<R: std::io::Read>(
                 while raw_buf.ends_with(b"\n") || raw_buf.ends_with(b"\r") {
                     raw_buf.pop();
                 }
+
+                let incomplete = trailing_incomplete_utf8_len(&raw_buf);
+                if incomplete > 0 {
+                    let split_pos = raw_buf.len() - incomplete;
+                    carry_buf.extend_from_slice(&raw_buf[split_pos..]);
+                    raw_buf.truncate(split_pos);
+                }
+
                 // Lossy UTF-8 conversion: resilient against non-UTF8/binary crash logs
                 let line = String::from_utf8_lossy(&raw_buf).to_string();
                 buffer.push(line);
@@ -171,6 +244,11 @@ pub fn stream_log_lines<R: std::io::Read>(
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         }
+    }
+
+    if !carry_buf.is_empty() {
+        let line = String::from_utf8_lossy(&carry_buf).to_string();
+        buffer.push(line);
     }
 
     if !buffer.is_empty() && !stop_flag.load(Ordering::Relaxed) {
@@ -342,5 +420,64 @@ mod tests {
 
         // Must exit immediately without attempting blocking tail flush
         assert!(elapsed < Duration::from_millis(50));
+    }
+
+    #[test]
+    fn test_trailing_incomplete_utf8_len_exhaustive() {
+        assert_eq!(trailing_incomplete_utf8_len(b""), 0);
+        assert_eq!(trailing_incomplete_utf8_len(b"hello world\n"), 0);
+        assert_eq!(trailing_incomplete_utf8_len(b"abc"), 0);
+
+        // 2-byte sequence (e.g. copyright \u{00A9} = [0xC2, 0xA9])
+        assert_eq!(trailing_incomplete_utf8_len(&[0xC2]), 1);
+        assert_eq!(trailing_incomplete_utf8_len(&[0xC2, 0xA9]), 0);
+
+        // 3-byte CJK (e.g. '한' = [0xED, 0x95, 0x9C])
+        assert_eq!(trailing_incomplete_utf8_len(&[0xED]), 1);
+        assert_eq!(trailing_incomplete_utf8_len(&[0xED, 0x95]), 2);
+        assert_eq!(trailing_incomplete_utf8_len(&[0xED, 0x95, 0x9C]), 0);
+
+        // 4-byte Emoji (e.g. '🔥' = [0xF0, 0x9F, 0x94, 0xA5])
+        assert_eq!(trailing_incomplete_utf8_len(&[0xF0]), 1);
+        assert_eq!(trailing_incomplete_utf8_len(&[0xF0, 0x9F]), 2);
+        assert_eq!(trailing_incomplete_utf8_len(&[0xF0, 0x9F, 0x94]), 3);
+        assert_eq!(trailing_incomplete_utf8_len(&[0xF0, 0x9F, 0x94, 0xA5]), 0);
+
+        // Mixed ASCII prefix followed by incomplete sequence
+        let mut payload = vec![b'x'; 100];
+        payload.extend_from_slice(&[0xED, 0x95]);
+        assert_eq!(trailing_incomplete_utf8_len(&payload), 2);
+    }
+
+    #[test]
+    fn test_stream_split_utf8_cjk_across_64kb_boundary() {
+        let (tx, rx) = bounded(10);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+
+        // Construct a payload where '한' (0xED, 0x95, 0x9C) spans across byte 65,536:
+        // 65,535 bytes of 'A', 1 byte 0xED in chunk 1;
+        // chunk 2 has 0x95, 0x9C followed by newline.
+        let mut input = vec![b'A'; 65535];
+        input.push(0xED); // Byte 65,535 (chunk 1 boundary)
+        input.push(0x95); // Chunk 2 continuation
+        input.push(0x9C); // Chunk 2 continuation
+        input.push(b'\n');
+
+        let reader = BufReader::new(&input[..]);
+        stream_log_lines(reader, tx, stop_flag);
+
+        let mut all_lines = Vec::new();
+        while let Ok(batch) = rx.try_recv() {
+            all_lines.extend(batch);
+        }
+
+        assert_eq!(all_lines.len(), 2);
+        // Chunk 1 must NOT contain replacement character \u{FFFD}
+        assert!(!all_lines[0].contains('\u{FFFD}'));
+        assert_eq!(all_lines[0].len(), 65535);
+
+        // Chunk 2 must start with '한' without any \u{FFFD}
+        assert!(all_lines[1].starts_with('한'));
+        assert!(!all_lines[1].contains('\u{FFFD}'));
     }
 }

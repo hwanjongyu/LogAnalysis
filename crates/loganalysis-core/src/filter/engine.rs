@@ -391,10 +391,13 @@ pub fn append_streaming_batch(
             if show_only_filtered {
                 result.total_matched_lines = result.total_matched_lines.saturating_sub(drop_count);
             } else {
-                let dropped_matches = result.visible_styles[0..drop_count]
-                    .iter()
-                    .filter(|s| s.bg_hex.is_some() || s.fg_hex != Some(0x808080))
-                    .count();
+                let dropped_matches = result
+                    .visible_filter_matches
+                    .get(..drop_count)
+                    .map(|slice| slice.iter().filter(|m| !m.is_empty()).count())
+                    .unwrap_or_else(|| {
+                        result.visible_filter_matches.iter().filter(|m| !m.is_empty()).count()
+                    });
                 result.total_matched_lines = result.total_matched_lines.saturating_sub(dropped_matches);
             }
 

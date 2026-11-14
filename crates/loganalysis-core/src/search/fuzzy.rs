@@ -22,31 +22,37 @@ pub fn fuzzy_match_detailed(query: &str, target: &str) -> Option<FuzzyMatchResul
         });
     }
 
-    let q_chars: Vec<char> = query.to_lowercase().chars().collect();
-    let t_chars: Vec<char> = target.to_lowercase().chars().collect();
     let orig_t_chars: Vec<char> = target.chars().collect();
+    let t_chars: Vec<char> = orig_t_chars
+        .iter()
+        .map(|&c| c.to_lowercase().next().unwrap_or(c))
+        .collect();
+    let q_chars: Vec<char> = query
+        .chars()
+        .map(|c| c.to_lowercase().next().unwrap_or(c))
+        .collect();
 
     let mut q_idx = 0;
-    let mut score = 0;
-    let mut consecutive = 0;
+    let mut score: i32 = 0;
+    let mut consecutive: i32 = 0;
     let mut prev_matched_idx = None;
     let mut matched_indices = Vec::with_capacity(q_chars.len());
 
     for (t_idx, &t_c) in t_chars.iter().enumerate() {
         if q_idx < q_chars.len() && t_c == q_chars[q_idx] {
             matched_indices.push(t_idx);
-            score += 10;
+            score = score.saturating_add(10);
 
             // Prefix match bonus
             if t_idx == 0 {
-                score += 60;
+                score = score.saturating_add(60);
             }
 
             // Consecutive match bonus
             if let Some(prev) = prev_matched_idx {
                 if prev + 1 == t_idx {
-                    consecutive += 1;
-                    score += 15 * consecutive;
+                    consecutive = consecutive.saturating_add(1);
+                    score = score.saturating_add(consecutive.saturating_mul(15));
                 } else {
                     consecutive = 0;
                 }
@@ -57,13 +63,13 @@ pub fn fuzzy_match_detailed(query: &str, target: &str) -> Option<FuzzyMatchResul
             if t_idx > 0 {
                 let prev_c = t_chars[t_idx - 1];
                 if prev_c == ' ' || prev_c == ':' || prev_c == '/' || prev_c == '-' || prev_c == '_' {
-                    score += 35;
+                    score = score.saturating_add(35);
                 }
             }
 
             // CamelCase transition bonus
             if t_idx > 0 && orig_t_chars[t_idx].is_uppercase() && orig_t_chars[t_idx - 1].is_lowercase() {
-                score += 25;
+                score = score.saturating_add(25);
             }
 
             q_idx += 1;
@@ -74,9 +80,9 @@ pub fn fuzzy_match_detailed(query: &str, target: &str) -> Option<FuzzyMatchResul
 
     if q_idx == q_chars.len() {
         // Penalty for excessive length disparity
-        let length_penalty = (t_chars.len() as i32 - q_chars.len() as i32).max(0);
+        let length_penalty = t_chars.len().saturating_sub(q_chars.len()).min(i32::MAX as usize) as i32;
         Some(FuzzyMatchResult {
-            score: score - length_penalty,
+            score: score.saturating_sub(length_penalty),
             matched_indices,
         })
     } else {
@@ -115,5 +121,46 @@ mod tests {
     #[test]
     fn test_fuzzy_match_no_match() {
         assert_eq!(fuzzy_match("xyz", "File: Open Log"), None);
+    }
+
+    #[test]
+    fn test_fuzzy_match_unicode_expansion_safety_turkish_i() {
+        // Latin Capital Letter I with Dot Above '\u{0130}' ('İ')
+        // Standard .to_lowercase() expands to 'i' + '\u{0307}' (length 2 vs 1)
+        // Must NOT panic on out-of-bounds indexing in orig_t_chars
+        let target = "İtemList";
+        let res = fuzzy_match_detailed("item", target);
+        assert!(res.is_some(), "Should match lowercased query against Turkish İ");
+        let r = res.unwrap();
+        assert_eq!(r.matched_indices, vec![0, 1, 2, 3]);
+
+        // Target with expanding char at end
+        let target_end = "Fileİ";
+        let res_end = fuzzy_match_detailed("i", target_end);
+        assert!(res_end.is_some());
+        assert_eq!(res_end.unwrap().matched_indices, vec![1]); // matches 'i' in 'File'
+
+        let res_dot = fuzzy_match_detailed("İ", "İ");
+        assert!(res_dot.is_some());
+        assert_eq!(res_dot.unwrap().matched_indices, vec![0]);
+    }
+
+    #[test]
+    fn test_fuzzy_match_unicode_expansion_camel_case_bonus() {
+        // CamelCase check: orig_t_chars[t_idx] uppercase, orig_t_chars[t_idx - 1] lowercase
+        let target = "İtemDetail";
+        let res = fuzzy_match_detailed("id", target);
+        assert!(res.is_some());
+        let r = res.unwrap();
+        assert_eq!(r.matched_indices, vec![0, 4]); // 'İ' at 0, 'D' at 4
+    }
+
+    #[test]
+    fn test_fuzzy_match_unicode_invariants_german_sharp_s() {
+        // German capital sharp S 'ẞ' (\u{1E9E})
+        let target = "STRAẞE";
+        let res = fuzzy_match("straße", target);
+        // Does not panic and score is bounded
+        assert!(res.is_some());
     }
 }

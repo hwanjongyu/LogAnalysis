@@ -160,6 +160,24 @@ impl BookmarkManager {
         self.bookmarks.clear();
         self.index_set.clear();
     }
+
+    /// Shifts bookmark indices down when `trimmed` lines are removed from the front of a ring buffer.
+    /// Bookmarks referencing trimmed lines (`source_idx < trimmed`) are removed.
+    pub fn shift_on_trim(&mut self, trimmed: usize) {
+        if trimmed == 0 || self.bookmarks.is_empty() {
+            return;
+        }
+        self.bookmarks.retain_mut(|b| {
+            if b.source_idx < trimmed {
+                false
+            } else {
+                b.source_idx -= trimmed;
+                b.line_number = b.source_idx + 1;
+                true
+            }
+        });
+        self.index_set = self.bookmarks.iter().map(|b| b.source_idx).collect();
+    }
 }
 
 #[cfg(test)]
@@ -228,5 +246,25 @@ mod tests {
         // Setting note on non-existent bookmark returns false
         assert!(!mgr.set_note(999, Some("Note on missing".into())));
         assert!(mgr.get(999).is_none());
+    }
+
+    #[test]
+    fn test_bookmark_shift_on_trim() {
+        let mut mgr = BookmarkManager::new();
+        mgr.toggle(5, "Line 5".into(), LineSeverity::Normal);
+        mgr.toggle(10, "Line 10".into(), LineSeverity::Warning);
+        mgr.toggle(25, "Line 25".into(), LineSeverity::Error);
+
+        mgr.shift_on_trim(10);
+        assert_eq!(mgr.len(), 2);
+        assert!(!mgr.is_bookmarked(5));
+        assert!(mgr.is_bookmarked(0));
+        assert!(mgr.is_bookmarked(15));
+        assert_eq!(mgr.get(0).unwrap().line_number, 1);
+        assert_eq!(mgr.get(15).unwrap().line_number, 16);
+
+        // Zero trim is a no-op
+        mgr.shift_on_trim(0);
+        assert_eq!(mgr.len(), 2);
     }
 }

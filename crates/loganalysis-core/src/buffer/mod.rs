@@ -11,6 +11,7 @@ use std::sync::Arc;
 pub use column::{parse_logcat_column_line, ParsedColumnLine};
 pub use correlation::find_nearest_timestamp_row;
 pub use file_buffer::FileLogBuffer;
+pub type SingleLogBuffer = FileLogBuffer;
 pub use merged_buffer::{MergedLineRef, MergedLogBuffer};
 pub use stream_buffer::StreamLogBuffer;
 pub use timestamp::{
@@ -98,6 +99,15 @@ impl LogSource for ActiveLogSource {
             Self::Merged(m) => m.get_measured_length(idx),
         }
     }
+
+    #[inline]
+    fn get_timestamp_micros(&self, idx: usize) -> Option<i64> {
+        match self {
+            Self::File(f) => f.get_timestamp_micros(idx),
+            Self::Stream(s) => s.get_timestamp_micros(idx),
+            Self::Merged(m) => m.get_timestamp_micros(idx),
+        }
+    }
 }
 
 /// A common trait for log data sources (mmap file or streaming memory buffer)
@@ -132,6 +142,11 @@ pub trait LogSource: Send + Sync {
             }
             None => 0,
         }
+    }
+
+    /// Retrieve the microsecond timestamp for line idx (normalized across year rollovers).
+    fn get_timestamp_micros(&self, idx: usize) -> Option<i64> {
+        self.get_raw_line(idx).and_then(extract_timestamp).map(|t| t.total_micros)
     }
 }
 

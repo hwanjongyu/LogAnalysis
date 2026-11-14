@@ -123,21 +123,40 @@ impl LogAnalysisWorkspace {
         let source = self.log_source.as_ref()?;
 
         let curr_src_idx = *filter_res.visible_indices.get(selected_row)?;
-        let curr_raw = source.get_raw_line(curr_src_idx)?;
-        let t_curr = loganalysis_core::extract_timestamp(curr_raw)?;
+        let t_curr_us = source.get_timestamp_micros(curr_src_idx).or_else(|| {
+            source
+                .get_raw_line(curr_src_idx)
+                .and_then(loganalysis_core::extract_timestamp)
+                .map(|t| t.total_micros)
+        })?;
 
         for back_step in 1..=10 {
             if selected_row < back_step {
                 break;
             }
             let prev_src_idx = *filter_res.visible_indices.get(selected_row - back_step)?;
-            if let Some(prev_raw) = source.get_raw_line(prev_src_idx) {
-                if let Some(t_prev) = loganalysis_core::extract_timestamp(prev_raw) {
-                    let diff = loganalysis_core::compute_delta_micros(t_prev, t_curr);
-                    let formatted = loganalysis_core::format_delta_micros(diff);
-                    let latency = loganalysis_core::LatencyLevel::from_micros(diff);
-                    return Some((formatted, latency, diff));
-                }
+            let prev_us = source.get_timestamp_micros(prev_src_idx).or_else(|| {
+                source
+                    .get_raw_line(prev_src_idx)
+                    .and_then(loganalysis_core::extract_timestamp)
+                    .map(|t| t.total_micros)
+            });
+            if let Some(t_prev_us) = prev_us {
+                let diff = if matches!(&**source, loganalysis_core::ActiveLogSource::Merged(_)) {
+                    t_curr_us.saturating_sub(t_prev_us)
+                } else {
+                    loganalysis_core::compute_delta_micros(
+                        loganalysis_core::LogTimestamp {
+                            total_micros: t_prev_us,
+                        },
+                        loganalysis_core::LogTimestamp {
+                            total_micros: t_curr_us,
+                        },
+                    )
+                };
+                let formatted = loganalysis_core::format_delta_micros(diff);
+                let latency = loganalysis_core::LatencyLevel::from_micros(diff);
+                return Some((formatted, latency, diff));
             }
         }
 

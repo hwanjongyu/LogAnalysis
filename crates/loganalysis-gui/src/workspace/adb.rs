@@ -142,11 +142,10 @@ impl LogAnalysisWorkspace {
                 self.adb_stream_handle = Some(handle);
                 self.is_streaming = true;
 
+                self.reset_derived_log_state();
                 let stream_buf = StreamLogBuffer::default();
                 self.log_source = Some(Arc::new(ActiveLogSource::Stream(stream_buf)));
                 self.active_file_name = None;
-                self.bookmarks.clear();
-                self.facet_tags.clear();
                 self.status_text = format!("Streaming live ADB: {}", target_display).into();
 
                 // Non-blocking async loop with batching, throttling & bounded buffers to avoid starving GPUI executor
@@ -238,6 +237,10 @@ impl LogAnalysisWorkspace {
                                                 (len, start..len, tr)
                                             };
                                             trimmed_count = trimmed;
+                                            if trimmed > 0 {
+                                                workspace.bookmarks.shift_on_trim(trimmed);
+                                                workspace.selection.shift_on_trim(trimmed);
+                                            }
 
                                             // Incremental filtering: evaluate only newly arrived lines without full buffer Rayon pass
                                             if let (Some(filter_res), Some(src_ref)) = (&mut workspace.filter_result, &workspace.log_source) {
@@ -289,7 +292,7 @@ impl LogAnalysisWorkspace {
                                             }
 
                                             if workspace.facet_tags.is_empty() && new_total_len >= 100 {
-                                                workspace.refresh_facet_tags();
+                                                workspace.refresh_facet_tags_async(cx);
                                             }
 
                                             // Smart Auto-Scroll to bottom if enabled
@@ -506,27 +509,36 @@ impl LogAnalysisWorkspace {
                 self.paused_stream_line_count = 0;
                 if !buffered.is_empty() {
                     if let Some(src) = &mut self.log_source {
-                        if let Some(active_src) = Arc::get_mut(src) {
+                        let trimmed = if let Some(active_src) = Arc::get_mut(src) {
                             if let ActiveLogSource::Stream(ref mut stream) = active_src {
                                 for chunk in buffered {
                                     stream.append_chunk(chunk);
                                 }
-                                stream.trim_if_needed();
+                                stream.trim_if_needed().unwrap_or(0)
+                            } else {
+                                0
                             }
                         } else if let ActiveLogSource::Stream(ref stream) = **src {
                             let mut new_stream = stream.clone();
                             for chunk in buffered {
                                 new_stream.append_chunk(chunk);
                             }
-                            new_stream.trim_if_needed();
+                            let tr = new_stream.trim_if_needed().unwrap_or(0);
                             *src = Arc::new(ActiveLogSource::Stream(new_stream));
+                            tr
+                        } else {
+                            0
+                        };
+                        if trimmed > 0 {
+                            self.bookmarks.shift_on_trim(trimmed);
+                            self.selection.shift_on_trim(trimmed);
                         }
                         self.reapply_filters(cx);
                     }
                 }
                 self.status_text = "ADB streaming RESUMED".into();
             } else {
-                self.update_analytics_data();
+                self.update_analytics_data_async(cx);
                 self.status_text = "ADB streaming PAUSED (Press Ctrl+Space to resume)".into();
             }
             cx.notify();

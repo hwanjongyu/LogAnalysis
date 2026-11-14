@@ -4,6 +4,34 @@ use loganalysis_core::*;
 use crate::types::FilterPanelPosition;
 use super::LogAnalysisWorkspace;
 
+/// Computes the top 7 tag facets by fast-sampling up to 25,000 lines from `source`.
+pub fn compute_facet_tags(source: &ActiveLogSource) -> Vec<(String, usize)> {
+    let total = source.line_count();
+    if total == 0 {
+        return Vec::new();
+    }
+
+    let sample_limit = total.min(25_000);
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for i in 0..sample_limit {
+        if let Some(line) = source.get_line(i) {
+            let parsed = loganalysis_core::parse_logcat_column_line(&line);
+            if let Some(tag) = parsed.tag {
+                let tag_trimmed = tag.trim();
+                if !tag_trimmed.is_empty() && tag_trimmed.len() <= 32 {
+                    *counts.entry(tag_trimmed.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    let mut sorted: Vec<(String, usize)> = counts.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    sorted.truncate(7);
+    sorted
+}
+
 impl LogAnalysisWorkspace {
     /// Toggles filter dock visibility between shown and hidden
     pub fn toggle_filter_dock(&mut self, cx: &mut Context<Self>) {
@@ -92,37 +120,46 @@ impl LogAnalysisWorkspace {
     }
 
     /// Fast-samples the active buffer (up to 25,000 lines) to extract top 7 tags
+    /// Fast-samples the active buffer (up to 25,000 lines) to extract top 7 tags synchronously.
+    #[allow(dead_code)]
     pub fn refresh_facet_tags(&mut self) {
         let Some(source) = &self.log_source else {
             self.facet_tags.clear();
             return;
         };
 
-        let total = source.line_count();
-        if total == 0 {
+        self.facet_tags = compute_facet_tags(source);
+    }
+
+    /// Asynchronously samples the active buffer on a background thread to extract top 7 tags without blocking the UI.
+    pub fn refresh_facet_tags_async(&mut self, cx: &mut Context<Self>) {
+        let Some(source) = self.log_source.clone() else {
             self.facet_tags.clear();
+            cx.notify();
             return;
-        }
+        };
 
-        let sample_limit = total.min(25_000);
-        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let source_for_check = source.clone();
+        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
+            let mut async_cx = cx.clone();
 
-        for i in 0..sample_limit {
-            if let Some(line) = source.get_line(i) {
-                let parsed = loganalysis_core::parse_logcat_column_line(&line);
-                if let Some(tag) = parsed.tag {
-                    let tag_trimmed = tag.trim();
-                    if !tag_trimmed.is_empty() && tag_trimmed.len() <= 32 {
-                        *counts.entry(tag_trimmed.to_string()).or_insert(0) += 1;
+            async move {
+                let computed = bg_executor
+                    .spawn(async move { compute_facet_tags(&source) })
+                    .await;
+
+                let _ = this.update(&mut async_cx, |workspace, cx| {
+                    if let Some(current) = &workspace.log_source {
+                        if std::sync::Arc::ptr_eq(current, &source_for_check) {
+                            workspace.facet_tags = computed;
+                            cx.notify();
+                        }
                     }
-                }
+                });
             }
-        }
-
-        let mut sorted: Vec<(String, usize)> = counts.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        sorted.truncate(7);
-        self.facet_tags = sorted;
+        })
+        .detach();
     }
 
     /// Adds or toggles a quick filter rule directly from a facet tag chip

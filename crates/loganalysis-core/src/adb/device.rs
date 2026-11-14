@@ -1,9 +1,7 @@
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
-use crossbeam_channel::bounded;
+use std::time::{Duration, Instant};
 
 use crate::error::AdbError;
 
@@ -107,8 +105,9 @@ pub fn parse_adb_devices_output(stdout: &str) -> Vec<AdbDeviceInfo> {
 }
 
 /// Scans connected ADB devices via `adb devices -l` with an enforced timeout and RAII subprocess cleanup.
+/// Uses non-blocking pipe reading to eliminate pipe hangs when the ADB daemon inherits stdout.
 pub fn scan_adb_device_details(timeout: Duration) -> Result<Vec<AdbDeviceInfo>, AdbError> {
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
     let adb_path = super::resolve_adb_path();
     let mut cmd = Command::new(adb_path);
     cmd.args(["devices", "-l"]);
@@ -137,76 +136,67 @@ pub fn scan_adb_device_details(timeout: Duration) -> Result<Vec<AdbDeviceInfo>, 
         let _ = child.wait();
         return Err(AdbError::Timeout(timeout));
     }
-    let remaining = timeout - elapsed;
 
     let mut stdout_pipe = child.stdout.take().ok_or(AdbError::IoCaptureFailed)?;
-    let child_arc = Arc::new(Mutex::new(Some(child)));
-    let child_clone = Arc::clone(&child_arc);
 
-    let (tx, rx) = bounded(1);
-    thread::spawn(move || {
-        let mut stdout_str = String::new();
-        let read_res = stdout_pipe.read_to_string(&mut stdout_str);
-
-        // Poll try_wait with short sleep without holding the mutex across blocking calls
-        let status_res = loop {
-            let mut lock = match child_clone.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            match lock.as_mut() {
-                Some(c) => match c.try_wait() {
-                    Ok(Some(status)) => {
-                        let _ = lock.take();
-                        break Ok(status);
-                    }
-                    Ok(None) => {
-                        drop(lock);
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(e) => {
-                        let _ = lock.take();
-                        break Err(AdbError::ExecutionFailed(e.to_string()));
-                    }
-                },
-                None => {
-                    // Process already taken or killed by timeout handler
-                    return;
-                }
-            }
-        };
-
-        match (read_res, status_res) {
-            (Ok(_), Ok(status)) => {
-                let _ = tx.send(Ok((status, stdout_str)));
-            }
-            (Err(e), _) => {
-                let _ = tx.send(Err(AdbError::ExecutionFailed(e.to_string())));
-            }
-            (_, Err(e)) => {
-                let _ = tx.send(Err(e));
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = stdout_pipe.as_raw_fd();
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL, 0);
+            if flags >= 0 {
+                libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
             }
         }
-    });
+    }
 
-    let (status, stdout) = match rx.recv_timeout(remaining) {
-        Ok(res) => {
-            if start_time.elapsed() > timeout {
-                return Err(AdbError::Timeout(timeout));
-            }
-            res?
-        }
-        Err(_) => {
-            // Reap child process on timeout without deadlock risk
-            let mut lock = match child_arc.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            if let Some(mut c) = lock.take() {
-                let _ = c.kill();
-                let _ = c.wait();
-            }
+    let mut output = Vec::new();
+    let mut buf = [0u8; 4096];
+
+    let status = loop {
+        if start_time.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(AdbError::Timeout(timeout));
+        }
+
+        // Non-blocking read of available data
+        match stdout_pipe.read(&mut buf) {
+            Ok(0) => {
+                // Pipe closed (clean EOF)
+                let status = child.wait().map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
+                break status;
+            }
+            Ok(n) => {
+                output.extend_from_slice(&buf[..n]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // No pending data right now
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AdbError::ExecutionFailed(e.to_string()));
+            }
+        }
+
+        // Poll child process exit
+        match child.try_wait().map_err(|e| AdbError::ExecutionFailed(e.to_string()))? {
+            Some(status) => {
+                // Child has finished; drain any residual bytes in the kernel pipe buffer
+                loop {
+                    match stdout_pipe.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => output.extend_from_slice(&buf[..n]),
+                        Err(_) => break,
+                    }
+                }
+                break status;
+            }
+            None => {
+                thread::sleep(Duration::from_millis(5));
+            }
         }
     };
 
@@ -214,7 +204,8 @@ pub fn scan_adb_device_details(timeout: Duration) -> Result<Vec<AdbDeviceInfo>, 
         return Err(AdbError::NonZeroExit(status.code()));
     }
 
-    Ok(parse_adb_devices_output(&stdout))
+    let stdout_str = String::from_utf8_lossy(&output);
+    Ok(parse_adb_devices_output(&stdout_str))
 }
 
 /// Scans connected ADB devices via `adb devices -l` and returns the serials of all ready devices.

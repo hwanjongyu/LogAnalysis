@@ -28,9 +28,7 @@ impl raw_window_handle::HasWindowHandle for CustomX11WindowHandle {
 #[cfg(target_os = "linux")]
 impl raw_window_handle::HasDisplayHandle for CustomX11WindowHandle {
     fn display_handle(&self) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
-        let handle = raw_window_handle::XlibDisplayHandle::new(None, 0);
-        let raw = raw_window_handle::RawDisplayHandle::Xlib(handle);
-        unsafe { Ok(raw_window_handle::DisplayHandle::borrow_raw(raw)) }
+        Err(raw_window_handle::HandleError::NotSupported)
     }
 }
 
@@ -43,6 +41,7 @@ impl raw_window_handle::HasDisplayHandle for CustomX11WindowHandle {
 /// This wrapper forwards `HasWindowHandle::window_handle()` to the underlying `Window` (or any
 /// `HasWindowHandle` source) to preserve the Win32 `HWND` modal parent relationship while
 /// returning a valid `WindowsDisplayHandle` from `display_handle()`.
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SafeDialogParent<'a, W: ?Sized>(pub(crate) &'a W);
 
@@ -68,43 +67,14 @@ impl<W: ?Sized> raw_window_handle::HasDisplayHandle for SafeDialogParent<'_, W> 
 
 #[cfg(target_os = "linux")]
 pub(crate) fn get_active_x11_window_id() -> Option<std::os::raw::c_ulong> {
-    // 1. Try xprop -root _NET_ACTIVE_WINDOW
-    if let Ok(output) = std::process::Command::new("xprop")
-        .args(["-root", "_NET_ACTIVE_WINDOW"])
-        .output()
-    {
-        if output.status.success() {
-            let s = String::from_utf8_lossy(&output.stdout);
-            if let Some(pos) = s.find("0x") {
-                let hex_str: String = s[pos + 2..]
-                    .chars()
-                    .take_while(|c| c.is_ascii_hexdigit())
-                    .collect();
-                if let Ok(id) = std::os::raw::c_ulong::from_str_radix(&hex_str, 16) {
-                    if id > 0 {
-                        return Some(id);
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. Try xdotool getactivewindow
-    if let Ok(output) = std::process::Command::new("xdotool")
-        .arg("getactivewindow")
-        .output()
-    {
-        if output.status.success() {
-            let s = String::from_utf8_lossy(&output.stdout);
-            if let Ok(id) = s.trim().parse::<std::os::raw::c_ulong>() {
-                if id > 0 {
-                    return Some(id);
-                }
-            }
-        }
-    }
-
-    None
+    let raw = std::env::var("WINDOWID").ok()?;
+    let trimmed = raw.trim();
+    let parsed = if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+        std::os::raw::c_ulong::from_str_radix(hex, 16).ok()?
+    } else {
+        trimmed.parse::<std::os::raw::c_ulong>().ok()?
+    };
+    (parsed > 0).then_some(parsed)
 }
 
 /// Safely attaches a parent window handle to an AsyncFileDialog across Linux (X11 & Wayland), macOS, and Windows.
@@ -290,7 +260,7 @@ mod tests {
             }
             _ => panic!("Expected Xlib window handle"),
         }
-        assert!(handle.display_handle().is_ok());
+        assert!(handle.display_handle().is_err());
     }
 
     #[cfg(target_os = "linux")]

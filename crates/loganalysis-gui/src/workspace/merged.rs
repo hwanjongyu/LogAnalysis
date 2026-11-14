@@ -87,11 +87,11 @@ impl LogAnalysisWorkspace {
                 let _ = this.update(&mut async_cx, |workspace, cx| {
                     match open_result {
                         Ok(buf) => {
+                            workspace.reset_derived_log_state();
                             let arc_buf = Arc::new(ActiveLogSource::Merged(buf));
                             workspace.log_source = Some(arc_buf.clone());
                             workspace.active_file_name = Some(summary_name);
-                            workspace.bookmarks.clear();
-                            workspace.refresh_facet_tags();
+                            workspace.refresh_facet_tags_async(cx);
                             workspace.status_text = format!(
                                 "Merged {} lines chronologically across {} files",
                                 arc_buf.line_count(),

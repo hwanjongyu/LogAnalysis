@@ -6,13 +6,15 @@ use super::file_buffer::FileLogBuffer;
 use super::timestamp::extract_timestamp;
 use super::LogSource;
 
-/// Microseconds in a non-leap year (365 days).
-pub const ONE_YEAR_MICROS: i64 = 365 * 86_400 * 1_000_000;
+pub use super::timestamp::ONE_YEAR_MICROS;
 
 /// Threshold for year rollover detection (300 days).
 /// When timestamps jump backwards by more than 300 days (e.g., Dec 31 -> Jan 01),
 /// it indicates an un-year-stamped timestamp rollover rather than clock drift.
 pub const YEAR_ROLLOVER_THRESHOLD_MICROS: i64 = 300 * 86_400 * 1_000_000;
+
+/// Threshold for detecting early-year logs (< 60 days, e.g. January/February).
+pub const EARLY_YEAR_THRESHOLD_MICROS: i64 = 60 * 86_400 * 1_000_000;
 
 /// Reference to a single log line within a multi-file merged index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,16 +82,70 @@ impl MergedLogBuffer {
             total_lines += s.line_count();
         }
 
+        struct SourceTimeInfo {
+            first_ts: Option<i64>,
+            last_ts: Option<i64>,
+        }
+
+        // Pass 1: Scan temporal boundaries for each source to detect ensemble rollover
+        let mut source_infos = Vec::with_capacity(sources.len());
+        for src in &sources {
+            let line_count = src.line_count();
+            let mut first_ts = None;
+            for l_idx in 0..line_count {
+                if let Some(raw) = src.get_raw_line(l_idx) {
+                    if let Some(t) = extract_timestamp(raw) {
+                        first_ts = Some(t.total_micros);
+                        break;
+                    }
+                }
+            }
+
+            let mut last_ts = None;
+            for l_idx in (0..line_count).rev() {
+                if let Some(raw) = src.get_raw_line(l_idx) {
+                    if let Some(t) = extract_timestamp(raw) {
+                        last_ts = Some(t.total_micros);
+                        break;
+                    }
+                }
+            }
+
+            source_infos.push(SourceTimeInfo { first_ts, last_ts });
+        }
+
+        let has_late_year = source_infos.iter().any(|info| {
+            info.first_ts.is_some_and(|ts| ts >= YEAR_ROLLOVER_THRESHOLD_MICROS)
+                || info.last_ts.is_some_and(|ts| ts >= YEAR_ROLLOVER_THRESHOLD_MICROS)
+        });
+
+        let has_early_year = source_infos.iter().any(|info| {
+            info.first_ts.is_some_and(|ts| ts <= EARLY_YEAR_THRESHOLD_MICROS)
+                || info.last_ts.is_some_and(|ts| ts <= EARLY_YEAR_THRESHOLD_MICROS)
+        });
+
+        let ensemble_rollover = has_late_year && has_early_year;
+
+        let mut base_offsets = vec![0i64; sources.len()];
+        if ensemble_rollover {
+            for (s_id, info) in source_infos.iter().enumerate() {
+                if let Some(first) = info.first_ts {
+                    if first <= EARLY_YEAR_THRESHOLD_MICROS {
+                        base_offsets[s_id] = ONE_YEAR_MICROS;
+                    }
+                }
+            }
+        }
+
+        // Pass 2: Populate merged_index with adjusted timestamps
         let mut merged_index = Vec::with_capacity(total_lines);
         let mut max_line_len = 0usize;
-        let mut global_max_prev_ts: Option<i64> = None;
 
         for (s_id, src) in sources.iter().enumerate() {
             max_line_len = max_line_len.max(src.max_line_len());
             let line_count = src.line_count();
-            let mut file_year_offset: i64 = 0;
+            let mut file_year_offset = base_offsets[s_id];
             let mut prev_raw_ts: Option<i64> = None;
-            let mut file_max_raw_ts: Option<i64> = None;
             let mut last_ts = None;
 
             for l_idx in 0..line_count {
@@ -101,15 +157,8 @@ impl MergedLogBuffer {
                             if raw_micros < prev - YEAR_ROLLOVER_THRESHOLD_MICROS {
                                 file_year_offset += ONE_YEAR_MICROS;
                             }
-                        } else if let Some(global_prev) = global_max_prev_ts {
-                            // Cross-file year rollover: previous file was late Dec, current file starts early Jan
-                            if raw_micros < global_prev - YEAR_ROLLOVER_THRESHOLD_MICROS {
-                                file_year_offset += ONE_YEAR_MICROS;
-                            }
                         }
                         prev_raw_ts = Some(raw_micros);
-                        file_max_raw_ts =
-                            Some(file_max_raw_ts.map_or(raw_micros, |m| m.max(raw_micros)));
                         let adjusted = raw_micros + file_year_offset;
                         last_ts = Some(adjusted);
                         Some(adjusted)
@@ -126,10 +175,6 @@ impl MergedLogBuffer {
                     source_line_idx: l_idx,
                     timestamp_micros: ts,
                 });
-            }
-
-            if let Some(max_raw) = file_max_raw_ts {
-                global_max_prev_ts = Some(global_max_prev_ts.map_or(max_raw, |g| g.max(max_raw)));
             }
         }
 
@@ -235,6 +280,11 @@ impl LogSource for MergedLogBuffer {
         let r = self.merged_index.get(idx)?;
         let src = self.sources.get(r.source_id as usize)?;
         src.get_line_arc(r.source_line_idx)
+    }
+
+    #[inline]
+    fn get_timestamp_micros(&self, idx: usize) -> Option<i64> {
+        self.merged_index.get(idx).and_then(|r| r.timestamp_micros)
     }
 }
 
@@ -535,5 +585,75 @@ mod tests {
         let _ = std::fs::remove_file(a_dir);
         let _ = std::fs::remove_file(b_dir);
         let _ = std::fs::remove_file(c_dir);
+    }
+
+    #[test]
+    fn test_merge_reverse_order_jan01_and_dec31() {
+        let file_jan = b"01-01 00:00:00.500 S_Jan Jan01 00s\n\
+                         01-01 00:00:01.000 S_Jan Jan01 01s\n";
+
+        let file_dec = b"12-31 23:59:58.000 S_Dec Dec31 58s\n\
+                         12-31 23:59:59.500 S_Dec Dec31 59s\n";
+
+        let mut jan_dir = std::env::temp_dir();
+        jan_dir.push(format!("merge_rev_jan_{}.log", uuid::Uuid::new_v4()));
+        std::fs::write(&jan_dir, file_jan).unwrap();
+
+        let mut dec_dir = std::env::temp_dir();
+        dec_dir.push(format!("merge_rev_dec_{}.log", uuid::Uuid::new_v4()));
+        std::fs::write(&dec_dir, file_dec).unwrap();
+
+        // Pass in reverse order: [jan, dec]
+        let merged = MergedLogBuffer::open_multiple(&[jan_dir.clone(), dec_dir.clone()]).unwrap();
+        assert_eq!(merged.line_count(), 4);
+
+        // Expected chronological sequence: Dec 31 lines first, Jan 01 lines second
+        assert_eq!(merged.get_line_source_id(0), Some(1));
+        assert!(merged.get_line(0).unwrap().contains("S_Dec Dec31 58s"));
+
+        assert_eq!(merged.get_line_source_id(1), Some(1));
+        assert!(merged.get_line(1).unwrap().contains("S_Dec Dec31 59s"));
+
+        assert_eq!(merged.get_line_source_id(2), Some(0));
+        assert!(merged.get_line(2).unwrap().contains("S_Jan Jan01 00s"));
+
+        assert_eq!(merged.get_line_source_id(3), Some(0));
+        assert!(merged.get_line(3).unwrap().contains("S_Jan Jan01 01s"));
+
+        let ts1 = merged.get_line_timestamp_micros(1).unwrap();
+        let ts2 = merged.get_line_timestamp_micros(2).unwrap();
+        assert!(ts1 < ts2);
+        // Delta between 23:59:59.500 and 00:00:00.500 is exactly 1 second
+        assert_eq!(ts2 - ts1, 1_000_000);
+
+        let _ = std::fs::remove_file(jan_dir);
+        let _ = std::fs::remove_file(dec_dir);
+    }
+
+    #[test]
+    fn test_log_source_get_timestamp_micros_merged_buffer_preserves_year_offset() {
+        let file_dec = b"12-31 23:59:59.000 S1 Dec\n";
+        let file_jan = b"01-01 00:00:01.000 S2 Jan\n";
+
+        let mut dec_dir = std::env::temp_dir();
+        dec_dir.push(format!("merge_ts_trait_dec_{}.log", uuid::Uuid::new_v4()));
+        std::fs::write(&dec_dir, file_dec).unwrap();
+
+        let mut jan_dir = std::env::temp_dir();
+        jan_dir.push(format!("merge_ts_trait_jan_{}.log", uuid::Uuid::new_v4()));
+        std::fs::write(&jan_dir, file_jan).unwrap();
+
+        let merged = MergedLogBuffer::open_multiple(&[dec_dir.clone(), jan_dir.clone()]).unwrap();
+        let source: &dyn LogSource = &merged;
+
+        let ts0 = source.get_timestamp_micros(0).expect("ts0 should exist");
+        let ts1 = source.get_timestamp_micros(1).expect("ts1 should exist");
+
+        // ts1 must have the ONE_YEAR_MICROS offset preserved through the trait
+        assert!(ts1 > ts0);
+        assert_eq!(ts1 - ts0, 2_000_000); // Exactly 2 seconds
+
+        let _ = std::fs::remove_file(dec_dir);
+        let _ = std::fs::remove_file(jan_dir);
     }
 }

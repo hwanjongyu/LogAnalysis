@@ -66,7 +66,7 @@ pub fn render_find_bar(
             })
             // Live Search Match Status Pill
             .children(if let Some(status) = &workspace.search_match_status {
-                let is_zero = status.contains('0') || status.contains("not found");
+                let is_zero = is_find_status_error(status);
                 Some(
                     div()
                         .id("pill-find-status")
@@ -210,4 +210,33 @@ pub fn render_find_bar(
                     .child("✕"),
             ),
     )
+}
+
+/// Returns `true` when the find status text indicates zero matches or a pattern error,
+/// avoiding false positives on match line numbers such as `"Line 10"`, `"Line 20"`, or `"Line 100"`.
+pub fn is_find_status_error(status: &str) -> bool {
+    let lower = status.to_ascii_lowercase();
+    lower.starts_with("0 ")
+        || lower == "0"
+        || lower.contains("not found")
+        || lower.contains("invalid")
+        || lower.contains("error")
+        || lower.contains("0 matches")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_find_status_error;
+
+    #[test]
+    fn test_is_find_status_error() {
+        assert!(!is_find_status_error("Line 10"));
+        assert!(!is_find_status_error("Line 20"));
+        assert!(!is_find_status_error("Line 100"));
+        assert!(!is_find_status_error("Searching..."));
+
+        assert!(is_find_status_error("0 matches"));
+        assert!(is_find_status_error("Pattern not found"));
+        assert!(is_find_status_error("Invalid regex"));
+    }
 }

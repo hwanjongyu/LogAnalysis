@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use memmap2::Mmap;
 
+use super::timestamp::extract_timestamp;
 use super::{trim_line_end, trim_trailing_whitespace, LogSource};
 
 const LINE_CACHE_SIZE: usize = 1024;
@@ -194,5 +195,10 @@ impl LogSource for FileLogBuffer {
         }
 
         Some(arc)
+    }
+
+    #[inline]
+    fn get_timestamp_micros(&self, idx: usize) -> Option<i64> {
+        self.get_raw_line(idx).and_then(extract_timestamp).map(|t| t.total_micros)
     }
 }

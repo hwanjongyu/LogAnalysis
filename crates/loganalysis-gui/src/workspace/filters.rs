@@ -4,6 +4,51 @@ use loganalysis_core::*;
 use crate::types::{FilterEditState, InputFocusTarget};
 use super::LogAnalysisWorkspace;
 
+pub const MAX_FILTER_PROFILE_BYTES: u64 = 10 * 1024 * 1024;
+
+static TEMP_FILE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Builds a unique hidden temporary file path adjacent to `target` for crash-safe atomic writes.
+pub fn build_unique_temp_path(target: &std::path::Path) -> std::path::PathBuf {
+    let file_name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("temp");
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = TEMP_FILE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let unique_nanos = nanos.wrapping_add(seq as u128);
+    target.with_file_name(format!(".{file_name}.{pid}.{unique_nanos}.tmp"))
+}
+
+/// Reads a filter profile JSON file up to `MAX_FILTER_PROFILE_BYTES` to prevent OOM on oversized files.
+pub fn read_filter_profile_bounded(path: &std::path::Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let meta_len = file.metadata()?.len();
+    if meta_len > MAX_FILTER_PROFILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "Filter profile exceeds maximum size ({meta_len} > {MAX_FILTER_PROFILE_BYTES} bytes)"
+            ),
+        ));
+    }
+    let mut bytes = Vec::with_capacity((meta_len as usize).min(1024 * 1024));
+    file.take(MAX_FILTER_PROFILE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_FILTER_PROFILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Filter profile exceeds maximum size ({MAX_FILTER_PROFILE_BYTES} bytes)"),
+        ));
+    }
+    String::from_utf8(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
 impl LogAnalysisWorkspace {
     /// Imports filter profile JSON supporting all 3 legacy Python formats
     pub fn import_filters_json(
@@ -90,7 +135,8 @@ impl LogAnalysisWorkspace {
     /// Duplicates a rule in active tab
     pub fn duplicate_rule(&mut self, rule_idx: usize, cx: &mut Context<Self>) {
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
-            if let Some(rule) = tab.filters.get(rule_idx).cloned() {
+            if let Some(mut rule) = tab.filters.get(rule_idx).cloned() {
+                rule.id = FilterRule::default().id;
                 tab.filters.insert(rule_idx + 1, rule);
                 self.reapply_filters(cx);
             }
@@ -154,23 +200,27 @@ impl LogAnalysisWorkspace {
             return;
         }
 
-        let new_rule = FilterRule {
-            text: pattern,
-            regex: self.filter_edit_modal.is_regex,
-            case_sensitive: self.filter_edit_modal.is_case_sensitive,
-            exclude: self.filter_edit_modal.is_exclude,
-            bg_color: self.filter_edit_modal.bg_color_name.clone(),
-            text_color: self.filter_edit_modal.fg_color_name.clone(),
-            active: true,
-            ..Default::default()
-        };
-
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
             if let Some(idx) = self.filter_edit_modal.editing_index {
-                if idx < tab.filters.len() {
-                    tab.filters[idx] = new_rule;
+                if let Some(existing) = tab.filters.get_mut(idx) {
+                    existing.text = pattern;
+                    existing.regex = self.filter_edit_modal.is_regex;
+                    existing.case_sensitive = self.filter_edit_modal.is_case_sensitive;
+                    existing.exclude = self.filter_edit_modal.is_exclude;
+                    existing.bg_color = self.filter_edit_modal.bg_color_name.clone();
+                    existing.text_color = self.filter_edit_modal.fg_color_name.clone();
                 }
             } else {
+                let new_rule = FilterRule {
+                    text: pattern,
+                    regex: self.filter_edit_modal.is_regex,
+                    case_sensitive: self.filter_edit_modal.is_case_sensitive,
+                    exclude: self.filter_edit_modal.is_exclude,
+                    bg_color: self.filter_edit_modal.bg_color_name.clone(),
+                    text_color: self.filter_edit_modal.fg_color_name.clone(),
+                    active: true,
+                    ..Default::default()
+                };
                 tab.filters.push(new_rule);
             }
             self.filter_edit_modal.is_open = false;
@@ -226,9 +276,13 @@ impl LogAnalysisWorkspace {
                     let json_bytes = json_str.into_bytes();
                     let write_res = bg_executor
                         .spawn(async move {
-                            let tmp_path = path_for_bg.with_extension("tmp");
-                            std::fs::write(&tmp_path, &json_bytes)
-                                .and_then(|_| std::fs::rename(&tmp_path, &path_for_bg))
+                            let tmp_path = build_unique_temp_path(&path_for_bg);
+                            let res = std::fs::write(&tmp_path, &json_bytes)
+                                .and_then(|_| std::fs::rename(&tmp_path, &path_for_bg));
+                            if res.is_err() {
+                                let _ = std::fs::remove_file(&tmp_path);
+                            }
+                            res
                         })
                         .await;
 
@@ -262,7 +316,7 @@ impl LogAnalysisWorkspace {
             async move {
                 let path_clone = path_buf.clone();
                 let read_res = bg_executor
-                    .spawn(async move { std::fs::read_to_string(&path_clone) })
+                    .spawn(async move { read_filter_profile_bounded(&path_clone) })
                     .await;
 
                 let _ = this.update(&mut async_cx, |workspace, cx| {
@@ -407,5 +461,41 @@ impl LogAnalysisWorkspace {
             self.active_tab_index = tab_idx;
             cx.notify();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MAX_FILTER_PROFILE_BYTES, build_unique_temp_path, read_filter_profile_bounded,
+    };
+
+    #[test]
+    fn test_build_unique_temp_path() {
+        let target = std::path::Path::new("/tmp/filters.json");
+        let p1 = build_unique_temp_path(target);
+        let p2 = build_unique_temp_path(target);
+        assert_ne!(p1, p2);
+        assert_eq!(p1.parent(), target.parent());
+        let name = p1.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with(".filters.json."));
+        assert!(name.ends_with(".tmp"));
+    }
+
+    #[test]
+    fn test_read_filter_profile_bounded() {
+        let dir = std::env::temp_dir();
+        let ok_path = build_unique_temp_path(&dir.join("ok_filter_profile.json"));
+        std::fs::write(&ok_path, "{\"tabs\":[]}").unwrap();
+        let content = read_filter_profile_bounded(&ok_path).unwrap();
+        assert_eq!(content, "{\"tabs\":[]}");
+        let _ = std::fs::remove_file(&ok_path);
+
+        let oversized_path = build_unique_temp_path(&dir.join("oversized_filter_profile.json"));
+        let file = std::fs::File::create(&oversized_path).unwrap();
+        file.set_len(MAX_FILTER_PROFILE_BYTES + 1).unwrap();
+        let err = read_filter_profile_bounded(&oversized_path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        let _ = std::fs::remove_file(&oversized_path);
     }
 }

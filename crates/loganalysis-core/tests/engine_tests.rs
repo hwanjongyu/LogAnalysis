@@ -1157,3 +1157,37 @@ OFFLINE99999          offline transport_id:5
     assert_eq!(devices[4].display_name(), "OFFLINE99999 [offline]");
     assert!(!devices[4].is_ready());
 }
+
+#[test]
+fn test_append_streaming_batch_gray_filter_trim_counting() {
+    let mut stream = StreamLogBuffer::new(100, 10);
+    let lines = vec![
+        "Match 1".to_string(),
+        "Ignore 2".to_string(),
+        "Match 3".to_string(),
+        "Ignore 4".to_string(),
+        "Match 5".to_string(),
+    ];
+    stream.append_chunk(lines);
+
+    let rule = FilterRule {
+        text: "Match".to_string(),
+        active: true,
+        bg_color: "None".to_string(),
+        text_color: "Gray".to_string(), // Gray text (#808080)
+        ..Default::default()
+    };
+    let rules = vec![rule.clone()];
+
+    let mut res_unfiltered = FilterResult::default();
+    append_streaming_batch(&mut res_unfiltered, &stream, 0..5, 0, &rules, false);
+    assert_eq!(res_unfiltered.total_matched_lines, 3);
+    assert_eq!(res_unfiltered.count_for_rule(&rule.id), 3);
+    assert_eq!(res_unfiltered.visible_indices.len(), 5);
+
+    // Trim 3 lines: lines 0 and 2 are dropped matches
+    append_streaming_batch(&mut res_unfiltered, &stream, 5..5, 3, &rules, false);
+    assert_eq!(res_unfiltered.total_matched_lines, 1);
+    assert_eq!(res_unfiltered.count_for_rule(&rule.id), 1);
+    assert_eq!(res_unfiltered.visible_indices.len(), 2);
+}

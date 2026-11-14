@@ -106,6 +106,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) secondary_log_source: Option<Arc<ActiveLogSource>>,
     pub(crate) secondary_file_name: Option<SharedString>,
     pub(crate) secondary_filter_result: Option<Arc<FilterResult>>,
+    pub(crate) secondary_filter_cancel_gen: Arc<AtomicU64>,
     pub(crate) secondary_scroll_handle: UniformListScrollHandle,
     pub(crate) secondary_selection: SelectionModel,
 
@@ -368,6 +369,7 @@ impl LogAnalysisWorkspace {
             secondary_log_source: None,
             secondary_file_name: None,
             secondary_filter_result: None,
+            secondary_filter_cancel_gen: Arc::new(AtomicU64::new(0)),
             secondary_scroll_handle: UniformListScrollHandle::new(),
             secondary_selection: SelectionModel::new(),
 
@@ -457,12 +459,12 @@ impl LogAnalysisWorkspace {
                 let _ = this.update(&mut async_cx, |workspace, cx| {
                     match open_result {
                         Ok(buf) => {
+                            workspace.reset_derived_log_state();
                             let arc_buf = Arc::new(ActiveLogSource::File(buf));
                             workspace.log_source = Some(arc_buf.clone());
                             workspace.active_file_name = Some(file_name);
-                            workspace.bookmarks.clear();
-                            workspace.add_recent_file(path_buf.clone());
-                            workspace.refresh_facet_tags();
+                            workspace.add_recent_file_async(path_buf.clone(), cx);
+                            workspace.refresh_facet_tags_async(cx);
                             workspace.status_text =
                                 format!("Loaded {} lines from {:?}", arc_buf.line_count(), path_buf)
                                     .into();
@@ -999,7 +1001,27 @@ impl LogAnalysisWorkspace {
             ("0 MB".to_string(), "Idle")
         }
     }
+    /// Clears derived analytics, selection, bookmarks, facets, and cancels in-flight background work when switching primary log sources.
+    pub(crate) fn reset_derived_log_state(&mut self) {
+        self.filter_cancel_gen.fetch_add(1, Ordering::Relaxed);
+        self.search_cancel_gen.fetch_add(1, Ordering::Relaxed);
+        self.filter_result = None;
+        self.heatmap_data = None;
+        self.timeline_data = None;
+        self.selection.clear();
+        self.search_match_status = None;
+        self.bookmarks.clear();
+        self.facet_tags.clear();
+        self.is_bookmark_drawer_open = false;
+        self.bookmark_drawer_selected_index = 0;
+        self.is_note_modal_open = false;
+        self.note_editing_source_idx = None;
+        self.paused_stream_buffer.clear();
+        self.paused_stream_line_count = 0;
+    }
+
     /// Recomputes heatmap density and EPS timeline data for the active filter result.
+    #[allow(dead_code)]
     pub(crate) fn update_analytics_data(&mut self) {
         if let (Some(filter_res), Some(src_ref)) = (&self.filter_result, &self.log_source) {
             self.heatmap_data = Some(Arc::new(HeatmapData::compute(
@@ -1019,17 +1041,115 @@ impl LogAnalysisWorkspace {
         }
     }
 
+    /// Asynchronously recomputes heatmap density and EPS timeline data off the UI thread.
+    pub(crate) fn update_analytics_data_async(&mut self, cx: &mut Context<Self>) {
+        let (Some(filter_res), Some(src_ref)) =
+            (self.filter_result.clone(), self.log_source.clone())
+        else {
+            return;
+        };
+
+        let compute_timeline = self.is_timeline_visible;
+        let filter_gen = self.filter_cancel_gen.load(Ordering::Relaxed);
+        let src_check = src_ref.clone();
+        let filter_check = filter_res.clone();
+
+        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
+            let mut async_cx = cx.clone();
+
+            async move {
+                let (heatmap, timeline) = bg_executor
+                    .spawn(async move {
+                        let heatmap = Arc::new(HeatmapData::compute(
+                            &*src_ref,
+                            &filter_res.visible_indices,
+                            &filter_res.visible_styles,
+                            200,
+                        ));
+                        let timeline = if compute_timeline {
+                            Some(Arc::new(EpsTimelineData::compute(
+                                &*src_ref,
+                                &filter_res.visible_indices,
+                                &filter_res.visible_styles,
+                                80,
+                            )))
+                        } else {
+                            None
+                        };
+                        (heatmap, timeline)
+                    })
+                    .await;
+
+                let _ = this.update(&mut async_cx, |workspace, cx| {
+                    if workspace.filter_cancel_gen.load(Ordering::Relaxed) == filter_gen
+                        && workspace
+                            .log_source
+                            .as_ref()
+                            .is_some_and(|s| Arc::ptr_eq(s, &src_check))
+                        && workspace
+                            .filter_result
+                            .as_ref()
+                            .is_some_and(|f| Arc::ptr_eq(f, &filter_check))
+                    {
+                        workspace.heatmap_data = Some(heatmap);
+                        if timeline.is_some() {
+                            workspace.timeline_data = timeline;
+                        }
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
     /// Toggles the Throughput & EPS Timeline Sparkline ribbon (Ctrl+Shift+T)
     pub fn toggle_eps_timeline(&mut self, cx: &mut Context<Self>) {
         self.is_timeline_visible = !self.is_timeline_visible;
         if self.is_timeline_visible && self.timeline_data.is_none() {
-            if let (Some(src_ref), Some(filter_res)) = (&self.log_source, &self.filter_result) {
-                self.timeline_data = Some(Arc::new(EpsTimelineData::compute(
-                    &**src_ref,
-                    &filter_res.visible_indices,
-                    &filter_res.visible_styles,
-                    80,
-                )));
+            if let (Some(src_ref), Some(filter_res)) =
+                (self.log_source.clone(), self.filter_result.clone())
+            {
+                let filter_gen = self.filter_cancel_gen.load(Ordering::Relaxed);
+                let src_check = src_ref.clone();
+                let filter_check = filter_res.clone();
+
+                cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                    let bg_executor = cx.background_executor().clone();
+                    let mut async_cx = cx.clone();
+
+                    async move {
+                        let timeline = bg_executor
+                            .spawn(async move {
+                                Arc::new(EpsTimelineData::compute(
+                                    &*src_ref,
+                                    &filter_res.visible_indices,
+                                    &filter_res.visible_styles,
+                                    80,
+                                ))
+                            })
+                            .await;
+
+                        let _ = this.update(&mut async_cx, |workspace, cx| {
+                            if workspace.is_timeline_visible
+                                && workspace.filter_cancel_gen.load(Ordering::Relaxed) == filter_gen
+                                && workspace
+                                    .log_source
+                                    .as_ref()
+                                    .is_some_and(|s| Arc::ptr_eq(s, &src_check))
+                                && workspace
+                                    .filter_result
+                                    .as_ref()
+                                    .is_some_and(|f| Arc::ptr_eq(f, &filter_check))
+                            {
+                                workspace.timeline_data = Some(timeline);
+                                cx.notify();
+                            }
+                        });
+                    }
+                })
+                .detach();
             }
         }
         self.status_text = if self.is_timeline_visible {

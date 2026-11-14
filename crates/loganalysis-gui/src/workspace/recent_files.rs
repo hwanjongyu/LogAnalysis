@@ -1,13 +1,56 @@
+use gpui::*;
+
 use super::LogAnalysisWorkspace;
 
 impl LogAnalysisWorkspace {
     /// Records a file in recent history, keeping up to 5 unique canonical paths
+    #[allow(dead_code)]
     pub fn add_recent_file(&mut self, path: std::path::PathBuf) {
         let canonical = std::fs::canonicalize(&path).unwrap_or(path);
         self.recent_files.retain(|p| p != &canonical);
         self.recent_files.insert(0, canonical);
         self.recent_files.truncate(5);
         save_recent_files(&self.recent_files);
+    }
+
+    /// Records a file in recent history while offloading canonicalization and persistence to a background thread.
+    pub fn add_recent_file_async(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.recent_files.retain(|p| p != &path);
+        self.recent_files.insert(0, path.clone());
+        self.recent_files.truncate(5);
+        cx.notify();
+
+        let raw_path = path.clone();
+        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
+            let mut async_cx = cx.clone();
+
+            async move {
+                let canonical = bg_executor
+                    .spawn(async move { std::fs::canonicalize(&path).unwrap_or(path) })
+                    .await;
+
+                let mut snapshot_to_save: Option<Vec<std::path::PathBuf>> = None;
+                let _ = this.update(&mut async_cx, |workspace, cx| {
+                    workspace
+                        .recent_files
+                        .retain(|p| p != &raw_path && p != &canonical);
+                    workspace.recent_files.insert(0, canonical);
+                    workspace.recent_files.truncate(5);
+                    snapshot_to_save = Some(workspace.recent_files.clone());
+                    cx.notify();
+                });
+
+                if let Some(files) = snapshot_to_save {
+                    bg_executor
+                        .spawn(async move {
+                            save_recent_files(&files);
+                        })
+                        .await;
+                }
+            }
+        })
+        .detach();
     }
 
     /// Clears the recent files list
@@ -53,9 +96,13 @@ pub(crate) fn save_recent_files(files: &[std::path::PathBuf]) {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Ok(json) = serde_json::to_string_pretty(files) {
-            let tmp = path.with_extension("tmp");
+            let tmp = crate::workspace::filters::build_unique_temp_path(&path);
             if std::fs::write(&tmp, json).is_ok() {
-                let _ = std::fs::rename(&tmp, &path);
+                if std::fs::rename(&tmp, &path).is_err() {
+                    let _ = std::fs::remove_file(&tmp);
+                }
+            } else {
+                let _ = std::fs::remove_file(&tmp);
             }
         }
     }

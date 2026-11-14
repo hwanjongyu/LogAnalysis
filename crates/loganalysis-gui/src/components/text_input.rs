@@ -106,6 +106,13 @@ pub fn clamp_range_to_char_boundaries(content: &str, range: Range<usize>) -> Ran
     }
 }
 
+/// Removes the uncommitted IME preedit `marked_range` slice from `content` and returns `(new_content, cursor_utf8_offset)`.
+pub fn strip_marked_range_from_content(content: &str, marked_range: Range<usize>) -> (String, usize) {
+    let clamped = clamp_range_to_char_boundaries(content, marked_range);
+    let stripped = format!("{}{}", &content[..clamped.start], &content[clamped.end..]);
+    (stripped, clamped.start)
+}
+
 impl EventEmitter<TextInputEvent> for TextInput {}
 
 /// A native-grade GPUI text input component supporting full OS IME (Hangul/CJK),
@@ -143,6 +150,20 @@ impl TextInput {
 
     pub fn text(&self) -> String {
         self.content.to_string()
+    }
+
+    /// Cancels active IME preedit composition, stripping any uncommitted slice from `content`
+    /// and repositioning the cursor to the start of the preedit range.
+    pub fn cancel_ime_preedit(&mut self) -> bool {
+        let Some(marked) = self.marked_range.take() else {
+            return false;
+        };
+        let (stripped, cursor) = strip_marked_range_from_content(&self.content, marked);
+        self.content = stripped.into();
+        self.selected_range = cursor..cursor;
+        self.pivot = cursor;
+        self.selection_reversed = false;
+        true
     }
 
     pub fn set_text(&mut self, new_text: &str, cx: &mut Context<Self>) {
@@ -531,11 +552,15 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
+        if self.content.is_empty() {
+            return Some(0);
+        }
         let bounds = self.last_bounds?;
         let last_layout = self.last_layout.as_ref()?;
         let rel_x = point.x - bounds.left() + self.scroll_offset;
         let utf8_index = last_layout.closest_index_for_x(rel_x);
-        Some(self.offset_to_utf16(utf8_index))
+        let safe_utf8_index = self.content.floor_char_boundary(utf8_index.min(self.content.len()));
+        Some(self.offset_to_utf16(safe_utf8_index))
     }
 }
 
@@ -779,8 +804,7 @@ impl Render for TextInput {
             }))
             .on_action(cx.listener(|this, _: &Cancel, _window, cx| {
                 // If IME is composing, Escape cancels the active preedit block without closing the parent modal
-                if this.marked_range.is_some() {
-                    this.marked_range = None;
+                if this.cancel_ime_preedit() {
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -1191,6 +1215,21 @@ mod tests {
             assert!(text.is_char_boundary(clamped));
             assert!(clamped <= text.len());
         }
+    }
+
+    #[test]
+    fn test_text_input_cancel_ime_preedit_strips_uncommitted_text() {
+        let content = "검색어: 한abc";
+        // '검'=0..3, '색'=3..6, '어'=6..9, ':'=9..10, ' '=10..11, '한'=11..14, 'abc'=14..17
+        let (stripped, cursor) = super::strip_marked_range_from_content(content, 11..14);
+        assert_eq!(stripped, "검색어: abc");
+        assert_eq!(cursor, 11);
+
+        // Interior & out-of-bounds preedit byte range must clamp cleanly to char boundaries
+        let (stripped_interior, cursor_interior) =
+            super::strip_marked_range_from_content(content, 1..999);
+        assert_eq!(stripped_interior, "");
+        assert_eq!(cursor_interior, 0);
     }
 
 }

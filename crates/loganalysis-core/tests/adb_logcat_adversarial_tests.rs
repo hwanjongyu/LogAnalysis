@@ -317,3 +317,56 @@ fn test_adversarial_explicit_join_latency_with_live_subprocess() {
         "stop_flag must be true after join"
     );
 }
+
+#[test]
+fn test_scan_adb_devices_mock_daemon_inherited_pipe_hang() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let platform_tools = temp_dir.path().join("platform-tools");
+    std::fs::create_dir_all(&platform_tools).expect("mkdir");
+    let adb_path = platform_tools.join("adb");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Script launches a background process that inherits stdout and sleeps for 5 seconds.
+        // Under blocking read_to_string, this hangs for 5 seconds.
+        // Under non-blocking try_wait polling, it returns in < 150ms.
+        let script = r#"#!/bin/sh
+for arg in "$@"; do
+    if [ "$arg" = "devices" ]; then
+        ( sleep 5 ) &
+        echo "List of devices attached"
+        echo "emulator-5554          device product:sdk_gphone64_arm64 model:Pixel_8 device:emulator64_arm64 transport_id:1"
+        exit 0
+    fi
+done
+exit 0
+"#;
+        std::fs::write(&adb_path, script).expect("write mock adb");
+        std::fs::set_permissions(&adb_path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let old_home = std::env::var("ANDROID_HOME").ok();
+    std::env::set_var("ANDROID_HOME", temp_dir.path());
+
+    let start = Instant::now();
+    let res = loganalysis_core::scan_adb_device_details(Duration::from_millis(500));
+    let elapsed = start.elapsed();
+
+    if let Some(h) = old_home {
+        std::env::set_var("ANDROID_HOME", h);
+    } else {
+        std::env::remove_var("ANDROID_HOME");
+    }
+
+    assert!(res.is_ok(), "Expected Ok but got: {:?}", res);
+    let devices = res.unwrap();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].serial, "emulator-5554");
+    assert!(
+        elapsed < Duration::from_millis(150),
+        "Call took too long ({:?}), likely blocked on inherited pipe!",
+        elapsed
+    );
+}

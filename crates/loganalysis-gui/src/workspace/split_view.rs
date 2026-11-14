@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use gpui::*;
 use loganalysis_core::*;
@@ -6,17 +7,14 @@ use super::LogAnalysisWorkspace;
 
 /// Extracts timestamp for a given log row, probing backwards up to 10 lines if None (e.g. multi-line stack traces).
 pub fn probe_parent_timestamp(source: &ActiveLogSource, target_idx: usize) -> Option<i64> {
-    let raw_line = source.get_raw_line(target_idx)?;
-    if let Some(ts) = extract_timestamp(raw_line) {
-        return Some(ts.total_micros);
+    if let Some(ts) = source.get_timestamp_micros(target_idx) {
+        return Some(ts);
     }
 
     let min_idx = target_idx.saturating_sub(10);
     for idx in (min_idx..target_idx).rev() {
-        if let Some(prev_raw) = source.get_raw_line(idx) {
-            if let Some(t) = extract_timestamp(prev_raw) {
-                return Some(t.total_micros);
-            }
+        if let Some(ts) = source.get_timestamp_micros(idx) {
+            return Some(ts);
         }
     }
     None
@@ -138,6 +136,11 @@ impl LogAnalysisWorkspace {
                 let _ = this.update(&mut async_cx, |workspace, cx| {
                     match open_result {
                         Ok(buf) => {
+                            workspace
+                                .secondary_filter_cancel_gen
+                                .fetch_add(1, Ordering::SeqCst);
+                            workspace.secondary_filter_result = None;
+                            workspace.secondary_selection.clear();
                             let arc_buf = Arc::new(ActiveLogSource::File(buf));
                             workspace.secondary_log_source = Some(arc_buf.clone());
                             workspace.secondary_file_name = Some(file_name);
@@ -179,6 +182,11 @@ impl LogAnalysisWorkspace {
 
         let show_only = self.show_only_filtered;
         let source_for_bg = source.clone();
+        let generation = self
+            .secondary_filter_cancel_gen
+            .fetch_add(1, Ordering::SeqCst)
+            + 1;
+        let cancel_token = self.secondary_filter_cancel_gen.clone();
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let bg_executor = cx.background_executor().clone();
@@ -191,16 +199,22 @@ impl LogAnalysisWorkspace {
                             &*source_for_bg,
                             &active_filters,
                             show_only,
-                            None,
-                            0,
+                            Some(&cancel_token),
+                            generation,
                         )
                     })
                     .await;
 
                 if let Some(res) = result {
                     let _ = this.update(&mut async_cx, |workspace, cx| {
-                        workspace.secondary_filter_result = Some(Arc::new(res));
-                        cx.notify();
+                        if workspace
+                            .secondary_filter_cancel_gen
+                            .load(Ordering::SeqCst)
+                            == generation
+                        {
+                            workspace.secondary_filter_result = Some(Arc::new(res));
+                            cx.notify();
+                        }
                     });
                 }
             }

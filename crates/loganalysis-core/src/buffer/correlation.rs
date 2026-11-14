@@ -1,4 +1,3 @@
-use crate::buffer::timestamp::extract_timestamp;
 use crate::buffer::LogSource;
 
 /// Finds the visible row index in `source` whose timestamp is closest to `target_micros`.
@@ -15,22 +14,19 @@ pub fn find_nearest_timestamp_row(
     let mut low = 0usize;
     let mut high = visible_indices.len().saturating_sub(1);
     let mut best_row = 0usize;
-    let mut best_diff = i64::MAX;
+    let mut best_diff = u64::MAX;
 
     // Helper closure to extract timestamp with small local linear probe if current line lacks timestamp
     let get_ts = |vis_idx: usize| -> Option<i64> {
         let src_idx = *visible_indices.get(vis_idx)?;
-        let raw = source.get_raw_line(src_idx)?;
-        if let Some(t) = extract_timestamp(raw) {
-            return Some(t.total_micros);
+        if let Some(ts) = source.get_timestamp_micros(src_idx) {
+            return Some(ts);
         }
         // Local probe up to 4 lines forward
         for step in 1..=4 {
             if let Some(&next_src) = visible_indices.get(vis_idx + step) {
-                if let Some(r) = source.get_raw_line(next_src) {
-                    if let Some(t) = extract_timestamp(r) {
-                        return Some(t.total_micros);
-                    }
+                if let Some(ts) = source.get_timestamp_micros(next_src) {
+                    return Some(ts);
                 }
             } else {
                 break;
@@ -42,7 +38,7 @@ pub fn find_nearest_timestamp_row(
     while low <= high {
         let mid = low + (high - low) / 2;
         if let Some(ts) = get_ts(mid) {
-            let diff = (ts - target_micros).abs();
+            let diff = ts.abs_diff(target_micros);
             if diff < best_diff {
                 best_diff = diff;
                 best_row = mid;
@@ -69,6 +65,8 @@ pub fn find_nearest_timestamp_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buffer::merged_buffer::MergedLogBuffer;
+    use crate::buffer::timestamp::extract_timestamp;
     use std::borrow::Cow;
 
     struct MockLogSource {
@@ -118,5 +116,39 @@ mod tests {
         // Target: 18:00:11.000 (+1s from 10s, -9s from 20s) -> closest to row 1
         let target_11s = t2.total_micros - 9_000_000;
         assert_eq!(find_nearest_timestamp_row(&src, &vis, target_11s), Some(1));
+    }
+
+    #[test]
+    fn test_correlation_find_nearest_with_merged_buffer_and_i64_min() {
+        let file_dec = b"12-31 23:59:58.000 S1 Dec 58\n\
+                         12-31 23:59:59.000 S1 Dec 59\n";
+        let file_jan = b"01-01 00:00:01.000 S2 Jan 01\n\
+                         01-01 00:00:02.000 S2 Jan 02\n";
+
+        let mut dec_dir = std::env::temp_dir();
+        dec_dir.push(format!("corr_dec_{}.log", uuid::Uuid::new_v4()));
+        std::fs::write(&dec_dir, file_dec).unwrap();
+
+        let mut jan_dir = std::env::temp_dir();
+        jan_dir.push(format!("corr_jan_{}.log", uuid::Uuid::new_v4()));
+        std::fs::write(&jan_dir, file_jan).unwrap();
+
+        let merged = MergedLogBuffer::open_multiple(&[dec_dir.clone(), jan_dir.clone()]).unwrap();
+        let vis = vec![0, 1, 2, 3];
+
+        // Extreme target_micros (i64::MIN and i64::MAX) must not panic with overflow
+        let row_min = find_nearest_timestamp_row(&merged, &vis, i64::MIN);
+        assert_eq!(row_min, Some(0)); // Closest to earliest line
+
+        let row_max = find_nearest_timestamp_row(&merged, &vis, i64::MAX);
+        assert_eq!(row_max, Some(3)); // Closest to latest line
+
+        // Target midnight transition
+        let jan_ts = merged.get_line_timestamp_micros(2).unwrap();
+        let found_jan = find_nearest_timestamp_row(&merged, &vis, jan_ts);
+        assert_eq!(found_jan, Some(2));
+
+        let _ = std::fs::remove_file(dec_dir);
+        let _ = std::fs::remove_file(jan_dir);
     }
 }
