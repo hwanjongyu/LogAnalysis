@@ -64,9 +64,9 @@ echo "==> [3/4] Preparing appimagetool..."
 TOOL_DIR="${PROJECT_ROOT}/target/tools"
 mkdir -p "${TOOL_DIR}"
 APPIMAGETOOL="${TOOL_DIR}/appimagetool-x86_64.AppImage"
-APPIMAGETOOL_VERSION="13"
-APPIMAGETOOL_SHA256="d918b4ed5479b4d8479e03cca93d4073000b028965e43fb2945142f96e5720b4"
-APPIMAGETOOL_URL="https://github.com/AppImage/AppImageKit/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+APPIMAGETOOL_VERSION="1.9.1"
+APPIMAGETOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
 
 if [ ! -f "${APPIMAGETOOL}" ]; then
     echo "Downloading official appimagetool (v${APPIMAGETOOL_VERSION})..."

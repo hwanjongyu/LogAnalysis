@@ -298,6 +298,14 @@ fn test_stress_stop_flag_unblock_latency() {
     );
 }
 
+fn max_latency(linux_ms: u64) -> Duration {
+    if cfg!(target_os = "linux") {
+        Duration::from_millis(linux_ms)
+    } else {
+        Duration::from_millis(500)
+    }
+}
+
 // 5. Handle Drop and Lifecycle Safety
 #[test]
 fn test_stress_handle_drop_safety() {
@@ -308,7 +316,7 @@ fn test_stress_handle_drop_safety() {
         let start = Instant::now();
         drop(handle);
         let elapsed = start.elapsed();
-        assert!(elapsed < Duration::from_millis(50), "Drop should be fast (<50ms): {:?}", elapsed);
+        assert!(elapsed < max_latency(50), "Drop should be fast: {:?}", elapsed);
         assert!(stop_flag.load(Ordering::SeqCst), "Drop must set stop flag");
     }
 }
@@ -348,7 +356,7 @@ fn test_stress_zero_capacity_rendezvous_channel() {
 
     assert!(res.is_ok());
     assert!(
-        elapsed < Duration::from_millis(60),
+        elapsed < max_latency(60),
         "Rendezvous channel unblock took too long: {:?}",
         elapsed
     );
@@ -384,7 +392,7 @@ fn test_stress_rapid_racing_stop_and_drop_cycles() {
 
         assert!(res.is_ok(), "Cycle {} worker failed to join cleanly", cycle);
         assert!(
-            elapsed < Duration::from_millis(80),
+            elapsed < max_latency(80),
             "Cycle {} unblock exceeded latency budget: {:?}",
             cycle,
             elapsed

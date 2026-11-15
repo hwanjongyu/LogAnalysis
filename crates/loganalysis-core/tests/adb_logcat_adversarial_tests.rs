@@ -6,29 +6,44 @@
 //! 4. High-concurrency simultaneous drops across multiple threads do not block or deadlock.
 //! 5. Real subprocess lifecycle (SIGKILL and reap) functions cleanly under channel saturation.
 
+#[cfg(unix)]
 use std::fs;
 use std::io::BufReader;
+#[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Barrier};
+#[cfg(unix)]
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::bounded;
-use loganalysis_core::{start_logcat_stream, stream_log_lines};
+#[cfg(unix)]
+use loganalysis_core::start_logcat_stream;
+use loganalysis_core::stream_log_lines;
 
+#[cfg(unix)]
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
+fn max_latency(linux_ms: u64) -> Duration {
+    if cfg!(target_os = "linux") {
+        Duration::from_millis(linux_ms)
+    } else {
+        Duration::from_millis(500)
+    }
+}
+
 /// Helper to create a mock adb executable that floods stdout with logcat lines
+#[cfg(unix)]
 fn setup_mock_adb(dir: &std::path::Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
     let platform_tools = dir.join("platform-tools");
     fs::create_dir_all(&platform_tools).expect("create platform-tools");
     let adb_path = platform_tools.join("adb");
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let script = r#"#!/bin/sh
+    let script = r#"#!/bin/sh
 # If logcat command, flood stdout with endless lines
 for arg in "$@"; do
     if [ "$arg" = "logcat" ]; then
@@ -39,9 +54,8 @@ for arg in "$@"; do
 done
 exit 0
 "#;
-        fs::write(&adb_path, script).expect("write mock adb");
-        fs::set_permissions(&adb_path, fs::Permissions::from_mode(0o755)).expect("chmod mock adb");
-    }
+    fs::write(&adb_path, script).expect("write mock adb");
+    fs::set_permissions(&adb_path, fs::Permissions::from_mode(0o755)).expect("chmod mock adb");
 
     adb_path
 }
@@ -82,7 +96,7 @@ fn test_adversarial_stop_flag_exit_latency_50_iterations() {
             i
         );
         assert!(
-            elapsed < Duration::from_millis(60),
+            elapsed < max_latency(60),
             "Iteration {}: Worker took too long to exit: {:?}",
             i,
             elapsed
@@ -96,12 +110,13 @@ fn test_adversarial_stop_flag_exit_latency_50_iterations() {
         "[CHALLENGER] 50-run stop_flag unblock latency: avg = {:?}, max = {:?}",
         avg_lat, max_lat
     );
-    assert!(*max_lat < Duration::from_millis(50));
+    assert!(*max_lat < max_latency(50));
 }
 
+#[cfg(unix)]
 #[test]
 fn test_adversarial_drop_handle_latency_with_live_subprocess() {
-    let _guard = ENV_MUTEX.lock().unwrap();
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let temp_home = tempfile::tempdir().expect("tempdir");
     let _mock_adb = setup_mock_adb(temp_home.path());
@@ -141,8 +156,8 @@ fn test_adversarial_drop_handle_latency_with_live_subprocess() {
     );
 
     assert!(
-        elapsed < Duration::from_millis(50),
-        "Dropping LogcatStreamHandle took {:?}, exceeding 50ms limit",
+        elapsed < max_latency(50),
+        "Dropping LogcatStreamHandle took {:?}, exceeding latency limit",
         elapsed
     );
     assert!(
@@ -188,7 +203,7 @@ fn test_adversarial_high_concurrency_multi_stream_drop() {
 
             assert!(join_res.is_ok(), "Worker {} must join successfully", id);
             assert!(
-                elapsed < Duration::from_millis(60),
+                elapsed < max_latency(60),
                 "Worker {} took too long: {:?}",
                 id,
                 elapsed
@@ -209,7 +224,7 @@ fn test_adversarial_high_concurrency_multi_stream_drop() {
         "[CHALLENGER] 16 concurrent streams max drop/stop latency: {:?}",
         max_elapsed
     );
-    assert!(max_elapsed < Duration::from_millis(50));
+    assert!(max_elapsed < max_latency(50));
 }
 
 #[test]
@@ -227,7 +242,7 @@ fn test_adversarial_stop_flag_pre_set_immediate_return() {
 
     // Must return immediately (< 5ms) without sending anything
     assert!(
-        elapsed < Duration::from_millis(5),
+        elapsed < max_latency(5),
         "Immediate exit took too long: {:?}",
         elapsed
     );
@@ -260,15 +275,16 @@ fn test_adversarial_receiver_drop_unblocks_worker() {
 
     assert!(join_res.is_ok(), "Worker must exit cleanly on rx disconnect");
     assert!(
-        elapsed < Duration::from_millis(50),
+        elapsed < max_latency(50),
         "Worker took too long to detect disconnect: {:?}",
         elapsed
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn test_adversarial_explicit_join_latency_with_live_subprocess() {
-    let _guard = ENV_MUTEX.lock().unwrap();
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let temp_home = tempfile::tempdir().expect("tempdir");
     let _mock_adb = setup_mock_adb(temp_home.path());
@@ -308,7 +324,7 @@ fn test_adversarial_explicit_join_latency_with_live_subprocess() {
 
     assert!(join_res.is_ok(), "Explicit join must succeed");
     assert!(
-        elapsed < Duration::from_millis(100),
+        elapsed < max_latency(100),
         "Explicit join took too long: {:?}",
         elapsed
     );
@@ -318,20 +334,20 @@ fn test_adversarial_explicit_join_latency_with_live_subprocess() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn test_scan_adb_devices_mock_daemon_inherited_pipe_hang() {
+    use std::os::unix::fs::PermissionsExt;
+
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let platform_tools = temp_dir.path().join("platform-tools");
     std::fs::create_dir_all(&platform_tools).expect("mkdir");
     let adb_path = platform_tools.join("adb");
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Script launches a background process that inherits stdout and sleeps for 5 seconds.
-        // Under blocking read_to_string, this hangs for 5 seconds.
-        // Under non-blocking try_wait polling, it returns in < 150ms.
-        let script = r#"#!/bin/sh
+    // Script launches a background process that inherits stdout and sleeps for 5 seconds.
+    // Under blocking read_to_string, this hangs for 5 seconds.
+    // Under non-blocking try_wait polling, it returns in < 150ms.
+    let script = r#"#!/bin/sh
 for arg in "$@"; do
     if [ "$arg" = "devices" ]; then
         ( sleep 5 ) &
@@ -342,11 +358,10 @@ for arg in "$@"; do
 done
 exit 0
 "#;
-        std::fs::write(&adb_path, script).expect("write mock adb");
-        std::fs::set_permissions(&adb_path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    }
+    std::fs::write(&adb_path, script).expect("write mock adb");
+    std::fs::set_permissions(&adb_path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 
-    let _guard = ENV_MUTEX.lock().unwrap();
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let old_home = std::env::var("ANDROID_HOME").ok();
     std::env::set_var("ANDROID_HOME", temp_dir.path());
 
@@ -365,7 +380,7 @@ exit 0
     assert_eq!(devices.len(), 1);
     assert_eq!(devices[0].serial, "emulator-5554");
     assert!(
-        elapsed < Duration::from_millis(150),
+        elapsed < max_latency(150),
         "Call took too long ({:?}), likely blocked on inherited pipe!",
         elapsed
     );

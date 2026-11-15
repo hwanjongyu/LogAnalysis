@@ -157,19 +157,21 @@ pub fn is_x11_session() -> bool {
 }
 
 /// Attaches an optional X11 window ID to an AsyncFileDialog via CustomX11WindowHandle.
-pub fn attach_dialog_x11_id(mut dialog: rfd::AsyncFileDialog, xid: Option<std::os::raw::c_ulong>) -> rfd::AsyncFileDialog {
+pub fn attach_dialog_x11_id(dialog: rfd::AsyncFileDialog, xid: Option<std::os::raw::c_ulong>) -> rfd::AsyncFileDialog {
     #[cfg(target_os = "linux")]
     {
+        let mut dialog = dialog;
         if let Some(id) = xid {
             let handle = CustomX11WindowHandle(id);
             dialog = dialog.set_parent(&handle);
         }
+        dialog
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = xid;
+        dialog
     }
-    dialog
 }
 
 /// Builds the base Open Log File dialog with mandatory extensions (*.log, *.txt, and *.*).

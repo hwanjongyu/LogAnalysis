@@ -2,6 +2,7 @@
 name = "loganalysis-gui"
 version = "0.2.4"
 edition = "2021"
+license = "MIT"
 authors = ["Drew Yu"]
 description = "GPU-accelerated desktop GUI for LogAnalysis using GPUI"
 

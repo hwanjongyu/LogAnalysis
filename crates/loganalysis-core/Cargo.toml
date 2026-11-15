@@ -2,6 +2,7 @@
 name = "loganalysis-core"
 version = "0.2.4"
 edition = "2021"
+license = "MIT"
 authors = ["Drew Yu"]
 description = "High-performance core engine for LogAnalysis"
 
