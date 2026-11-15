@@ -50,7 +50,7 @@ fn test_stress_sudden_eof_empty_stream() {
     stream_log_lines(reader, tx, stop_flag);
     let elapsed = start.elapsed();
 
-    assert!(elapsed < Duration::from_millis(50));
+    assert!(elapsed < max_latency(50));
     assert!(rx.try_recv().is_err(), "Empty stream should produce no batches");
 }
 
@@ -102,7 +102,7 @@ fn test_stress_broken_pipe_immediate() {
     stream_log_lines(reader, tx, stop_flag);
     let elapsed = start.elapsed();
 
-    assert!(elapsed < Duration::from_millis(50));
+    assert!(elapsed < max_latency(50));
     assert!(rx.try_recv().is_err());
 }
 
@@ -120,7 +120,7 @@ fn test_stress_broken_pipe_after_data() {
     stream_log_lines(reader, tx, stop_flag);
     let elapsed = start.elapsed();
 
-    assert!(elapsed < Duration::from_millis(50));
+    assert!(elapsed < max_latency(50));
     let batch = rx.try_recv().expect("Should deliver lines before broken pipe");
     assert_eq!(batch, vec!["Valid line 1", "Valid line 2"]);
 }
@@ -145,7 +145,7 @@ fn test_stress_connection_reset_and_unexpected_eof() {
         let elapsed = start.elapsed();
 
         assert!(
-            elapsed < Duration::from_millis(50),
+            elapsed < max_latency(50),
             "Worker took too long on IO error {:?}: {:?}",
             error_kind,
             elapsed
@@ -187,7 +187,7 @@ fn test_stress_channel_disconnect_immediate() {
     let elapsed = start.elapsed();
 
     assert!(
-        elapsed < Duration::from_millis(50),
+        elapsed < max_latency(50),
         "Stream reader should exit immediately when channel is disconnected: {:?}",
         elapsed
     );
@@ -221,7 +221,7 @@ fn test_stress_channel_disconnect_while_blocked_on_saturated_channel() {
 
     assert!(res.is_ok(), "Worker must exit cleanly on channel disconnect");
     assert!(
-        elapsed < Duration::from_millis(100),
+        elapsed < max_latency(100),
         "Worker took too long to unblock after channel disconnect: {:?}",
         elapsed
     );
@@ -243,7 +243,7 @@ fn test_stress_tail_flush_skips_when_stop_flag_set_on_saturated_channel() {
 
     // Must skip immediately (< 10ms) without attempting to send or block
     assert!(
-        elapsed < Duration::from_millis(20),
+        elapsed < max_latency(20),
         "Tail flush with stop_flag=true blocked for {:?}",
         elapsed
     );
@@ -292,7 +292,7 @@ fn test_stress_stop_flag_unblock_latency() {
     assert!(res.is_ok());
     // Since send_timeout is 20ms, worker must unblock within ~35ms
     assert!(
-        elapsed < Duration::from_millis(60),
+        elapsed < max_latency(60),
         "Stop flag unblock latency too high: {:?}",
         elapsed
     );

@@ -61,7 +61,9 @@ jobs:
         run: cargo test --workspace
 
       - name: Cargo Doc
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --no-deps
 
       - name: Install Audit & Deny Tools
         if: runner.os == 'Linux'

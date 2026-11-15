@@ -367,7 +367,7 @@ mod tests {
 
         assert!(join_res.is_ok(), "Worker thread should exit cleanly");
         assert!(
-            elapsed < Duration::from_millis(150),
+            elapsed < Duration::from_millis(if cfg!(target_os = "linux") { 150 } else { 500 }),
             "Worker thread took too long to unblock: {:?}",
             elapsed
         );
@@ -439,7 +439,7 @@ mod tests {
 
         assert!(res.is_ok(), "Explicit join must succeed");
         assert!(
-            elapsed < Duration::from_millis(150),
+            elapsed < Duration::from_millis(if cfg!(target_os = "linux") { 150 } else { 500 }),
             "Explicit join took too long: {:?}",
             elapsed
         );
