@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.4] - 2026-11-14
+
+### Added
+- **Extensible Log Format Parser SPI (`INF-01`)**: Added zero-copy `LogFormatParser` (`Send + Sync`), `ThreadtimeColumnParser`, `BriefColumnParser`, `DEFAULT_COLUMN_PARSERS`, `parse_column_line_with_parsers`, and `parse_column_line_auto` in `loganalysis-core`, wired into GUI structured column rendering and forensic facet extraction.
+- **Pre-Compiled Streaming Filters (`MAJ-06`)**: Added `CompiledStreamFilters` and `append_streaming_batch_with_matcher` in `filter::engine`, cached in `LogAnalysisWorkspace` to avoid per-batch regex and Aho-Corasick recompilation.
+- **Cross-Platform Subprocess & Atomic Persistence (`MAJ-03`, `MAJ-04`)**: Added `atomic_replace_file` (Win32 `MoveFileExW` on Windows) and cross-platform `run_command_with_timeout` in `adb::device` using bounded `crossbeam_channel` readers.
+
+### Changed
+- **Streaming CoW Buffer & GUI Modularization (`MAJ-07`, `MAJ-11`, `MAJ-02`)**: Refactored `StreamLogBuffer` to `1024`-line Copy-on-Write (`Arc<Vec<Arc<str>>>`) pages with `SharedStreamBuffer`, wired headless controllers (`AdbController`, `BookmarkController`, `SearchController`, `SplitViewController`), and split `loganalysis-gui` into `[lib]` and thin `[[bin]]` targets.
+- **Buffered Logging & OS User Dir Precedence (`MIN-03`)**: Switched `loganalysis-gui` logging to cache `BufWriter<File>` (`LogWriterState`), prefer the OS user log directory exclusively (`cwd` fallback only when env lookup returns `None`), flush immediately on `ERROR`/`CRITICAL`/`CRITICAL_PANIC`/`FATAL` and clean exit, flush buffered logs ahead of crash reports, and isolate tests from repo checkout files.
+- **Supply Chain & CI Hardening (`MAJ-01`, `MAJ-12`, `INF-06`)**: Enforced `cargo clippy -- -D warnings`, `RUSTDOCFLAGS="-D warnings" cargo doc`, `cargo audit`, and `cargo deny check` in CI; pinned `appimagetool` to tag `13` with SHA256 verification; pinned `crates.io-index` allowlist in `deny.toml`.
+
+### Fixed
+- **Streaming Filter Reconciliation & Selection Sync (`CRIT-01`, `CRIT-02`)**: Tracked cumulative ring-buffer trims via `reconcile_snapshot_filter_result` and decoupled `SelectionModel::shift_on_trim(dropped_visible_rows, raw_trimmed_count)`.
+- **Excluded-Line Trim Counter Parity (`[INV-09]`)**: Tracked `excluded_filter_matches` across parallel `execute_filtering` and streaming append, ensuring excluded filter counters and line indices shift accurately during trims even when `visible_indices` is empty.
+- **Non-Blocking Child Process Reaping**: Released `self.child` mutex before calling `reap_child_nonblocking` in `LogcatStreamHandle::stop` with a `try_wait()` fast path and detached reaper thread fallback.
+- **Gregorian Leap-Year & Mmap Safety (`MAJ-10`, `MAJ-05`, `INF-03`)**: Fixed ISO-8601 leap-year and Unix epoch day math (`div_euclid`), added heap fallback (`open_heap`) and truncation detection in `FileLogBuffer`, rewound existing `File` handles on mmap fallback, unified `Regex Error` feedback (`MAJ-08`) with modal filter validation (`MAJ-09`), and replaced X11/Win32 dialog/menu unwrap edge cases (`MIN-04`..`MIN-10`).
+
+---
+
 ## [0.2.3] - 2026-11-08
 
 ### Added
