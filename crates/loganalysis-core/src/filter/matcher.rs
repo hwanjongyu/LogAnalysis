@@ -75,6 +75,7 @@ fn extract_required_literals(expr: &fancy_regex::Expr, out: &mut Vec<Vec<u8>>) {
     }
 }
 
+#[derive(Clone)]
 pub enum CompiledMatcher {
     /// Case-sensitive literal search using SIMD memmem
     LiteralCaseSensitive {
@@ -330,6 +331,7 @@ impl CompiledMatcher {
     }
 }
 
+#[derive(Clone)]
 pub struct PreparedFilter {
     pub rule: FilterRule,
     pub flat_index: usize,
@@ -376,6 +378,7 @@ impl PreparedFilter {
 /// Combines multiple literal filter rules into case-sensitive and case-insensitive
 /// automatons, scanning each line in a single pass ($O(N)$) instead of sequentially testing
 /// each rule ($O(N \cdot K)$).
+#[derive(Clone)]
 pub struct MultiFilterMatcher {
     cs_automaton: Option<(AhoCorasick, Vec<usize>)>,
     ci_automaton: Option<(AhoCorasick, Vec<usize>)>,

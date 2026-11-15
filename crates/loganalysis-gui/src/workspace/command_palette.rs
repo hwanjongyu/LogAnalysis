@@ -74,9 +74,10 @@ impl LogAnalysisWorkspace {
         mut window: Option<&mut Window>,
         cx: &mut Context<Self>,
     ) {
-        use crate::modals::command_palette::PaletteCommandId;
+        use crate::modals::command_palette::{palette_command_action_name, PaletteCommandId};
 
         self.close_command_palette(cx);
+        crate::logging::log_event("CMD_PALETTE", palette_command_action_name(cmd_id));
         match cmd_id {
             PaletteCommandId::OpenFile => self.prompt_open_file(window.as_deref(), cx),
             PaletteCommandId::LoadFilters => self.prompt_load_filters(window.as_deref(), cx),
@@ -85,7 +86,7 @@ impl LogAnalysisWorkspace {
             }
             PaletteCommandId::Find => {
                 self.toggle_search_bar(cx);
-                if self.is_search_visible {
+                if self.search_ctrl.is_visible {
                     if let Some(win) = window.as_mut() {
                         win.focus(&self.find_input.read(cx).focus_handle);
                     }

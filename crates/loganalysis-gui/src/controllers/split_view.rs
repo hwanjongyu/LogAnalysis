@@ -56,6 +56,16 @@ impl SplitViewController {
         self.secondary_filter_result = None;
         self.is_split_view = false;
     }
+
+    /// Returns a read-only state snapshot of the split-view controller.
+    pub fn state(&self) -> crate::types::SplitViewState {
+        crate::types::SplitViewState {
+            is_split_view: self.is_split_view,
+            is_split_vertical: self.is_split_vertical,
+            is_scroll_synced: self.is_scroll_synced,
+            secondary_file_name: self.secondary_file_name.clone(),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -309,36 +309,17 @@ impl LogAnalysisWorkspace {
             return;
         };
 
-        let base_dialog = crate::dialogs::build_save_filters_dialog_base();
-        let is_x11 = crate::dialogs::is_x11_session();
-        let dialog = if !is_x11 {
-            crate::dialogs::attach_dialog_parent(base_dialog, parent)
-        } else {
-            base_dialog
-        };
+        let dialog = crate::dialogs::prepare_dialog_with_parent(
+            crate::dialogs::build_save_filters_dialog_base(),
+            parent,
+        );
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
             async move {
-                let dialog = if is_x11 {
-                    let xid = bg_executor
-                        .spawn(async move {
-                            #[cfg(target_os = "linux")]
-                            {
-                                crate::dialogs::get_active_x11_window_id()
-                            }
-                            #[cfg(not(target_os = "linux"))]
-                            {
-                                None
-                            }
-                        })
-                        .await;
-                    crate::dialogs::attach_dialog_x11_id(dialog, xid)
-                } else {
-                    dialog
-                };
-
+                let dialog =
+                    crate::dialogs::resolve_dialog_for_display(dialog, &bg_executor).await;
                 let file = dialog.save_file().await;
 
                 if let Some(handle) = file {
@@ -432,36 +413,17 @@ impl LogAnalysisWorkspace {
 
     /// Prompts user to select and load a filter profile JSON file with modal file dialog
     pub fn prompt_load_filters(&mut self, parent: Option<&Window>, cx: &mut Context<Self>) {
-        let base_dialog = crate::dialogs::build_load_filters_dialog_base();
-        let is_x11 = crate::dialogs::is_x11_session();
-        let dialog = if !is_x11 {
-            crate::dialogs::attach_dialog_parent(base_dialog, parent)
-        } else {
-            base_dialog
-        };
+        let dialog = crate::dialogs::prepare_dialog_with_parent(
+            crate::dialogs::build_load_filters_dialog_base(),
+            parent,
+        );
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
             async move {
-                let dialog = if is_x11 {
-                    let xid = bg_executor
-                        .spawn(async move {
-                            #[cfg(target_os = "linux")]
-                            {
-                                crate::dialogs::get_active_x11_window_id()
-                            }
-                            #[cfg(not(target_os = "linux"))]
-                            {
-                                None
-                            }
-                        })
-                        .await;
-                    crate::dialogs::attach_dialog_x11_id(dialog, xid)
-                } else {
-                    dialog
-                };
-
+                let dialog =
+                    crate::dialogs::resolve_dialog_for_display(dialog, &bg_executor).await;
                 let file = dialog.pick_file().await;
 
                 if let Some(handle) = file {

@@ -3,12 +3,17 @@ use gpui::*;
 
 use crate::workspace::LogAnalysisWorkspace;
 
+/// Pure visibility contract for the EPS timeline sparkline ribbon (hidden in Zen Mode).
+pub fn should_render_timeline_ribbon(is_timeline_visible: bool, is_zen_mode: bool) -> bool {
+    is_timeline_visible && !is_zen_mode
+}
+
 /// Renders the Throughput & EPS (Events Per Second) Timeline Sparkline ribbon below the toolbar.
 pub fn render_timeline_sparkline(
     workspace: &LogAnalysisWorkspace,
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> Option<impl IntoElement> {
-    if !workspace.is_timeline_visible || workspace.is_zen_mode {
+    if !should_render_timeline_ribbon(workspace.is_timeline_visible, workspace.is_zen_mode) {
         return None;
     }
 

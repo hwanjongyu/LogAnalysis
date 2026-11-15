@@ -8,9 +8,9 @@ impl LogAnalysisWorkspace {
     /// Selects a log row and updates status line attribution
     pub fn select_log_row(&mut self, visible_idx: usize, source_idx: usize, cx: &mut Context<Self>) {
         self.selection.select(visible_idx, source_idx);
-        self.active_split_pane_is_secondary = false;
+        self.split_view.active_pane_is_secondary = false;
         self.input_focus = InputFocusTarget::None;
-        if self.is_split_view && self.is_scroll_synced {
+        if self.split_view.is_split_view && self.split_view.is_scroll_synced {
             self.sync_scroll_to_secondary(source_idx, cx);
         }
         self.refresh_status_line(cx);
@@ -19,9 +19,9 @@ impl LogAnalysisWorkspace {
     /// Selects a log row in the secondary pane and syncs primary pane if lockstep is enabled
     pub fn select_secondary_log_row(&mut self, visible_idx: usize, source_idx: usize, cx: &mut Context<Self>) {
         self.secondary_selection.select(visible_idx, source_idx);
-        self.active_split_pane_is_secondary = true;
+        self.split_view.active_pane_is_secondary = true;
         self.input_focus = InputFocusTarget::None;
-        if self.is_split_view && self.is_scroll_synced {
+        if self.split_view.is_split_view && self.split_view.is_scroll_synced {
             self.sync_scroll_to_primary(source_idx, cx);
         }
         self.refresh_status_line(cx);
@@ -36,10 +36,15 @@ impl LogAnalysisWorkspace {
         };
 
         let text_to_copy = if let (Some(res), Some(src)) = (&self.filter_result, &self.log_source) {
-            let r_idx = res.visible_indices.get(sel_row).copied().unwrap_or(0);
-            src.get_line(r_idx)
-                .map(|s| s.to_string())
-                .unwrap_or_default()
+            if let Some(r_idx) =
+                crate::selection::resolve_selected_source_idx(&res.visible_indices, Some(sel_row))
+            {
+                src.get_line(r_idx)
+                    .map(|s| s.to_string())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            }
         } else {
             String::new()
         };
@@ -72,10 +77,15 @@ impl LogAnalysisWorkspace {
         };
 
         let raw_line = if let (Some(res), Some(src)) = (&self.filter_result, &self.log_source) {
-            let r_idx = res.visible_indices.get(sel_row).copied().unwrap_or(0);
-            src.get_line(r_idx)
-                .map(|s| s.to_string())
-                .unwrap_or_default()
+            if let Some(r_idx) =
+                crate::selection::resolve_selected_source_idx(&res.visible_indices, Some(sel_row))
+            {
+                src.get_line(r_idx)
+                    .map(|s| s.to_string())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            }
         } else {
             String::new()
         };

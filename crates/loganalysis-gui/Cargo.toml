@@ -17,6 +17,10 @@ smallvec = "1.13"
 rfd = "0.17.2"
 raw-window-handle = "0.6"
 
+[lib]
+name = "loganalysis_gui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "loganalysis"
 path = "src/main.rs"

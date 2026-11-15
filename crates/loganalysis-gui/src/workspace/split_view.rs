@@ -23,17 +23,17 @@ pub fn probe_parent_timestamp(source: &ActiveLogSource, target_idx: usize) -> Op
 impl LogAnalysisWorkspace {
     /// Toggles Dual-Pane Split View (Ctrl+\ / Cmd+\)
     pub fn toggle_split_view(&mut self, cx: &mut Context<Self>) {
-        self.is_split_view = !self.is_split_view;
-        if self.is_split_view {
-            if self.secondary_log_source.is_none() {
-                self.secondary_log_source = self.log_source.clone();
-                self.secondary_file_name = self.active_file_name.clone();
-                self.secondary_filter_result = self.filter_result.clone();
+        self.split_view.is_split_view = !self.split_view.is_split_view;
+        if self.split_view.is_split_view {
+            if self.split_view.secondary_log_source.is_none() {
+                self.split_view.secondary_log_source = self.log_source.clone();
+                self.split_view.secondary_file_name = self.active_file_name.clone();
+                self.split_view.secondary_filter_result = self.filter_result.clone();
             }
             self.status_text = format!(
                 "Split View enabled ({}, {})",
-                if self.is_split_vertical { "Side-by-Side" } else { "Stacked" },
-                if self.is_scroll_synced { "🔗 Synced" } else { "Unlinked" }
+                if self.split_view.is_split_vertical { "Side-by-Side" } else { "Stacked" },
+                if self.split_view.is_scroll_synced { "🔗 Synced" } else { "Unlinked" }
             )
             .into();
         } else {
@@ -44,10 +44,10 @@ impl LogAnalysisWorkspace {
 
     /// Toggles Split Orientation between Vertical (Side-by-Side) and Horizontal (Stacked) (Ctrl+Alt+\)
     pub fn toggle_split_orientation(&mut self, cx: &mut Context<Self>) {
-        self.is_split_vertical = !self.is_split_vertical;
+        self.split_view.is_split_vertical = !self.split_view.is_split_vertical;
         self.status_text = format!(
             "Split View orientation: {}",
-            if self.is_split_vertical { "Vertical (Side-by-Side)" } else { "Horizontal (Stacked)" }
+            if self.split_view.is_split_vertical { "Vertical (Side-by-Side)" } else { "Horizontal (Stacked)" }
         )
         .into();
         cx.notify();
@@ -55,10 +55,10 @@ impl LogAnalysisWorkspace {
 
     /// Toggles Timestamp-Synchronized Lockstep Scrolling (Ctrl+Alt+S)
     pub fn toggle_synced_scroll(&mut self, cx: &mut Context<Self>) {
-        self.is_scroll_synced = !self.is_scroll_synced;
+        self.split_view.is_scroll_synced = !self.split_view.is_scroll_synced;
         self.status_text = format!(
             "Timestamp Sync: {}",
-            if self.is_scroll_synced { "🔗 Synced (Lockstep active)" } else { "Unlinked (Independent scrolling)" }
+            if self.split_view.is_scroll_synced { "🔗 Synced (Lockstep active)" } else { "Unlinked (Independent scrolling)" }
         )
         .into();
         cx.notify();
@@ -66,35 +66,17 @@ impl LogAnalysisWorkspace {
 
     /// Prompts user to select a log file for the secondary split pane
     pub fn prompt_open_secondary_file(&mut self, parent: Option<&Window>, cx: &mut Context<Self>) {
-        let base_dialog = crate::dialogs::build_open_log_dialog_base();
-        let is_x11 = crate::dialogs::is_x11_session();
-        let dialog = if !is_x11 {
-            crate::dialogs::attach_dialog_parent(base_dialog, parent)
-        } else {
-            base_dialog
-        };
+        let dialog = crate::dialogs::prepare_dialog_with_parent(
+            crate::dialogs::build_open_log_dialog_base(),
+            parent,
+        );
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
             async move {
-                let dialog = if is_x11 {
-                    let xid = bg_executor
-                        .spawn(async move {
-                            #[cfg(target_os = "linux")]
-                            {
-                                crate::dialogs::get_active_x11_window_id()
-                            }
-                            #[cfg(not(target_os = "linux"))]
-                            {
-                                None
-                            }
-                        })
-                        .await;
-                    crate::dialogs::attach_dialog_x11_id(dialog, xid)
-                } else {
-                    dialog
-                };
+                let dialog =
+                    crate::dialogs::resolve_dialog_for_display(dialog, &bg_executor).await;
 
                 let file = dialog.pick_file().await;
                 if let Some(handle) = file {
@@ -120,7 +102,7 @@ impl LogAnalysisWorkspace {
 
         self.status_text = format!("Opening secondary log {:?}...", file_name).into();
         self.secondary_selection.clear();
-        self.is_split_view = true;
+        self.split_view.is_split_view = true;
         cx.notify();
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -139,11 +121,11 @@ impl LogAnalysisWorkspace {
                             workspace
                                 .secondary_filter_cancel_gen
                                 .fetch_add(1, Ordering::SeqCst);
-                            workspace.secondary_filter_result = None;
+                            workspace.split_view.secondary_filter_result = None;
                             workspace.secondary_selection.clear();
                             let arc_buf = Arc::new(ActiveLogSource::File(buf));
-                            workspace.secondary_log_source = Some(arc_buf.clone());
-                            workspace.secondary_file_name = Some(file_name);
+                            workspace.split_view.secondary_log_source = Some(arc_buf.clone());
+                            workspace.split_view.secondary_file_name = Some(file_name);
                             workspace.status_text = format!(
                                 "Secondary pane loaded {} lines from {:?}",
                                 arc_buf.line_count(),
@@ -165,7 +147,7 @@ impl LogAnalysisWorkspace {
 
     /// Re-evaluates active filters on the secondary log source in the background
     pub fn reapply_secondary_filters(&mut self, cx: &mut Context<Self>) {
-        let Some(source) = self.secondary_log_source.clone() else {
+        let Some(source) = self.split_view.secondary_log_source.clone() else {
             return;
         };
 
@@ -212,7 +194,7 @@ impl LogAnalysisWorkspace {
                             .load(Ordering::SeqCst)
                             == generation
                         {
-                            workspace.secondary_filter_result = Some(Arc::new(res));
+                            workspace.split_view.secondary_filter_result = Some(Arc::new(res));
                             cx.notify();
                         }
                     });
@@ -226,8 +208,8 @@ impl LogAnalysisWorkspace {
     pub fn sync_scroll_to_secondary(&mut self, primary_source_idx: usize, cx: &mut Context<Self>) {
         let (Some(primary_src), Some(secondary_src), Some(secondary_res)) = (
             &self.log_source,
-            &self.secondary_log_source,
-            &self.secondary_filter_result,
+            &self.split_view.secondary_log_source,
+            &self.split_view.secondary_filter_result,
         ) else {
             return;
         };
@@ -241,17 +223,21 @@ impl LogAnalysisWorkspace {
             &secondary_res.visible_indices,
             ts_micros,
         ) {
-            let target_source_idx = secondary_res.visible_indices.get(target_vis_idx).copied().unwrap_or(0);
-            self.secondary_selection.select(target_vis_idx, target_source_idx);
-            self.secondary_scroll_handle.scroll_to_item_strict(target_vis_idx, ScrollStrategy::Center);
-            cx.notify();
+            if let Some(target_source_idx) = crate::selection::resolve_selected_source_idx(
+                &secondary_res.visible_indices,
+                Some(target_vis_idx),
+            ) {
+                self.secondary_selection.select(target_vis_idx, target_source_idx);
+                self.secondary_scroll_handle.scroll_to_item_strict(target_vis_idx, ScrollStrategy::Center);
+                cx.notify();
+            }
         }
     }
 
     /// Synchronizes primary scroll position to match the timestamp of `secondary_source_idx`
     pub fn sync_scroll_to_primary(&mut self, secondary_source_idx: usize, cx: &mut Context<Self>) {
         let (Some(secondary_src), Some(primary_src), Some(primary_res)) = (
-            &self.secondary_log_source,
+            &self.split_view.secondary_log_source,
             &self.log_source,
             &self.filter_result,
         ) else {
@@ -267,10 +253,14 @@ impl LogAnalysisWorkspace {
             &primary_res.visible_indices,
             ts_micros,
         ) {
-            let target_source_idx = primary_res.visible_indices.get(target_vis_idx).copied().unwrap_or(0);
-            self.selection.select(target_vis_idx, target_source_idx);
-            self.scroll_handle.scroll_to_item_strict(target_vis_idx, ScrollStrategy::Center);
-            cx.notify();
+            if let Some(target_source_idx) = crate::selection::resolve_selected_source_idx(
+                &primary_res.visible_indices,
+                Some(target_vis_idx),
+            ) {
+                self.selection.select(target_vis_idx, target_source_idx);
+                self.scroll_handle.scroll_to_item_strict(target_vis_idx, ScrollStrategy::Center);
+                cx.notify();
+            }
         }
     }
 }

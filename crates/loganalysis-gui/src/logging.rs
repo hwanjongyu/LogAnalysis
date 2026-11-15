@@ -7,51 +7,7 @@ use std::time::SystemTime;
 
 static LOG_MUTEX: Mutex<()> = Mutex::new(());
 
-/// Formats epoch seconds into a human-readable UTC timestamp string (YYYY-MM-DD HH:MM:SS UTC)
-pub fn format_epoch_utc(secs: u64) -> String {
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
-    let mut days = secs / 86400;
-
-    let mut year = 1970;
-    loop {
-        let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-        let days_in_year = if leap { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-
-    let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-    let month_days = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut month = 1;
-    for &md in &month_days {
-        if days < md {
-            break;
-        }
-        days -= md;
-        month += 1;
-    }
-    let day = days + 1;
-
-    format!("{year:04}-{month:02}-{day:02} {h:02}:{m:02}:{s:02} UTC")
-}
+pub use loganalysis_core::format_epoch_utc;
 
 /// Returns current UTC timestamp string
 pub fn now_timestamp() -> String {

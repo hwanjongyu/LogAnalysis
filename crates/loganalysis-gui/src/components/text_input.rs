@@ -575,6 +575,16 @@ pub struct PrepaintState {
     scroll_offset: Pixels,
 }
 
+impl PrepaintState {
+    /// Consumes pre-painted text state and returns layout/quad parts when a shaped line is present.
+    pub fn into_paint_parts(
+        self,
+    ) -> Option<(ShapedLine, Option<PaintQuad>, Option<PaintQuad>, Pixels)> {
+        let line = self.line?;
+        Some((line, self.cursor, self.selection, self.scroll_offset))
+    }
+}
+
 impl IntoElement for TextElement {
     type Element = Self;
 
@@ -739,7 +749,6 @@ impl Element for TextElement {
         cx: &mut App,
     ) {
         let focus_handle = self.input.read(cx).focus_handle.clone();
-        let scroll = prepaint.scroll_offset;
 
         window.handle_input(
             &focus_handle,
@@ -751,14 +760,23 @@ impl Element for TextElement {
             window.paint_quad(selection);
         }
 
-        let Some(line) = prepaint.line.take() else {
+        let Some((line, cursor, _selection, scroll)) = std::mem::replace(
+            prepaint,
+            PrepaintState {
+                line: None,
+                cursor: None,
+                selection: None,
+                scroll_offset: prepaint.scroll_offset,
+            },
+        )
+        .into_paint_parts() else {
             return;
         };
         let origin = point(bounds.origin.x - scroll, bounds.origin.y);
         let _ = line.paint(origin, window.line_height(), window, cx);
 
         if focus_handle.is_focused(window) {
-            if let Some(cursor) = prepaint.cursor.take() {
+            if let Some(cursor) = cursor {
                 window.paint_quad(cursor);
             }
         }
@@ -1236,30 +1254,16 @@ mod tests {
     }
 
     #[test]
-    fn test_text_element_paint_has_no_unwrap_panics() {
-        let src = include_str!("text_input.rs");
-        let after_impl = src
-            .split("impl Element for TextElement")
-            .nth(1)
-            .expect("impl Element for TextElement must exist");
-        let paint_section = after_impl
-            .split("fn paint(")
-            .nth(1)
-            .expect("TextElement::paint must exist")
-            .split("impl Render for TextInput")
-            .next()
-            .expect("impl Render for TextInput must follow TextElement");
+    fn test_prepaint_state_missing_line_returns_none_without_panic() {
+        let state = PrepaintState {
+            line: None,
+            cursor: None,
+            selection: None,
+            scroll_offset: px(0.0),
+        };
         assert!(
-            !paint_section.contains("prepaint.line.take().unwrap()"),
-            "TextElement::paint must not call .unwrap() on prepaint.line.take()"
-        );
-        assert!(
-            !paint_section.contains(".unwrap()"),
-            "TextElement::paint must not contain .unwrap() calls"
-        );
-        assert!(
-            paint_section.contains("let Some(line) = prepaint.line.take() else"),
-            "TextElement::paint must return gracefully when prepaint.line is None"
+            state.into_paint_parts().is_none(),
+            "PrepaintState::into_paint_parts must return None cleanly when shaped line is absent"
         );
     }
 

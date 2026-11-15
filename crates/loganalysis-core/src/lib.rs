@@ -14,9 +14,13 @@ pub use adb::{
 pub use buffer::{
     column::parse_logcat_column_line, column::ParsedColumnLine,
     correlation::find_nearest_timestamp_row, file_buffer::FileLogBuffer,
-    merged_buffer::{MergedLineRef, MergedLogBuffer}, stream_buffer::StreamLogBuffer,
-    timestamp::compute_delta_micros, timestamp::extract_timestamp, timestamp::format_delta_micros,
-    timestamp::LatencyLevel, timestamp::LogTimestamp, ActiveLogSource, LogSource,
+    merged_buffer::{MergedLineRef, MergedLogBuffer},
+    stream_buffer::{SharedStreamBuffer, StreamBufferInner, StreamLogBuffer, STREAM_PAGE_SIZE},
+    timestamp::{
+        compute_delta_micros, extract_timestamp, format_delta_micros, format_epoch_utc,
+        LatencyLevel, LogTimestamp,
+    },
+    ActiveLogSource, LogSource,
 };
 pub use constants::{
     parse_color_spec, ASYNC_SEARCH_THRESHOLD, COLOR_MAP, MAX_MONITOR_LINES, MONITOR_TRIM_BATCH,
@@ -26,11 +30,12 @@ pub use error::{AdbError, FilterError, SearchError};
 pub use export::{escape_html, generate_html_report, Bookmark, BookmarkManager, HtmlReportOptions};
 pub use uuid;
 pub use filter::{
-    append_streaming_batch, contrast_ratio, detect_line_severity, evaluate_and_style_line,
-    evaluate_and_style_line_with_matcher, evaluate_contrast, execute_filtering,
-    find_nearest_anchor_row, parse_filters_json, CompiledMatcher, ContrastLevel, FilterResult,
-    FilterRule, FilterTabData, HeatmapBucket, HeatmapData, LineSeverity, MultiFilterMatcher,
-    PreparedFilter, ResolvedStyle, EpsTimelineBucket, EpsTimelineData,
+    append_streaming_batch, append_streaming_batch_with_matcher, contrast_ratio,
+    detect_line_severity, evaluate_and_style_line, evaluate_and_style_line_with_matcher,
+    evaluate_and_style_line_with_matcher_full, evaluate_contrast, execute_filtering,
+    find_nearest_anchor_row, parse_filters_json, CompiledMatcher, CompiledStreamFilters,
+    ContrastLevel, EpsTimelineBucket, EpsTimelineData, FilterResult, FilterRule, FilterTabData,
+    HeatmapBucket, HeatmapData, LineSeverity, MultiFilterMatcher, PreparedFilter, ResolvedStyle,
 };
 pub use search::{
     fuzzy_match, fuzzy_match_detailed, search_in_log, FuzzyMatchResult, SearchQuery, SearchResult,

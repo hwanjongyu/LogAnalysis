@@ -7,7 +7,7 @@ pub fn render_find_bar(
     workspace: &LogAnalysisWorkspace,
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> Option<impl IntoElement> {
-    if !workspace.is_search_visible {
+    if !workspace.search_ctrl.is_visible {
         return None;
     }
 
@@ -41,7 +41,7 @@ pub fn render_find_bar(
                     }))
                     .child(workspace.find_input.clone()),
             )
-            .children(if !workspace.search_query.is_empty() {
+            .children(if !workspace.search_ctrl.query.is_empty() {
                 Some(
                     div()
                         .id("btn-clear-find-query")
@@ -54,8 +54,8 @@ pub fn render_find_bar(
                         .text_color(theme.text_muted)
                         .on_click(cx.listener(|this, _, _window, cx| {
                             this.find_input.update(cx, |inp, cx| inp.set_text("", cx));
-                            this.search_query.clear();
-                            this.search_match_status = None;
+                            this.search_ctrl.query.clear();
+                            this.search_ctrl.match_status = None;
                             this.update_cached_search_matcher();
                             cx.notify();
                         }))
@@ -65,7 +65,7 @@ pub fn render_find_bar(
                 None
             })
             // Live Search Match Status Pill
-            .children(if let Some(status) = &workspace.search_match_status {
+            .children(if let Some(status) = &workspace.search_ctrl.match_status {
                 let is_zero = is_find_status_error(status);
                 Some(
                     div()
@@ -104,19 +104,19 @@ pub fn render_find_bar(
                     .px(px(5.0))
                     .py(px(2.0))
                     .rounded_xs()
-                    .bg(if workspace.is_search_regex {
+                    .bg(if workspace.search_ctrl.is_regex {
                         theme.accent
                     } else {
                         theme.bg_panel
                     })
                     .hover(move |s| {
-                        if !workspace.is_search_regex {
+                        if !workspace.search_ctrl.is_regex {
                             s.bg(theme.btn_hover)
                         } else {
                             s
                         }
                     })
-                    .text_color(if workspace.is_search_regex {
+                    .text_color(if workspace.search_ctrl.is_regex {
                         rgb(0xffffff)
                     } else {
                         theme.text_muted
@@ -136,19 +136,19 @@ pub fn render_find_bar(
                     .px(px(5.0))
                     .py(px(2.0))
                     .rounded_xs()
-                    .bg(if workspace.is_search_case_sensitive {
+                    .bg(if workspace.search_ctrl.is_case_sensitive {
                         theme.accent
                     } else {
                         theme.bg_panel
                     })
                     .hover(move |s| {
-                        if !workspace.is_search_case_sensitive {
+                        if !workspace.search_ctrl.is_case_sensitive {
                             s.bg(theme.btn_hover)
                         } else {
                             s
                         }
                     })
-                    .text_color(if workspace.is_search_case_sensitive {
+                    .text_color(if workspace.search_ctrl.is_case_sensitive {
                         rgb(0xffffff)
                     } else {
                         theme.text_muted

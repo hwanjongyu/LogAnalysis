@@ -64,8 +64,8 @@ pub fn render_status_bar(
                         .w(px(7.0))
                         .h(px(7.0))
                         .rounded_full()
-                        .bg(if workspace.is_streaming {
-                            if workspace.is_stream_paused {
+                        .bg(if workspace.adb.is_streaming {
+                            if workspace.adb.is_paused {
                                 theme.warning_amber
                             } else {
                                 theme.success_green
@@ -264,8 +264,7 @@ pub fn render_status_bar(
                                 }),
                         ),
                 )
-                .when(selected_dt.is_some(), |parent| {
-                    let (dt_str, latency, _) = selected_dt.as_ref().unwrap();
+                .when_some(selected_dt, |parent, (dt_str, latency, _)| {
                     let (badge_bg, badge_fg, icon) = match latency {
                         loganalysis_core::LatencyLevel::Normal => {
                             (theme.bg_card, theme.text_muted, "⏱️")

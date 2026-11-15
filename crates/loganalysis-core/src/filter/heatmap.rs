@@ -217,10 +217,11 @@ fn is_warn_color(hex: u32) -> bool {
 
 #[inline]
 fn has_error_keyword(bytes: &[u8]) -> bool {
-    memchr::memmem::find(bytes, b" E ").is_some()
-        || memchr::memmem::find(bytes, b" F ").is_some()
-        || memchr::memmem::find(bytes, b"E/").is_some()
-        || memchr::memmem::find(bytes, b"F/").is_some()
+    let prefix = &bytes[..bytes.len().min(35)];
+    memchr::memmem::find(prefix, b" E ").is_some()
+        || memchr::memmem::find(prefix, b" F ").is_some()
+        || memchr::memmem::find(prefix, b"E/").is_some()
+        || memchr::memmem::find(prefix, b"F/").is_some()
         || memchr::memmem::find(bytes, b"ERROR").is_some()
         || memchr::memmem::find(bytes, b"FATAL").is_some()
         || memchr::memmem::find(bytes, b"Exception").is_some()
@@ -229,8 +230,9 @@ fn has_error_keyword(bytes: &[u8]) -> bool {
 
 #[inline]
 fn has_warn_keyword(bytes: &[u8]) -> bool {
-    memchr::memmem::find(bytes, b" W ").is_some()
-        || memchr::memmem::find(bytes, b"W/").is_some()
+    let prefix = &bytes[..bytes.len().min(35)];
+    memchr::memmem::find(prefix, b" W ").is_some()
+        || memchr::memmem::find(prefix, b"W/").is_some()
         || memchr::memmem::find(bytes, b"WARN").is_some()
         || memchr::memmem::find(bytes, b"WARNING").is_some()
 }
@@ -329,5 +331,128 @@ mod tests {
             detect_line_severity(Some(b"regular info message"), &warn_style),
             LineSeverity::Warning
         );
+    }
+
+    #[test]
+    fn test_heatmap_single_char_tokens_restricted_to_prefix_35() {
+        let normal_style = ResolvedStyle::default();
+
+        // Single-character Android logcat tokens inside bytes 0..35 must be detected.
+        // 32 prefix bytes + 3-byte token (" E ", " F ", " W ") end at index 35 (exclusive).
+        let prefix_32 = "a".repeat(32);
+        let prefix_33 = "a".repeat(33);
+        let prefix_34 = "a".repeat(34);
+        let prefix_45 = "a".repeat(45);
+        let prefix_80 = "a".repeat(80);
+
+        for token in [" E ", " F "] {
+            let inside = format!("{prefix_32}{token}tag payload");
+            assert_eq!(
+                detect_line_severity(Some(inside.as_bytes()), &normal_style),
+                LineSeverity::Error,
+                "token {token:?} inside byte 0..35 should be detected as Error"
+            );
+
+            let crossing_35 = format!("{prefix_33}{token}tag payload");
+            assert_eq!(
+                detect_line_severity(Some(crossing_35.as_bytes()), &normal_style),
+                LineSeverity::Normal,
+                "token {token:?} crossing byte 35 must not trigger Error"
+            );
+        }
+
+        for token in ["E/", "F/"] {
+            let inside = format!("{prefix_33}{token}ActivityManager: start");
+            assert_eq!(
+                detect_line_severity(Some(inside.as_bytes()), &normal_style),
+                LineSeverity::Error,
+                "token {token:?} inside byte 0..35 should be detected as Error"
+            );
+
+            let crossing_35 = format!("{prefix_34}{token}ActivityManager: start");
+            assert_eq!(
+                detect_line_severity(Some(crossing_35.as_bytes()), &normal_style),
+                LineSeverity::Normal,
+                "token {token:?} crossing byte 35 must not trigger Error"
+            );
+        }
+
+        let warn_inside = format!("{prefix_32} W ActivityManager: slow");
+        assert_eq!(
+            detect_line_severity(Some(warn_inside.as_bytes()), &normal_style),
+            LineSeverity::Warning
+        );
+        let warn_outside = format!("{prefix_33} W ActivityManager: slow");
+        assert_eq!(
+            detect_line_severity(Some(warn_outside.as_bytes()), &normal_style),
+            LineSeverity::Normal
+        );
+
+        let warn_slash_inside = format!("{prefix_33}W/System: low memory");
+        assert_eq!(
+            detect_line_severity(Some(warn_slash_inside.as_bytes()), &normal_style),
+            LineSeverity::Warning
+        );
+        let warn_slash_outside = format!("{prefix_34}W/System: low memory");
+        assert_eq!(
+            detect_line_severity(Some(warn_slash_outside.as_bytes()), &normal_style),
+            LineSeverity::Normal
+        );
+
+        // Prose containing short tokens well past byte 35 must remain Normal.
+        let benign_payload = format!("{prefix_45} E F W E/ F/ W/ ordinary message");
+        assert_eq!(
+            detect_line_severity(Some(benign_payload.as_bytes()), &normal_style),
+            LineSeverity::Normal
+        );
+
+        // Realistic logcat prefix vs payload-beyond-35-bytes cases
+        assert_eq!(
+            detect_line_severity(
+                Some(b"01-01 12:00:00.000  100  200 E Tag: ok"),
+                &normal_style
+            ),
+            LineSeverity::Error
+        );
+        assert_eq!(
+            detect_line_severity(
+                Some(b"01-01 12:00:00.000  100  200 W Tag: ok"),
+                &normal_style
+            ),
+            LineSeverity::Warning
+        );
+        assert_eq!(
+            detect_line_severity(
+                Some(b"01-01 12:00:00.000  100  200 I Tag: payload beyond 35 bytes E fake"),
+                &normal_style
+            ),
+            LineSeverity::Normal
+        );
+        assert_eq!(
+            detect_line_severity(
+                Some(b"01-01 12:00:00.000  100  200 I Tag: payload beyond 35 bytes W/ fake"),
+                &normal_style
+            ),
+            LineSeverity::Normal
+        );
+
+        // Multi-character severity tokens remain detected anywhere in the line.
+        for err_kw in ["ERROR", "FATAL", "Exception", "CRITICAL"] {
+            let line = format!("{prefix_80} message {err_kw} occurred");
+            assert_eq!(
+                detect_line_severity(Some(line.as_bytes()), &normal_style),
+                LineSeverity::Error,
+                "keyword {err_kw} beyond byte 35 should still be Error"
+            );
+        }
+
+        for warn_kw in ["WARN", "WARNING"] {
+            let line = format!("{prefix_80} message {warn_kw} occurred");
+            assert_eq!(
+                detect_line_severity(Some(line.as_bytes()), &normal_style),
+                LineSeverity::Warning,
+                "keyword {warn_kw} beyond byte 35 should still be Warning"
+            );
+        }
     }
 }

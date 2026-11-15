@@ -19,6 +19,7 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 crossbeam-channel = "0.5"
 thiserror = "2.0"
 unicode-width = "0.2"
+parking_lot = "0.12"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"

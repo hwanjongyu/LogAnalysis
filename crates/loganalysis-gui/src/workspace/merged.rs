@@ -7,36 +7,17 @@ use super::LogAnalysisWorkspace;
 impl LogAnalysisWorkspace {
     /// Prompts user to select multiple log files to merge chronologically
     pub fn prompt_open_merged_files(&mut self, parent: Option<&Window>, cx: &mut Context<Self>) {
-        let base_dialog = crate::dialogs::build_open_log_dialog_base();
-        let is_x11 = crate::dialogs::is_x11_session();
-        let dialog = if !is_x11 {
-            crate::dialogs::attach_dialog_parent(base_dialog, parent)
-        } else {
-            base_dialog
-        };
+        let dialog = crate::dialogs::prepare_dialog_with_parent(
+            crate::dialogs::build_open_log_dialog_base(),
+            parent,
+        );
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
             async move {
-                let dialog = if is_x11 {
-                    let xid = bg_executor
-                        .spawn(async move {
-                            #[cfg(target_os = "linux")]
-                            {
-                                crate::dialogs::get_active_x11_window_id()
-                            }
-                            #[cfg(not(target_os = "linux"))]
-                            {
-                                None
-                            }
-                        })
-                        .await;
-                    crate::dialogs::attach_dialog_x11_id(dialog, xid)
-                } else {
-                    dialog
-                };
-
+                let dialog =
+                    crate::dialogs::resolve_dialog_for_display(dialog, &bg_executor).await;
                 let files = dialog.pick_files().await;
                 if let Some(handles) = files {
                     if !handles.is_empty() {
@@ -54,7 +35,7 @@ impl LogAnalysisWorkspace {
 
     /// Loads multiple log files and merges them chronologically using MergedLogBuffer
     pub fn open_merged_files(&mut self, paths: &[std::path::PathBuf], cx: &mut Context<Self>) {
-        if self.is_streaming {
+        if self.adb.is_streaming {
             self.stop_adb_stream(cx);
         }
         if paths.is_empty() {

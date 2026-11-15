@@ -50,6 +50,19 @@ impl AdbController {
         self.paused_buffer.clear();
         self.paused_line_count = 0;
     }
+
+    /// Returns a read-only state snapshot of the ADB streaming controller.
+    pub fn state(&self) -> crate::types::AdbStreamState {
+        crate::types::AdbStreamState {
+            selected_device: self.selected_device.clone(),
+            is_device_selector_open: self.is_device_selector_open,
+            is_scanning_adb: self.is_scanning,
+            is_streaming: self.is_streaming,
+            is_stream_paused: self.is_paused,
+            auto_scroll: self.auto_scroll,
+            paused_stream_line_count: self.paused_line_count,
+        }
+    }
 }
 
 #[cfg(test)]

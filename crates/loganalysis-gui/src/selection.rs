@@ -43,6 +43,15 @@ impl SelectionModel {
     }
 }
 
+/// Resolves the backing log source line index for a selected visible row without silently
+/// falling back to line `0` when the selection or index mapping is absent or stale.
+pub fn resolve_selected_source_idx(
+    visible_indices: &[usize],
+    selected_row: Option<usize>,
+) -> Option<usize> {
+    selected_row.and_then(|row| visible_indices.get(row).copied())
+}
+
 #[cfg(test)]
 mod tests {
     use super::SelectionModel;
@@ -75,5 +84,29 @@ mod tests {
         sel.shift_on_trim(5, 20_000);
         assert_eq!(sel.selected_row, None);
         assert_eq!(sel.anchor_source_idx, Some(5_000));
+    }
+
+    #[test]
+    fn test_resolve_selected_source_idx_bounds() {
+        use super::resolve_selected_source_idx;
+
+        // Absent selection or empty visible set must return None (never silently default to Some(0))
+        assert_eq!(resolve_selected_source_idx(&[], None), None);
+        assert_eq!(resolve_selected_source_idx(&[], Some(0)), None);
+        assert_eq!(resolve_selected_source_idx(&[], Some(5)), None);
+
+        let visible = [10usize, 25, 42];
+        assert_eq!(resolve_selected_source_idx(&visible, None), None);
+        assert_eq!(resolve_selected_source_idx(&visible, Some(0)), Some(10));
+        assert_eq!(resolve_selected_source_idx(&visible, Some(1)), Some(25));
+        assert_eq!(resolve_selected_source_idx(&visible, Some(2)), Some(42));
+        assert_eq!(resolve_selected_source_idx(&visible, Some(3)), None);
+        assert_eq!(resolve_selected_source_idx(&visible, Some(usize::MAX)), None);
+
+        // Stale selection cleared by trim must resolve to None
+        let mut sel = SelectionModel::new();
+        sel.select(3, 50);
+        sel.shift_on_trim(5, 10);
+        assert_eq!(resolve_selected_source_idx(&visible, sel.selected_row), None);
     }
 }

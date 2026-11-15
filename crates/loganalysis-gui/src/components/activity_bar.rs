@@ -82,8 +82,7 @@ fn render_activity_item(
             )
         })
         // Live status dot (e.g. pulsing green for active ADB stream)
-        .when(cfg.has_status_dot.is_some(), |parent| {
-            let dot_color = cfg.has_status_dot.unwrap();
+        .when_some(cfg.has_status_dot, |parent, dot_color| {
             parent.child(
                 div()
                     .absolute()
@@ -112,13 +111,13 @@ pub fn render_activity_bar(
 
     let bookmark_count = workspace.bookmarks.len();
 
-    let adb_dot_color = if workspace.is_streaming {
-        if workspace.is_stream_paused {
+    let adb_dot_color = if workspace.adb.is_streaming {
+        if workspace.adb.is_paused {
             Some(theme.warning_amber)
         } else {
             Some(theme.success_green)
         }
-    } else if !workspace.adb_device_details.is_empty() {
+    } else if !workspace.adb.device_details.is_empty() {
         Some(rgb(0x3b82f6)) // Blue for connected but idle
     } else {
         None
@@ -203,7 +202,7 @@ pub fn render_activity_bar(
                 icon: "🔖",
                 tooltip_title: "Toggle Bookmark Drawer",
                 shortcut: Some("Ctrl+B"),
-                is_active: workspace.is_bookmark_drawer_open,
+                is_active: workspace.bookmarks.is_drawer_open,
                 badge_count: if bookmark_count > 0 {
                     Some(bookmark_count)
                 } else {
@@ -241,7 +240,7 @@ pub fn render_activity_bar(
                 icon: "📱",
                 tooltip_title: "ADB Devices & Live Streaming",
                 shortcut: Some("Ctrl+Shift+R"),
-                is_active: workspace.is_streaming || workspace.is_device_selector_open,
+                is_active: workspace.adb.is_streaming || workspace.adb.is_device_selector_open,
                 badge_count: None,
                 has_status_dot: adb_dot_color,
             },
@@ -258,7 +257,7 @@ pub fn render_activity_bar(
                 icon: "🪟",
                 tooltip_title: "Toggle Dual-Pane Split View",
                 shortcut: Some("Ctrl+\\"),
-                is_active: workspace.is_split_view,
+                is_active: workspace.split_view.is_split_view,
                 badge_count: None,
                 has_status_dot: None,
             },

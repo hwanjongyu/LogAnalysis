@@ -58,7 +58,7 @@ impl SearchController {
 
     /// Recompiles the search matcher from the current query and flags.
     pub fn update_matcher(&mut self) {
-        if self.query.is_empty() {
+        if self.query.trim().is_empty() {
             self.cached_matcher = None;
             return;
         }
@@ -72,9 +72,35 @@ impl SearchController {
         .map(Arc::new);
     }
 
+    /// Recompiles the search matcher only when the find bar is visible and the query is non-empty.
+    pub fn update_matcher_when_visible(&mut self) {
+        if !self.is_visible || self.query.trim().is_empty() {
+            self.cached_matcher = None;
+            return;
+        }
+        self.cached_matcher = CompiledMatcher::new(
+            &self.query,
+            self.is_case_sensitive,
+            self.is_regex,
+        )
+        .ok()
+        .map(Arc::new);
+    }
+
     /// Increments cancellation generation token to abort background searches.
     pub fn abort_ongoing_searches(&self) {
         self.cancel_gen.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Returns a read-only state snapshot of the search controller.
+    pub fn state(&self) -> crate::types::SearchState {
+        crate::types::SearchState {
+            search_query: self.query.clone(),
+            is_search_visible: self.is_visible,
+            is_search_regex: self.is_regex,
+            is_search_case_sensitive: self.is_case_sensitive,
+            search_match_status: self.match_status.clone(),
+        }
     }
 }
 

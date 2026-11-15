@@ -6,6 +6,14 @@ use crate::workspace::LogAnalysisWorkspace;
 /// Target hex color for the window close button hover state (#e81123 / Windows/GNOME crimson).
 pub const WINDOW_CLOSE_HOVER_COLOR: u32 = 0xe81123;
 
+/// Canonical DOM element IDs for the custom window titlebar control cluster.
+pub const WINDOW_CONTROL_DOM_IDS: [&str; 4] = [
+    "titlebar-window-controls",
+    "btn-window-minimize",
+    "btn-window-maximize",
+    "btn-window-close",
+];
+
 /// Returns explicit override for CSD rendering from environment variables.
 /// Priority hierarchy:
 /// 1. `LOGANALYSIS_DISABLE_CSD` => Some(false) (takes top priority)
@@ -67,7 +75,7 @@ pub fn render_window_controls(
 
     Some(
         div()
-            .id("titlebar-window-controls")
+            .id(WINDOW_CONTROL_DOM_IDS[0])
             .flex()
             .flex_row()
             .items_center()
@@ -75,7 +83,7 @@ pub fn render_window_controls(
             // Minimize Button (Crisp horizontal bar, 40px)
             .child(
                 div()
-                    .id("btn-window-minimize")
+                    .id(WINDOW_CONTROL_DOM_IDS[1])
                     .w(px(40.0))
                     .h_full()
                     .flex()
@@ -95,7 +103,7 @@ pub fn render_window_controls(
             // Maximize / Restore Button (Crisp square outline, 40px)
             .child(
                 div()
-                    .id("btn-window-maximize")
+                    .id(WINDOW_CONTROL_DOM_IDS[2])
                     .w(px(40.0))
                     .h_full()
                     .flex()
@@ -117,7 +125,7 @@ pub fn render_window_controls(
             // Close Button (Smooth red hover on close, 44px)
             .child(
                 div()
-                    .id("btn-window-close")
+                    .id(WINDOW_CONTROL_DOM_IDS[3])
                     .w(px(44.0))
                     .h_full()
                     .flex()

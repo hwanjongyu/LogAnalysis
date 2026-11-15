@@ -59,3 +59,20 @@ jobs:
 
       - name: Cargo Test
         run: cargo test --workspace
+
+      - name: Cargo Doc
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
+      - name: Install Audit & Deny Tools
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+
+      - name: Cargo Audit
+        if: runner.os == 'Linux'
+        run: cargo audit
+
+      - name: Cargo Deny
+        if: runner.os == 'Linux'
+        run: cargo deny check

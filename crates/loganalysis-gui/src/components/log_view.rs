@@ -12,7 +12,7 @@ pub fn render_log_viewport(
 ) -> impl IntoElement {
     let theme = workspace.theme;
 
-    if !workspace.is_split_view {
+    if !workspace.split_view.is_split_view {
         div()
             .flex_1()
             .h_full()
@@ -54,7 +54,7 @@ pub fn render_log_viewport(
             // Contextual Floating Selection Mini-Bar
             .children(render_selection_action_bar(workspace, cx))
     } else {
-        let is_vertical = workspace.is_split_vertical;
+        let is_vertical = workspace.split_view.is_split_vertical;
         let mut split_container = div()
             .flex_1()
             .h_full()
@@ -140,7 +140,7 @@ pub fn render_selection_action_bar(
 
     // Smart vertical positioning to avoid collisions with Find bar and Facets bar
     let is_facets_visible = workspace.is_facets_visible && workspace.log_source.is_some();
-    let top_pos = calculate_selection_bar_top(workspace.is_search_visible, is_facets_visible);
+    let top_pos = calculate_selection_bar_top(workspace.search_ctrl.is_visible, is_facets_visible);
 
     // Extract human-friendly line index label (1-based)
     let line_label = if let Some(res) = &workspace.filter_result {
@@ -279,10 +279,11 @@ fn render_pane_container(
             .active_file_name
             .as_ref()
             .map(|s| s.as_ref())
-            .unwrap_or(if workspace.is_streaming { "ADB Stream" } else { "Active Log" });
+            .unwrap_or(if workspace.adb.is_streaming { "ADB Stream" } else { "Active Log" });
         format!("Pane A: {}", name)
     } else {
         let name = workspace
+            .split_view
             .secondary_file_name
             .as_ref()
             .map(|s| s.as_ref())
@@ -298,18 +299,19 @@ fn render_pane_container(
             .unwrap_or(0)
     } else {
         workspace
+            .split_view
             .secondary_filter_result
             .as_ref()
             .map(|r| r.visible_indices.len())
             .unwrap_or(0)
     };
 
-    let is_active_pane = if !workspace.is_split_view {
+    let is_active_pane = if !workspace.split_view.is_split_view {
         true
     } else if is_primary {
-        !workspace.active_split_pane_is_secondary
+        !workspace.split_view.active_pane_is_secondary
     } else {
-        workspace.active_split_pane_is_secondary
+        workspace.split_view.active_pane_is_secondary
     };
 
     let (badge_bg, badge_fg) = if is_active_pane {
@@ -318,7 +320,7 @@ fn render_pane_container(
         (theme.bg_badge, theme.text_muted)
     };
 
-    let header_border_color = if workspace.is_split_view && is_active_pane {
+    let header_border_color = if workspace.split_view.is_split_view && is_active_pane {
         theme.accent
     } else {
         theme.border_subtle
@@ -333,10 +335,10 @@ fn render_pane_container(
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
-                if this.is_split_view {
+                if this.split_view.is_split_view {
                     let new_sec = !is_primary;
-                    if this.active_split_pane_is_secondary != new_sec {
-                        this.active_split_pane_is_secondary = new_sec;
+                    if this.split_view.active_pane_is_secondary != new_sec {
+                        this.split_view.active_pane_is_secondary = new_sec;
                         cx.notify();
                     }
                 }
@@ -423,7 +425,7 @@ fn render_vertical_splitter(
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> impl IntoElement {
     let theme = workspace.theme;
-    let is_synced = workspace.is_scroll_synced;
+    let is_synced = workspace.split_view.is_scroll_synced;
 
     div()
         .id("split-divider-v")
@@ -520,7 +522,7 @@ fn render_horizontal_splitter(
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> impl IntoElement {
     let theme = workspace.theme;
-    let is_synced = workspace.is_scroll_synced;
+    let is_synced = workspace.split_view.is_scroll_synced;
 
     div()
         .id("split-divider-h")
@@ -625,7 +627,7 @@ fn render_pane_content(
     let has_source = if is_primary {
         workspace.log_source.is_some()
     } else {
-        workspace.secondary_log_source.is_some()
+        workspace.split_view.secondary_log_source.is_some()
     };
 
     if !has_source {
@@ -640,7 +642,7 @@ fn render_pane_content(
 }
 
 /// Helper to render text with search match highlighting with zero unnecessary string allocations
-pub(crate) fn render_highlighted_text(
+pub fn render_highlighted_text(
     text_content: SharedString,
     search_matcher: &Option<std::sync::Arc<loganalysis_core::CompiledMatcher>>,
     highlight_style: HighlightStyle,
@@ -772,6 +774,7 @@ fn render_log_list(
             .unwrap_or(0)
     } else {
         workspace
+            .split_view
             .secondary_filter_result
             .as_ref()
             .map(|r| r.visible_indices.len())
@@ -802,13 +805,13 @@ fn render_log_list(
         let filter_res = if is_primary {
             ws.and_then(|w| w.filter_result.as_deref())
         } else {
-            ws.and_then(|w| w.secondary_filter_result.as_deref())
+            ws.and_then(|w| w.split_view.secondary_filter_result.as_deref())
         };
 
         let source = if is_primary {
             ws.and_then(|w| w.log_source.as_deref())
         } else {
-            ws.and_then(|w| w.secondary_log_source.as_deref())
+            ws.and_then(|w| w.split_view.secondary_log_source.as_deref())
         };
 
         let selected = if is_primary {
@@ -817,26 +820,34 @@ fn render_log_list(
             ws.and_then(|w| w.secondary_selection.selected_row)
         };
 
-        let search_matcher = ws.and_then(|w| w.cached_search_matcher.clone());
+        let search_matcher = ws.and_then(|w| w.search_ctrl.cached_matcher.clone());
         let row_theme = ws.map(|w| w.theme).unwrap_or(theme);
         let is_col_view = ws.map(|w| w.is_column_view).unwrap_or(false);
 
         range
             .map(|idx| {
-                let (real_idx, text): (usize, SharedString) =
+                let (real_idx, text): (Option<usize>, SharedString) =
                     if let (Some(res), Some(src)) = (filter_res, source) {
-                        let r_idx = res.visible_indices.get(idx).copied().unwrap_or(0);
-                        let t: SharedString = src
-                            .get_line_arc(r_idx)
-                            .map(SharedString::new)
-                            .unwrap_or_default();
-                        (r_idx, t)
+                        if let Some(r_idx) = crate::selection::resolve_selected_source_idx(
+                            &res.visible_indices,
+                            Some(idx),
+                        ) {
+                            let t: SharedString = src
+                                .get_line_arc(r_idx)
+                                .map(SharedString::new)
+                                .unwrap_or_default();
+                            (Some(r_idx), t)
+                        } else {
+                            (None, SharedString::default())
+                        }
                     } else {
-                        (0, SharedString::default())
+                        (None, SharedString::default())
                     };
 
                 let is_bookmarked = if is_primary {
-                    ws.map(|w| w.bookmarks.is_bookmarked(real_idx)).unwrap_or(false)
+                    real_idx
+                        .and_then(|r| ws.map(|w| w.bookmarks.is_bookmarked(r)))
+                        .unwrap_or(false)
                 } else {
                     false
                 };
@@ -914,7 +925,7 @@ fn render_log_list(
                         div()
                             .font_family("monospace")
                             .text_size(px(11.0))
-                            .child(format!("{}", real_idx + 1)),
+                            .child(real_idx.map(|r| format!("{}", r + 1)).unwrap_or_default()),
                     );
 
                 let mut row_el = div()
@@ -941,17 +952,21 @@ fn render_log_list(
                     .overflow_hidden()
                     .cursor_pointer()
                     .on_click(move |_, _window, cx| {
-                        let _ = entity_handle.update(cx, |this, cx| {
-                            if is_primary {
-                                this.select_log_row(idx, real_idx, cx);
-                            } else {
-                                this.select_secondary_log_row(idx, real_idx, cx);
-                            }
-                        });
+                        if let Some(real_idx) = real_idx {
+                            let _ = entity_handle.update(cx, |this, cx| {
+                                if is_primary {
+                                    this.select_log_row(idx, real_idx, cx);
+                                } else {
+                                    this.select_secondary_log_row(idx, real_idx, cx);
+                                }
+                            });
+                        }
                     })
                     .child(gutter_el);
 
-                if let Some((s_id, s_name)) = source.and_then(|s| s.get_line_source_info(real_idx)) {
+                if let Some((s_id, s_name)) =
+                    real_idx.and_then(|r| source.and_then(|s| s.get_line_source_info(r)))
+                {
                     let badge_colors = [
                         (rgb(0x1e3a8a), rgb(0x93c5fd)), // File 0: Blue
                         (rgb(0x581c87), rgb(0xd8b4fe)), // File 1: Purple
@@ -1450,8 +1465,8 @@ fn render_onboarding_empty_state(
 ) -> impl IntoElement {
     let theme = workspace.theme;
     let selected_dev_info = workspace.get_selected_device_info();
-    let has_devices = !workspace.adb_device_details.is_empty();
-    let is_scanning = workspace.is_scanning_adb;
+    let has_devices = !workspace.adb.device_details.is_empty();
+    let is_scanning = workspace.adb.is_scanning;
 
     div()
         .id("onboarding-scroll-container")
@@ -1853,7 +1868,7 @@ fn render_onboarding_empty_state(
                                                                     .text_size(px(9.5))
                                                                     .font_family("monospace")
                                                                     .text_color(theme.text_muted)
-                                                                    .child(format!("Serial: {} • {} found", dev_serial, workspace.adb_device_details.len())),
+                                                                    .child(format!("Serial: {} • {} found", dev_serial, workspace.adb.device_details.len())),
                                                             )
                                                     } else {
                                                         div()
@@ -1904,7 +1919,7 @@ fn render_onboarding_empty_state(
                                                 .items_center()
                                                 .justify_center()
                                                 .on_click(cx.listener(|this, _, _window, cx| {
-                                                    if !this.adb_device_details.is_empty() {
+                                                    if !this.adb.device_details.is_empty() {
                                                         this.start_adb_stream(cx);
                                                     } else {
                                                         this.refresh_adb_devices(cx);

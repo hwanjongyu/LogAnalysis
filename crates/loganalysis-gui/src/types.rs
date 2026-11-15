@@ -30,7 +30,6 @@ pub struct FilterEditState {
 }
 
 /// Sub-state for Dual-Pane Split View and Lockstep Correlation.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct SplitViewState {
     pub is_split_view: bool,
@@ -40,7 +39,6 @@ pub struct SplitViewState {
 }
 
 /// Sub-state for ADB device connectivity and live log streaming telemetry.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct AdbStreamState {
     pub selected_device: Option<String>,
@@ -53,7 +51,6 @@ pub struct AdbStreamState {
 }
 
 /// Sub-state for Log search and Find bar widget.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct SearchState {
     pub search_query: String,
@@ -64,7 +61,6 @@ pub struct SearchState {
 }
 
 /// Sub-state for Bookmark Navigation and Note Editing Drawer.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct BookmarkDrawerState {
     pub is_bookmark_drawer_open: bool,

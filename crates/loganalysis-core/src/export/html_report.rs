@@ -423,7 +423,7 @@ fn chrono_timestamp_approx() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    format!("Epoch {}", secs)
+    crate::format_epoch_utc(secs)
 }
 
 #[cfg(test)]
@@ -464,5 +464,67 @@ mod tests {
         assert!(html.contains("Fatal crash trace"));
         assert!(html.contains("Crash root cause"));
         assert!(html.contains("test.log"));
+    }
+
+    #[test]
+    fn test_html_report_contains_utc_timestamp() {
+        let options = HtmlReportOptions {
+            file_name: "incident.log".into(),
+            total_lines: 10,
+            bookmarks: vec![Bookmark {
+                source_idx: 0,
+                line_number: 1,
+                text: "11-03 16:00:00 E/App: Failure".into(),
+                note: None,
+                severity: LineSeverity::Error,
+                created_at_epoch: 1_793_721_600,
+            }],
+        };
+
+        let html = generate_html_report(&options);
+        assert!(
+            !html.contains("Epoch "),
+            "footer must use formatted UTC date instead of raw Epoch seconds"
+        );
+
+        let footer_ts = html
+            .split("GPU-Accelerated Rust + GPUI) • ")
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .map(str::trim)
+            .expect("HTML footer must include generation timestamp");
+
+        assert!(
+            footer_ts.ends_with(" UTC"),
+            "timestamp '{footer_ts}' must end with UTC"
+        );
+        assert_eq!(
+            footer_ts.len(),
+            23,
+            "timestamp '{footer_ts}' must match 'YYYY-MM-DD HH:MM:SS UTC'"
+        );
+        assert_eq!(&footer_ts[4..5], "-");
+        assert_eq!(&footer_ts[7..8], "-");
+        assert_eq!(&footer_ts[10..11], " ");
+        assert_eq!(&footer_ts[13..14], ":");
+        assert_eq!(&footer_ts[16..17], ":");
+        assert_eq!(&footer_ts[19..], " UTC");
+
+        let year: u32 = footer_ts[0..4].parse().expect("valid year");
+        let month: u32 = footer_ts[5..7].parse().expect("valid month");
+        let day: u32 = footer_ts[8..10].parse().expect("valid day");
+        let hour: u32 = footer_ts[11..13].parse().expect("valid hour");
+        let minute: u32 = footer_ts[14..16].parse().expect("valid minute");
+        let second: u32 = footer_ts[17..19].parse().expect("valid second");
+        assert!(year >= 1970);
+        assert!((1..=12).contains(&month));
+        assert!((1..=31).contains(&day));
+        assert!(hour <= 23);
+        assert!(minute <= 59);
+        assert!(second <= 59);
+
+        let direct_ts = chrono_timestamp_approx();
+        assert!(direct_ts.ends_with(" UTC"));
+        assert_eq!(direct_ts.len(), 23);
     }
 }

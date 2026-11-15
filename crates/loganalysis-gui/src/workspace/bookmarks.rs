@@ -4,6 +4,15 @@ use loganalysis_core::*;
 use crate::types::InputFocusTarget;
 use super::LogAnalysisWorkspace;
 
+/// Locates the visible row index corresponding to `target_source_idx` via binary search
+/// over the monotonically sorted `visible_indices` slice (`O(log N)`).
+pub fn find_visible_row_for_source_idx(
+    visible_indices: &[usize],
+    target_source_idx: usize,
+) -> Option<usize> {
+    visible_indices.binary_search(&target_source_idx).ok()
+}
+
 impl LogAnalysisWorkspace {
     /// Toggles bookmark on the currently selected row (F2)
     pub fn toggle_bookmark_on_selected(&mut self, cx: &mut Context<Self>) {
@@ -56,10 +65,8 @@ impl LogAnalysisWorkspace {
         };
 
         if let Some(res) = &self.filter_result {
-            if let Some(vis_row) = res
-                .visible_indices
-                .iter()
-                .position(|&idx| idx == target_source_idx)
+            if let Some(vis_row) =
+                find_visible_row_for_source_idx(&res.visible_indices, target_source_idx)
             {
                 self.selection.select(vis_row, target_source_idx);
                 self.scroll_handle
@@ -97,10 +104,8 @@ impl LogAnalysisWorkspace {
         };
 
         if let Some(res) = &self.filter_result {
-            if let Some(vis_row) = res
-                .visible_indices
-                .iter()
-                .position(|&idx| idx == target_source_idx)
+            if let Some(vis_row) =
+                find_visible_row_for_source_idx(&res.visible_indices, target_source_idx)
             {
                 self.selection.select(vis_row, target_source_idx);
                 self.scroll_handle
@@ -159,37 +164,17 @@ impl LogAnalysisWorkspace {
         };
         let html_content = generate_html_report(&options);
 
-        let base_dialog =
-            crate::dialogs::build_export_html_report_dialog_base(&default_export_name);
-        let is_x11 = crate::dialogs::is_x11_session();
-        let dialog = if !is_x11 {
-            crate::dialogs::attach_dialog_parent(base_dialog, parent)
-        } else {
-            base_dialog
-        };
+        let dialog = crate::dialogs::prepare_dialog_with_parent(
+            crate::dialogs::build_export_html_report_dialog_base(&default_export_name),
+            parent,
+        );
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
             async move {
-                let dialog = if is_x11 {
-                    let xid = bg_executor
-                        .spawn(async move {
-                            #[cfg(target_os = "linux")]
-                            {
-                                crate::dialogs::get_active_x11_window_id()
-                            }
-                            #[cfg(not(target_os = "linux"))]
-                            {
-                                None
-                            }
-                        })
-                        .await;
-                    crate::dialogs::attach_dialog_x11_id(dialog, xid)
-                } else {
-                    dialog
-                };
-
+                let dialog =
+                    crate::dialogs::resolve_dialog_for_display(dialog, &bg_executor).await;
                 let file = dialog.save_file().await;
                 if let Some(handle) = file {
                     let path = handle.path().to_path_buf();
@@ -222,11 +207,11 @@ impl LogAnalysisWorkspace {
 
     /// Toggles the slide-over Bookmark Drawer (Ctrl+B)
     pub fn toggle_bookmark_drawer(&mut self, cx: &mut Context<Self>) {
-        self.is_bookmark_drawer_open = !self.is_bookmark_drawer_open;
-        if self.is_bookmark_drawer_open {
-            self.bookmark_drawer_selected_index = 0;
+        self.bookmarks.is_drawer_open = !self.bookmarks.is_drawer_open;
+        if self.bookmarks.is_drawer_open {
+            self.bookmarks.drawer_selected_index = 0;
             self.is_command_palette_open = false;
-            self.is_note_modal_open = false;
+            self.bookmarks.is_note_modal_open = false;
             self.input_focus = InputFocusTarget::None;
         }
         cx.notify();
@@ -234,17 +219,15 @@ impl LogAnalysisWorkspace {
 
     /// Closes the Bookmark Drawer
     pub fn close_bookmark_drawer(&mut self, cx: &mut Context<Self>) {
-        self.is_bookmark_drawer_open = false;
+        self.bookmarks.is_drawer_open = false;
         cx.notify();
     }
 
     /// Jumps directly to a specific bookmarked source line index in the log viewport
     pub fn jump_to_bookmark_source_idx(&mut self, target_source_idx: usize, cx: &mut Context<Self>) {
         if let Some(res) = &self.filter_result {
-            if let Some(vis_row) = res
-                .visible_indices
-                .iter()
-                .position(|&idx| idx == target_source_idx)
+            if let Some(vis_row) =
+                find_visible_row_for_source_idx(&res.visible_indices, target_source_idx)
             {
                 self.selection.select(vis_row, target_source_idx);
                 self.scroll_handle
@@ -301,15 +284,15 @@ impl LogAnalysisWorkspace {
 
         self.note_input
             .update(cx, |input, cx| input.set_text(&existing, cx));
-        self.note_editing_source_idx = Some(source_idx);
-        self.is_note_modal_open = true;
+        self.bookmarks.note_editing_source_idx = Some(source_idx);
+        self.bookmarks.is_note_modal_open = true;
         self.input_focus = InputFocusTarget::BookmarkNote;
         cx.notify();
     }
 
     /// Saves the note from the note input into the current bookmark
     pub fn save_bookmark_note(&mut self, cx: &mut Context<Self>) {
-        let Some(src_idx) = self.note_editing_source_idx else {
+        let Some(src_idx) = self.bookmarks.note_editing_source_idx else {
             self.close_note_modal(cx);
             return;
         };
@@ -326,7 +309,7 @@ impl LogAnalysisWorkspace {
 
     /// Clears the note on the current bookmark
     pub fn clear_bookmark_note(&mut self, cx: &mut Context<Self>) {
-        if let Some(src_idx) = self.note_editing_source_idx {
+        if let Some(src_idx) = self.bookmarks.note_editing_source_idx {
             self.bookmarks.set_note(src_idx, None);
             self.status_text = format!("Cleared note for line {}", src_idx + 1).into();
         }
@@ -335,11 +318,46 @@ impl LogAnalysisWorkspace {
 
     /// Closes the note edit modal
     pub fn close_note_modal(&mut self, cx: &mut Context<Self>) {
-        self.is_note_modal_open = false;
-        self.note_editing_source_idx = None;
+        self.bookmarks.is_note_modal_open = false;
+        self.bookmarks.note_editing_source_idx = None;
         if self.input_focus == InputFocusTarget::BookmarkNote {
             self.input_focus = InputFocusTarget::None;
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_visible_row_for_source_idx;
+
+    #[test]
+    fn test_find_visible_row_for_source_idx_binary_search() {
+        assert_eq!(find_visible_row_for_source_idx(&[], 0), None);
+        assert_eq!(find_visible_row_for_source_idx(&[], 42), None);
+
+        let single = [42usize];
+        assert_eq!(find_visible_row_for_source_idx(&single, 41), None);
+        assert_eq!(find_visible_row_for_source_idx(&single, 42), Some(0));
+        assert_eq!(find_visible_row_for_source_idx(&single, 43), None);
+
+        let visible = [3usize, 7, 15, 22, 100, 1024];
+        assert_eq!(find_visible_row_for_source_idx(&visible, 0), None);
+        assert_eq!(find_visible_row_for_source_idx(&visible, 3), Some(0));
+        assert_eq!(find_visible_row_for_source_idx(&visible, 15), Some(2));
+        assert_eq!(find_visible_row_for_source_idx(&visible, 16), None);
+        assert_eq!(find_visible_row_for_source_idx(&visible, 1023), None);
+        assert_eq!(find_visible_row_for_source_idx(&visible, 1024), Some(5));
+        assert_eq!(find_visible_row_for_source_idx(&visible, 2000), None);
+
+        // Exhaustive O(log N) vs O(N) linear scan parity across sparse range
+        for target in 0..=1100 {
+            let expected = visible.iter().position(|&idx| idx == target);
+            assert_eq!(
+                find_visible_row_for_source_idx(&visible, target),
+                expected,
+                "binary search mismatch at target {target}"
+            );
+        }
     }
 }

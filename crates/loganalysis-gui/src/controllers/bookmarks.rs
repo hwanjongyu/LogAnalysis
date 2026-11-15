@@ -48,6 +48,30 @@ impl BookmarkController {
         self.manager.clear();
         self.drawer_selected_index = 0;
     }
+
+    /// Returns a read-only state snapshot of the bookmark drawer and note modal controller.
+    pub fn state(&self) -> crate::types::BookmarkDrawerState {
+        crate::types::BookmarkDrawerState {
+            is_bookmark_drawer_open: self.is_drawer_open,
+            bookmark_drawer_selected_index: self.drawer_selected_index,
+            is_note_modal_open: self.is_note_modal_open,
+            note_editing_source_idx: self.note_editing_source_idx,
+        }
+    }
+}
+
+impl std::ops::Deref for BookmarkController {
+    type Target = BookmarkManager;
+
+    fn deref(&self) -> &Self::Target {
+        &self.manager
+    }
+}
+
+impl std::ops::DerefMut for BookmarkController {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.manager
+    }
 }
 
 #[cfg(test)]

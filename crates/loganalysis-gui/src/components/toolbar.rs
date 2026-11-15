@@ -44,6 +44,26 @@ pub const UNIFIED_HEADER_HEIGHT: f32 = 38.0;
 /// Target dimensions in logical pixels for the app branding logo pill.
 pub const LOGO_PILL_SIZE: f32 = 18.0;
 
+/// Canonical DOM element IDs for the 16 controls/sections inside the unified compact header.
+pub const HEADER_CONTRACT_DOM_IDS: [&str; 16] = [
+    "unified-header-bar",
+    "header-left-section",
+    "header-branding",
+    "btn-toolbar-open",
+    "header-adb-controls",
+    "btn-toolbar-pause-adb",
+    "btn-toolbar-adb-devices",
+    "btn-toolbar-adb",
+    "header-center-section",
+    "titlebar-breadcrumb-pill",
+    "header-right-section",
+    "seg-view-toggle",
+    "seg-all-lines",
+    "seg-filtered-only",
+    "btn-toolbar-find",
+    "btn-toolbar-overflow-menu",
+];
+
 /// Renders the unified 38px compact header bar integrating branding, log sources,
 /// centralized draggable breadcrumb status pill, view toggles, find, overflow menu,
 /// and CSD window controls.
@@ -57,7 +77,7 @@ pub fn render_unified_header(
     let is_csd = should_render_csd(window);
 
     div()
-        .id("unified-header-bar")
+        .id(HEADER_CONTRACT_DOM_IDS[0])
         .h(px(UNIFIED_HEADER_HEIGHT))
         .w_full()
         .bg(theme.bg_header)
@@ -74,7 +94,7 @@ pub fn render_unified_header(
         // =====================================================================
         .child(
             div()
-                .id("header-left-section")
+                .id(HEADER_CONTRACT_DOM_IDS[1])
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -82,7 +102,7 @@ pub fn render_unified_header(
                 // App Branding: 18x18px logo pill "L" + "LogAnalysis" (12px semibold)
                 .child(
                     div()
-                        .id("header-branding")
+                        .id(HEADER_CONTRACT_DOM_IDS[2])
                         .flex()
                         .items_center()
                         .gap_1p5()
@@ -120,7 +140,7 @@ pub fn render_unified_header(
                 // File Open Button (btn-toolbar-open, Ctrl+O)
                 .child(
                     div()
-                        .id("btn-toolbar-open")
+                        .id(HEADER_CONTRACT_DOM_IDS[3])
                         .px(px(8.0))
                         .py(px(3.0))
                         .rounded_sm()
@@ -139,24 +159,24 @@ pub fn render_unified_header(
                 // Live ADB Control Group (Device selector + Pause + Live ADB toggle)
                 .child(
                     div()
-                        .id("header-adb-controls")
+                        .id(HEADER_CONTRACT_DOM_IDS[4])
                         .flex()
                         .items_center()
                         .gap_1p5()
                         // Pause Stream Button (when streaming)
-                        .children(if workspace.is_streaming {
+                        .children(if workspace.adb.is_streaming {
                             Some(
                                 div()
-                                    .id("btn-toolbar-pause-adb")
+                                    .id(HEADER_CONTRACT_DOM_IDS[5])
                                     .px(px(7.0))
                                     .py(px(3.0))
                                     .rounded_sm()
-                                    .bg(if workspace.is_stream_paused {
+                                    .bg(if workspace.adb.is_paused {
                                         theme.warning_amber
                                     } else {
                                         theme.bg_panel
                                     })
-                                    .text_color(if workspace.is_stream_paused {
+                                    .text_color(if workspace.adb.is_paused {
                                         rgb(0x000000)
                                     } else {
                                         theme.text_primary
@@ -164,7 +184,7 @@ pub fn render_unified_header(
                                     .border_1()
                                     .border_color(theme.border_subtle)
                                     .tooltip(render_tooltip(
-                                        if workspace.is_stream_paused { "Resume streaming logcat" } else { "Pause streaming logcat" },
+                                        if workspace.adb.is_paused { "Resume streaming logcat" } else { "Pause streaming logcat" },
                                         Some("Ctrl+Space"),
                                         theme,
                                     ))
@@ -174,7 +194,7 @@ pub fn render_unified_header(
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.toggle_pause_stream(cx);
                                     }))
-                                    .child(if workspace.is_stream_paused {
+                                    .child(if workspace.adb.is_paused {
                                         "▶ Resume"
                                     } else {
                                         "⏸ Pause"
@@ -189,17 +209,17 @@ pub fn render_unified_header(
                                 .relative()
                                 .child(
                                     div()
-                                        .id("btn-toolbar-adb-devices")
+                                        .id(HEADER_CONTRACT_DOM_IDS[6])
                                         .px(px(7.0))
                                         .py(px(3.0))
                                         .rounded_sm()
-                                        .bg(if workspace.is_device_selector_open {
+                                        .bg(if workspace.adb.is_device_selector_open {
                                             theme.btn_hover
                                         } else {
                                             theme.bg_panel
                                         })
                                         .border_1()
-                                        .border_color(if workspace.is_device_selector_open {
+                                        .border_color(if workspace.adb.is_device_selector_open {
                                             theme.accent
                                         } else {
                                             theme.border_subtle
@@ -226,7 +246,7 @@ pub fn render_unified_header(
                                                         } else {
                                                             theme.warning_amber
                                                         }
-                                                    } else if !workspace.adb_devices.is_empty() {
+                                                    } else if !workspace.adb.devices.is_empty() {
                                                         theme.success_green
                                                     } else {
                                                         theme.text_muted
@@ -239,21 +259,21 @@ pub fn render_unified_header(
                                                 .overflow_hidden()
                                                 .text_ellipsis()
                                                 .child(
-                                                    if workspace.is_scanning_adb {
+                                                    if workspace.adb.is_scanning {
                                                         "📱 Scanning...".to_string()
                                                     } else if let Some(info) = workspace.get_selected_device_info() {
                                                         format!("📱 {} ▾", info.short_name())
-                                                    } else if let Some(dev) = &workspace.selected_device {
+                                                    } else if let Some(dev) = &workspace.adb.selected_device {
                                                         format!("📱 {} ▾", dev)
-                                                    } else if !workspace.adb_devices.is_empty() {
-                                                        format!("📱 ({} found) ▾", workspace.adb_devices.len())
+                                                    } else if !workspace.adb.devices.is_empty() {
+                                                        format!("📱 ({} found) ▾", workspace.adb.devices.len())
                                                     } else {
                                                         "📱 No Device ▾".to_string()
                                                     },
                                                 ),
                                         ),
                                     )
-                                    .children(if workspace.is_device_selector_open {
+                                    .children(if workspace.adb.is_device_selector_open {
                                         Some(render_device_dropdown(workspace, cx))
                                     } else {
                                         None
@@ -262,24 +282,24 @@ pub fn render_unified_header(
                         // Start / Stop ADB Stream Button
                         .child(
                             div()
-                                .id("btn-toolbar-adb")
+                                .id(HEADER_CONTRACT_DOM_IDS[7])
                                 .px(px(8.0))
                                 .py(px(3.0))
                                 .rounded_sm()
-                                .bg(if workspace.is_streaming {
+                                .bg(if workspace.adb.is_streaming {
                                     theme.error_red
                                 } else {
                                     theme.success_green
                                 })
                                 .hover(move |s| {
-                                    if workspace.is_streaming {
+                                    if workspace.adb.is_streaming {
                                         s.bg(rgb(0xdc2626))
                                     } else {
                                         s.bg(rgb(0x16a34a))
                                     }
                                 })
                                 .tooltip(render_tooltip(
-                                    if workspace.is_streaming { "Stop live ADB logcat stream" } else { "Start live ADB logcat stream" },
+                                    if workspace.adb.is_streaming { "Stop live ADB logcat stream" } else { "Start live ADB logcat stream" },
                                     Some("Ctrl+Shift+R"),
                                     theme,
                                 ))
@@ -288,13 +308,13 @@ pub fn render_unified_header(
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _window, cx| {
-                                    if this.is_streaming {
+                                    if this.adb.is_streaming {
                                         this.stop_adb_stream(cx);
                                     } else {
                                         this.start_adb_stream(cx);
                                     }
                                 }))
-                                .child(if workspace.is_streaming {
+                                .child(if workspace.adb.is_streaming {
                                     "⏹ Stop ADB"
                                 } else {
                                     "⚡ Live ADB"
@@ -307,7 +327,7 @@ pub fn render_unified_header(
         // =====================================================================
         .child(
             div()
-                .id("header-center-section")
+                .id(HEADER_CONTRACT_DOM_IDS[8])
                 .flex_1()
                 .min_w(px(0.0))
                 .h_full()
@@ -323,7 +343,7 @@ pub fn render_unified_header(
                 }))
                 .child(
                     div()
-                        .id("titlebar-breadcrumb-pill")
+                        .id(HEADER_CONTRACT_DOM_IDS[9])
                         .flex()
                         .items_center()
                         .gap_1p5()
@@ -375,14 +395,14 @@ pub fn render_unified_header(
                                         )
                                 })
                                 .into_any_element()
-                        } else if workspace.is_streaming {
+                        } else if workspace.adb.is_streaming {
                             let dev_name = workspace
                                 .get_selected_device_info()
                                 .map(|i| i.short_name())
-                                .or_else(|| workspace.selected_device.clone())
+                                .or_else(|| workspace.adb.selected_device.clone())
                                 .unwrap_or_else(|| "Android Device".to_string());
                             let lines = workspace.log_source.as_ref().map(|s| s.line_count()).unwrap_or(0);
-                            let status = if workspace.is_stream_paused { "Paused" } else { "Live" };
+                            let status = if workspace.adb.is_paused { "Paused" } else { "Live" };
                             div()
                                 .flex()
                                 .items_center()
@@ -392,7 +412,7 @@ pub fn render_unified_header(
                                         .w(px(6.5))
                                         .h(px(6.5))
                                         .rounded_full()
-                                        .bg(if workspace.is_stream_paused {
+                                        .bg(if workspace.adb.is_paused {
                                             theme.warning_amber
                                         } else {
                                             theme.success_green
@@ -411,7 +431,7 @@ pub fn render_unified_header(
                                 .child(
                                     div()
                                         .font_family("monospace")
-                                        .text_color(if workspace.is_stream_paused {
+                                        .text_color(if workspace.adb.is_paused {
                                             theme.warning_amber
                                         } else {
                                             theme.success_green
@@ -439,7 +459,7 @@ pub fn render_unified_header(
         // =====================================================================
         .child(
             div()
-                .id("header-right-section")
+                .id(HEADER_CONTRACT_DOM_IDS[10])
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -448,7 +468,7 @@ pub fn render_unified_header(
                 // Segmented Control: All Lines vs Filtered Only (Ctrl+H)
                 .child(
                     div()
-                        .id("seg-view-toggle")
+                        .id(HEADER_CONTRACT_DOM_IDS[11])
                         .flex()
                         .items_center()
                         .p(px(2.0))
@@ -458,7 +478,7 @@ pub fn render_unified_header(
                         .border_color(theme.border_subtle)
                         .child(
                             div()
-                                .id("seg-all-lines")
+                                .id(HEADER_CONTRACT_DOM_IDS[12])
                                 .px(px(8.0))
                                 .py(px(2.5))
                                 .rounded_sm()
@@ -492,7 +512,7 @@ pub fn render_unified_header(
                         )
                         .child(
                             div()
-                                .id("seg-filtered-only")
+                                .id(HEADER_CONTRACT_DOM_IDS[13])
                                 .px(px(8.0))
                                 .py(px(2.5))
                                 .rounded_sm()
@@ -528,30 +548,30 @@ pub fn render_unified_header(
                 // Find Toggle Button (btn-toolbar-find, Ctrl+F)
                 .child(
                     div()
-                        .id("btn-toolbar-find")
+                        .id(HEADER_CONTRACT_DOM_IDS[14])
                         .px(px(8.0))
                         .py(px(3.0))
                         .rounded_md()
                         .border_1()
-                        .border_color(if workspace.is_search_visible {
+                        .border_color(if workspace.search_ctrl.is_visible {
                             theme.accent
                         } else {
                             theme.border_subtle
                         })
-                        .bg(if workspace.is_search_visible {
+                        .bg(if workspace.search_ctrl.is_visible {
                             theme.accent_muted
                         } else {
                             theme.bg_panel
                         })
                         .hover(move |s| {
-                            if !workspace.is_search_visible {
+                            if !workspace.search_ctrl.is_visible {
                                 s.bg(theme.btn_hover)
                             } else {
                                 s
                             }
                         })
                         .tooltip(render_tooltip("Search text in log buffer", Some("Ctrl+F"), theme))
-                        .text_color(if workspace.is_search_visible {
+                        .text_color(if workspace.search_ctrl.is_visible {
                             theme.accent
                         } else {
                             theme.text_primary
@@ -569,7 +589,7 @@ pub fn render_unified_header(
                         .relative()
                         .child(
                             div()
-                                .id("btn-toolbar-overflow-menu")
+                                .id(HEADER_CONTRACT_DOM_IDS[15])
                                 .px(px(8.0))
                                 .py(px(3.0))
                                 .rounded_md()
@@ -835,7 +855,7 @@ fn render_device_dropdown(
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> impl IntoElement {
     let theme = workspace.theme;
-    let selected_serial = workspace.selected_device.clone();
+    let selected_serial = workspace.adb.selected_device.clone();
 
     div()
         .id("dropdown-adb-devices")
@@ -869,7 +889,7 @@ fn render_device_dropdown(
                         .text_color(theme.text_muted)
                         .child(format!(
                             "CONNECTED DEVICES ({})",
-                            workspace.adb_device_details.len()
+                            workspace.adb.device_details.len()
                         )),
                 )
                 .child(
@@ -890,7 +910,7 @@ fn render_device_dropdown(
                 ),
         )
         // Device Items List
-        .children(if workspace.adb_device_details.is_empty() {
+        .children(if workspace.adb.device_details.is_empty() {
             vec![
                 div()
                     .px(px(8.0))
@@ -901,7 +921,7 @@ fn render_device_dropdown(
                     .gap_1()
                     .text_size(px(11.0))
                     .text_color(theme.text_muted)
-                    .child(if workspace.is_scanning_adb {
+                    .child(if workspace.adb.is_scanning {
                         "Scanning for devices..."
                     } else {
                         "No Android devices detected"
@@ -916,7 +936,8 @@ fn render_device_dropdown(
             ]
         } else {
             workspace
-                .adb_device_details
+                .adb
+                .device_details
                 .iter()
                 .map(|dev| {
                     let serial = dev.serial.clone();

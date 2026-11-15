@@ -46,6 +46,54 @@ pub enum PaletteCommandId {
     ToggleZenMode,
 }
 
+/// Maps a [`PaletteCommandId`] to its canonical GPUI action identifier string.
+pub fn palette_command_action_name(id: PaletteCommandId) -> &'static str {
+    use crate::actions::*;
+    match id {
+        PaletteCommandId::OpenFile => gpui::Action::name(&OpenFile),
+        PaletteCommandId::LoadFilters => gpui::Action::name(&LoadFilters),
+        PaletteCommandId::SaveFilters => gpui::Action::name(&SaveFilters),
+        PaletteCommandId::SaveFiltersAs => gpui::Action::name(&SaveFiltersAs),
+        PaletteCommandId::Find => gpui::Action::name(&Find),
+        PaletteCommandId::ClearLogs => gpui::Action::name(&ClearLogs),
+        PaletteCommandId::ToggleFilteredOnly => gpui::Action::name(&ToggleFilteredOnly),
+        PaletteCommandId::AddFilterRule => gpui::Action::name(&AddFilter),
+        PaletteCommandId::AddFilterTab => gpui::Action::name(&AddFilterTab),
+        PaletteCommandId::DeleteFilterTab => gpui::Action::name(&DeleteFilterTab),
+        PaletteCommandId::RenameFilterTab => gpui::Action::name(&RenameFilterTab),
+        PaletteCommandId::StartAdbStream => gpui::Action::name(&StartAdb),
+        PaletteCommandId::StopAdbStream => gpui::Action::name(&StopAdb),
+        PaletteCommandId::TogglePauseStream => gpui::Action::name(&TogglePauseStream),
+        PaletteCommandId::ToggleAutoScroll => gpui::Action::name(&ToggleAutoScroll),
+        PaletteCommandId::RescanAdbDevices => gpui::Action::name(&RefreshAdbDevices),
+        PaletteCommandId::ToggleFilterPanelPosition => {
+            gpui::Action::name(&ToggleFilterPanelPosition)
+        }
+        PaletteCommandId::ToggleFilterDock => gpui::Action::name(&ToggleFilterDock),
+        PaletteCommandId::ToggleFacetsBar => gpui::Action::name(&ToggleFacetsBar),
+        PaletteCommandId::ToggleFullLineDisplay => gpui::Action::name(&ToggleFullLineDisplay),
+        PaletteCommandId::ToggleTheme => gpui::Action::name(&ToggleTheme),
+        PaletteCommandId::ZoomIn => gpui::Action::name(&ZoomIn),
+        PaletteCommandId::ZoomOut => gpui::Action::name(&ZoomOut),
+        PaletteCommandId::ResetZoom => "loganalysis::ResetZoom",
+        PaletteCommandId::ToggleBookmark => gpui::Action::name(&ToggleBookmark),
+        PaletteCommandId::NextBookmark => gpui::Action::name(&NextBookmark),
+        PaletteCommandId::PrevBookmark => gpui::Action::name(&PrevBookmark),
+        PaletteCommandId::ClearBookmarks => gpui::Action::name(&ClearBookmarks),
+        PaletteCommandId::ExportHtmlReport => gpui::Action::name(&ExportHtmlReport),
+        PaletteCommandId::ToggleBookmarkDrawer => gpui::Action::name(&ToggleBookmarkDrawer),
+        PaletteCommandId::EditBookmarkNote => gpui::Action::name(&EditBookmarkNote),
+        PaletteCommandId::ToggleEpsTimeline => gpui::Action::name(&ToggleEpsTimeline),
+        PaletteCommandId::ToggleSplitView => gpui::Action::name(&ToggleSplitView),
+        PaletteCommandId::ToggleSplitOrientation => gpui::Action::name(&ToggleSplitOrientation),
+        PaletteCommandId::ToggleSyncedScroll => gpui::Action::name(&ToggleSyncedScroll),
+        PaletteCommandId::OpenSecondaryLog => gpui::Action::name(&OpenSecondaryLog),
+        PaletteCommandId::ToggleColumnView => gpui::Action::name(&ToggleColumnView),
+        PaletteCommandId::OpenMergedLogs => gpui::Action::name(&OpenMergedLogs),
+        PaletteCommandId::ToggleZenMode => gpui::Action::name(&ToggleZenMode),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PaletteCommand {
     pub id: PaletteCommandId,

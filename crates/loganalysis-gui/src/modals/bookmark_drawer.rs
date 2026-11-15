@@ -9,7 +9,7 @@ pub fn render_bookmark_drawer(
     workspace: &LogAnalysisWorkspace,
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> Option<impl IntoElement> {
-    if !workspace.is_bookmark_drawer_open {
+    if !workspace.bookmarks.is_drawer_open {
         return None;
     }
 
@@ -17,7 +17,8 @@ pub fn render_bookmark_drawer(
     let bookmarks = workspace.bookmarks.items().to_vec();
     let total_bookmarks = bookmarks.len();
     let selected_idx = workspace
-        .bookmark_drawer_selected_index
+        .bookmarks
+        .drawer_selected_index
         .min(total_bookmarks.saturating_sub(1));
 
     let items_el = if bookmarks.is_empty() {
@@ -81,7 +82,7 @@ pub fn render_bookmark_drawer(
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.row_hover))
                     .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.bookmark_drawer_selected_index = idx;
+                        this.bookmarks.drawer_selected_index = idx;
                         this.jump_to_bookmark_source_idx(b_source_idx, cx);
                         this.close_bookmark_drawer(cx);
                     }))
@@ -178,8 +179,7 @@ pub fn render_bookmark_drawer(
                             .child(b.text.clone()),
                     )
                     // Bottom: Note annotation if present
-                    .when(note_opt.is_some(), |parent| {
-                        let note_str = note_opt.unwrap();
+                    .when_some(note_opt, |parent, note_str| {
                         parent.child(
                             div()
                                 .flex()

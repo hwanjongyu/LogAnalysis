@@ -1,12 +1,9 @@
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use gpui::*;
 use loganalysis_core::*;
 
 use crate::types::InputFocusTarget;
 use super::LogAnalysisWorkspace;
-
-const ASYNC_SEARCH_THRESHOLD: usize = 50_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchOutcomeUpdate {
@@ -58,7 +55,7 @@ impl LogAnalysisWorkspace {
                 .scroll_to_item(visible_row, ScrollStrategy::Center);
         }
         self.status_text = outcome.status_text.into();
-        self.search_match_status = Some(outcome.match_status);
+        self.search_ctrl.match_status = Some(outcome.match_status);
         cx.notify();
     }
 
@@ -66,12 +63,12 @@ impl LogAnalysisWorkspace {
     pub fn search(&mut self, forward: bool, cx: &mut Context<Self>) {
         let input_text = self.find_input.read(cx).text().trim().to_string();
         if !input_text.is_empty() {
-            self.search_query = input_text;
+            self.search_ctrl.query = input_text;
         }
         self.update_cached_search_matcher();
 
-        if self.search_query.is_empty() {
-            self.search_match_status = None;
+        if self.search_ctrl.query.is_empty() {
+            self.search_ctrl.match_status = None;
             return;
         }
 
@@ -83,23 +80,23 @@ impl LogAnalysisWorkspace {
         };
 
         let query = SearchQuery {
-            pattern: self.search_query.clone(),
-            case_sensitive: self.is_search_case_sensitive,
-            is_regex: self.is_search_regex,
+            pattern: self.search_ctrl.query.clone(),
+            case_sensitive: self.search_ctrl.is_case_sensitive,
+            is_regex: self.search_ctrl.is_regex,
             forward,
         };
 
         let start_row = self.selection.selected_row;
 
         // If dataset is large (> ASYNC_SEARCH_THRESHOLD), dispatch to background executor
-        if res.visible_indices.len() > ASYNC_SEARCH_THRESHOLD {
+        if res.visible_indices.len() > loganalysis_core::ASYNC_SEARCH_THRESHOLD {
             self.status_text = "Searching in background...".into();
-            self.search_match_status = Some("Searching...".into());
+            self.search_ctrl.match_status = Some("Searching...".into());
             cx.notify();
 
             // Advance generation to invalidate and cancel any previous in-flight background searches
-            let generation = self.search_cancel_gen.fetch_add(1, Ordering::SeqCst) + 1;
-            let cancel_token = self.search_cancel_gen.clone();
+            let generation = self.search_ctrl.cancel_gen.fetch_add(1, Ordering::SeqCst) + 1;
+            let cancel_token = self.search_ctrl.cancel_gen.clone();
 
             cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                 let bg_executor = cx.background_executor().clone();
@@ -122,7 +119,7 @@ impl LogAnalysisWorkspace {
 
                     let _ = this.update(&mut async_cx, |workspace, cx| {
                         // Discard results if superseded by a newer search
-                        if workspace.search_cancel_gen.load(Ordering::SeqCst) != generation {
+                        if workspace.search_ctrl.cancel_gen.load(Ordering::SeqCst) != generation {
                             return;
                         }
 
@@ -140,37 +137,27 @@ impl LogAnalysisWorkspace {
 
     /// Updates the pre-compiled search matcher cached outside the render loop
     pub fn update_cached_search_matcher(&mut self) {
-        self.cached_search_matcher = if self.is_search_visible && !self.search_query.trim().is_empty() {
-            loganalysis_core::CompiledMatcher::new(
-                &self.search_query,
-                self.is_search_case_sensitive,
-                self.is_search_regex,
-            )
-            .ok()
-            .map(Arc::new)
-        } else {
-            None
-        };
+        self.search_ctrl.update_matcher_when_visible();
     }
 
     /// Toggles regex mode for the find bar
     pub fn toggle_search_regex(&mut self, cx: &mut Context<Self>) {
-        self.is_search_regex = !self.is_search_regex;
+        self.search_ctrl.is_regex = !self.search_ctrl.is_regex;
         self.update_cached_search_matcher();
         cx.notify();
     }
 
     /// Toggles case-sensitivity for the find bar
     pub fn toggle_search_case_sensitive(&mut self, cx: &mut Context<Self>) {
-        self.is_search_case_sensitive = !self.is_search_case_sensitive;
+        self.search_ctrl.is_case_sensitive = !self.search_ctrl.is_case_sensitive;
         self.update_cached_search_matcher();
         cx.notify();
     }
 
     /// Toggles the floating find bar
     pub fn toggle_search_bar(&mut self, cx: &mut Context<Self>) {
-        self.is_search_visible = !self.is_search_visible;
-        if self.is_search_visible {
+        self.search_ctrl.is_visible = !self.search_ctrl.is_visible;
+        if self.search_ctrl.is_visible {
             self.input_focus = InputFocusTarget::SearchBar;
         } else if self.input_focus == InputFocusTarget::SearchBar {
             self.input_focus = InputFocusTarget::None;
@@ -245,5 +232,17 @@ mod tests {
             }
         );
         assert!(is_find_status_error(&outcome.match_status));
+    }
+
+    #[test]
+    fn test_async_search_threshold_unified() {
+        assert_eq!(loganalysis_core::ASYNC_SEARCH_THRESHOLD, 50_000);
+        assert_eq!(
+            loganalysis_core::constants::ASYNC_SEARCH_THRESHOLD,
+            loganalysis_core::ASYNC_SEARCH_THRESHOLD
+        );
+        let threshold = std::hint::black_box(loganalysis_core::ASYNC_SEARCH_THRESHOLD);
+        assert!(49_999 < threshold);
+        assert!(50_000 >= threshold);
     }
 }

@@ -9,12 +9,12 @@ pub fn render_note_edit_modal(
     workspace: &LogAnalysisWorkspace,
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> Option<impl IntoElement> {
-    if !workspace.is_note_modal_open {
+    if !workspace.bookmarks.is_note_modal_open {
         return None;
     }
 
     let theme = workspace.theme;
-    let source_idx = workspace.note_editing_source_idx?;
+    let source_idx = workspace.bookmarks.note_editing_source_idx?;
     let line_number = source_idx + 1;
 
     let line_text = workspace

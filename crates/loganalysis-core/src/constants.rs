@@ -2,7 +2,7 @@
 
 pub const MAX_MONITOR_LINES: usize = 200_000;
 pub const MONITOR_TRIM_BATCH: usize = 20_000;
-pub const ASYNC_SEARCH_THRESHOLD: usize = 5_000;
+pub const ASYNC_SEARCH_THRESHOLD: usize = 50_000;
 
 /// Background color map matching original LogAnalysis GUI
 pub const COLOR_MAP: &[(&str, &str, u32)] = &[

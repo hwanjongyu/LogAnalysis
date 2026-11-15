@@ -65,16 +65,34 @@ impl<W: ?Sized> raw_window_handle::HasDisplayHandle for SafeDialogParent<'_, W> 
     }
 }
 
-#[cfg(target_os = "linux")]
-pub(crate) fn get_active_x11_window_id() -> Option<std::os::raw::c_ulong> {
-    let raw = std::env::var("WINDOWID").ok()?;
-    let trimmed = raw.trim();
-    let parsed = if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+/// Parses an explicit X11 window ID from decimal or `0x`-prefixed hexadecimal notation.
+/// Rejects empty, unparseable, or zero values.
+pub fn parse_x11_window_id(raw: Option<&str>) -> Option<std::os::raw::c_ulong> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
         std::os::raw::c_ulong::from_str_radix(hex, 16).ok()?
     } else {
         trimmed.parse::<std::os::raw::c_ulong>().ok()?
     };
     (parsed > 0).then_some(parsed)
+}
+
+/// Reads the explicit active X11 window ID override from `LOGANALYSIS_X11_WINDOW_ID`.
+///
+/// Intentionally does not read `$WINDOWID`, which belongs to the launching terminal emulator
+/// rather than the GPUI application window.
+pub fn get_active_x11_window_id() -> Option<std::os::raw::c_ulong> {
+    parse_x11_window_id(
+        std::env::var("LOGANALYSIS_X11_WINDOW_ID")
+            .ok()
+            .as_deref(),
+    )
 }
 
 /// Safely attaches a parent window handle to an AsyncFileDialog across Linux (X11 & Wayland), macOS, and Windows.
@@ -186,6 +204,44 @@ pub fn build_load_filters_dialog_base() -> rfd::AsyncFileDialog {
         .set_title("Load Filter Profile")
         .add_filter(PROFILE_FILTER_LABEL, PROFILE_FILTER_EXTENSIONS)
         .add_filter(ALL_FILES_LABEL, ALL_FILES_EXTENSIONS)
+}
+
+/// Attaches active OS parent window handle synchronously outside X11; on X11,
+/// parent attachment is deferred to [`resolve_dialog_for_display`].
+pub fn prepare_dialog_with_parent(
+    dialog: rfd::AsyncFileDialog,
+    parent: Option<&Window>,
+) -> rfd::AsyncFileDialog {
+    if is_x11_session() {
+        dialog
+    } else {
+        attach_dialog_parent(dialog, parent)
+    }
+}
+
+/// Resolves deferred X11 window parent attachment cleanly on the background executor
+/// prior to presenting the native file dialog.
+pub async fn resolve_dialog_for_display(
+    dialog: rfd::AsyncFileDialog,
+    bg_executor: &gpui::BackgroundExecutor,
+) -> rfd::AsyncFileDialog {
+    if is_x11_session() {
+        let xid = bg_executor
+            .spawn(async move {
+                #[cfg(target_os = "linux")]
+                {
+                    get_active_x11_window_id()
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    None
+                }
+            })
+            .await;
+        attach_dialog_x11_id(dialog, xid)
+    } else {
+        dialog
+    }
 }
 
 /// Builds the Open Log File dialog with mandatory extensions (*.log, *.txt, and *.*) and safe parent attachment.
@@ -319,5 +375,130 @@ mod tests {
 
         // 3. Verify rfd::AsyncFileDialog::set_parent does not panic when given SafeDialogParent
         let _dlg = build_open_log_dialog_base().set_parent(&safe_parent);
+    }
+
+    static DIALOG_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    const TERMINAL_WINDOW_ID_ENV: &str = concat!("WINDOW", "ID");
+
+    #[test]
+    fn test_parse_x11_window_id_ignores_terminal_windowid() {
+        struct EnvRestoreGuard {
+            prev_windowid: Option<String>,
+            prev_loganalysis_x11: Option<String>,
+        }
+
+        impl EnvRestoreGuard {
+            fn capture() -> Self {
+                Self {
+                    prev_windowid: std::env::var(TERMINAL_WINDOW_ID_ENV).ok(),
+                    prev_loganalysis_x11: std::env::var("LOGANALYSIS_X11_WINDOW_ID").ok(),
+                }
+            }
+        }
+
+        impl Drop for EnvRestoreGuard {
+            fn drop(&mut self) {
+                match &self.prev_windowid {
+                    Some(v) => std::env::set_var(TERMINAL_WINDOW_ID_ENV, v),
+                    None => std::env::remove_var(TERMINAL_WINDOW_ID_ENV),
+                }
+                match &self.prev_loganalysis_x11 {
+                    Some(v) => std::env::set_var("LOGANALYSIS_X11_WINDOW_ID", v),
+                    None => std::env::remove_var("LOGANALYSIS_X11_WINDOW_ID"),
+                }
+            }
+        }
+
+        // Pure parser checks (decimal, hex, zero-rejection, malformed inputs)
+        assert_eq!(parse_x11_window_id(None), None);
+        assert_eq!(parse_x11_window_id(Some("")), None);
+        assert_eq!(parse_x11_window_id(Some("   \t\n")), None);
+        assert_eq!(parse_x11_window_id(Some("0")), None);
+        assert_eq!(parse_x11_window_id(Some("0x0")), None);
+        assert_eq!(parse_x11_window_id(Some("0X0")), None);
+        assert_eq!(parse_x11_window_id(Some("not-a-number")), None);
+        assert_eq!(parse_x11_window_id(Some("0xZZZZ")), None);
+        assert_eq!(parse_x11_window_id(Some("-42")), None);
+        assert_eq!(parse_x11_window_id(Some("123456")), Some(123_456));
+        assert_eq!(parse_x11_window_id(Some(" 4194305 ")), Some(4_194_305));
+        assert_eq!(parse_x11_window_id(Some("  0x03200004  ")), Some(0x0320_0004));
+        assert_eq!(parse_x11_window_id(Some("0XDEADBEEF")), Some(0xDEAD_BEEF));
+
+        // Env var precedence checks: terminal emulator window ID must be ignored
+        let _lock = DIALOG_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _restore = EnvRestoreGuard::capture();
+
+        std::env::remove_var(TERMINAL_WINDOW_ID_ENV);
+        std::env::remove_var("LOGANALYSIS_X11_WINDOW_ID");
+        assert_eq!(get_active_x11_window_id(), None);
+
+        std::env::set_var(TERMINAL_WINDOW_ID_ENV, "0x12345");
+        assert_eq!(
+            get_active_x11_window_id(),
+            None,
+            "terminal emulator window ID hex must never be returned"
+        );
+
+        std::env::set_var(TERMINAL_WINDOW_ID_ENV, "9999999");
+        assert_eq!(
+            get_active_x11_window_id(),
+            None,
+            "terminal emulator window ID decimal must never be returned"
+        );
+
+        std::env::set_var("LOGANALYSIS_X11_WINDOW_ID", "0x420001");
+        assert_eq!(get_active_x11_window_id(), Some(0x42_0001));
+
+        std::env::set_var("LOGANALYSIS_X11_WINDOW_ID", "0");
+        assert_eq!(get_active_x11_window_id(), None);
+
+        std::env::set_var("LOGANALYSIS_X11_WINDOW_ID", "invalid");
+        assert_eq!(get_active_x11_window_id(), None);
+    }
+
+    #[test]
+    fn test_prepare_dialog_with_parent_handles_x11_and_wayland_env_no_panic() {
+        struct WaylandRestoreGuard(Option<std::ffi::OsString>);
+        impl Drop for WaylandRestoreGuard {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(v) => std::env::set_var("WAYLAND_DISPLAY", v),
+                    None => std::env::remove_var("WAYLAND_DISPLAY"),
+                }
+            }
+        }
+
+        let _lock = DIALOG_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _restore = WaylandRestoreGuard(std::env::var_os("WAYLAND_DISPLAY"));
+
+        // 1. X11 env (WAYLAND_DISPLAY unset): prepare_dialog_with_parent defers attachment cleanly
+        std::env::remove_var("WAYLAND_DISPLAY");
+        if cfg!(target_os = "linux") {
+            assert!(is_x11_session());
+        } else {
+            assert!(!is_x11_session());
+        }
+        let _ = prepare_dialog_with_parent(build_open_log_dialog_base(), None);
+        let _ = prepare_dialog_with_parent(build_save_filters_dialog_base(), None);
+        let _ = prepare_dialog_with_parent(build_load_filters_dialog_base(), None);
+        let _ = prepare_dialog_with_parent(
+            build_export_html_report_dialog_base("incident.html"),
+            None,
+        );
+
+        // 2. Wayland env (WAYLAND_DISPLAY set): synchronous attach branch handles None parent safely
+        std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
+        assert!(!is_x11_session());
+        let _ = prepare_dialog_with_parent(build_open_log_dialog_base(), None);
+        let _ = prepare_dialog_with_parent(build_save_filters_dialog_base(), None);
+        let _ = prepare_dialog_with_parent(build_load_filters_dialog_base(), None);
+        let _ = prepare_dialog_with_parent(
+            build_export_html_report_dialog_base("incident.html"),
+            None,
+        );
     }
 }

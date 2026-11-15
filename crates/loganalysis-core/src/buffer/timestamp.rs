@@ -297,6 +297,56 @@ fn day_of_year(month: u32, day: u32) -> u32 {
 }
 
 #[inline]
+fn is_leap_year_u64(year: u64) -> bool {
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
+}
+
+/// Formats epoch seconds into a human-readable UTC timestamp string (`YYYY-MM-DD HH:MM:SS UTC`).
+pub fn format_epoch_utc(secs: u64) -> String {
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    let mut days = secs / 86400;
+
+    let mut year: u64 = 1970;
+    loop {
+        let days_in_year = if is_leap_year_u64(year) { 366 } else { 365 };
+        if days < days_in_year {
+            break;
+        }
+        days -= days_in_year;
+        year += 1;
+    }
+
+    let leap = is_leap_year_u64(year);
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 1u64;
+    for &md in &month_days {
+        if days < md {
+            break;
+        }
+        days -= md;
+        month += 1;
+    }
+    let day = days + 1;
+
+    format!("{year:04}-{month:02}-{day:02} {h:02}:{m:02}:{s:02} UTC")
+}
+
+#[inline]
 fn calc_micros(days: i64, hours: i64, mins: i64, secs: i64, micros: i64) -> i64 {
     (((days * 24 + hours) * 60 + mins) * 60 + secs) * 1_000_000 + micros
 }
@@ -490,5 +540,25 @@ mod tests {
 
         let ts_2026 = extract_timestamp(b"2026-11-06 00:00:00.000 Midnight").unwrap();
         assert_eq!(ts_2026.total_micros, 20_763 * 86_400 * 1_000_000);
+    }
+
+    #[test]
+    fn test_format_epoch_utc_epoch_zero() {
+        assert_eq!(format_epoch_utc(0), "1970-01-01 00:00:00 UTC");
+        assert_eq!(format_epoch_utc(86_399), "1970-01-01 23:59:59 UTC");
+    }
+
+    #[test]
+    fn test_format_epoch_utc_known_date() {
+        assert_eq!(format_epoch_utc(1_793_721_600), "2026-11-03 16:00:00 UTC");
+
+        let y2k_leap_day = (days_since_epoch(2000, 2, 29) as u64) * 86_400 + 23 * 3600 + 59 * 60 + 59;
+        assert_eq!(format_epoch_utc(y2k_leap_day), "2000-02-29 23:59:59 UTC");
+
+        let leap_2024 = (days_since_epoch(2024, 2, 29) as u64) * 86_400 + 12 * 3600 + 34 * 60 + 56;
+        assert_eq!(format_epoch_utc(leap_2024), "2024-02-29 12:34:56 UTC");
+
+        let nov_2026 = (days_since_epoch(2026, 11, 6) as u64) * 86_400 + 3661;
+        assert_eq!(format_epoch_utc(nov_2026), "2026-11-06 01:01:01 UTC");
     }
 }

@@ -15,16 +15,34 @@ pub use split_view::probe_parent_timestamp;
 pub(crate) use recent_files::{get_recent_files_path, load_recent_files, save_recent_files};
 
 
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use gpui::*;
 use loganalysis_core::*;
 
 use crate::components::text_input::{TextInput, TextInputEvent};
+use crate::controllers::{
+    AdbController, BookmarkController, SearchController, SplitViewController,
+};
 use crate::selection::SelectionModel;
 use crate::theme::Theme;
-use crate::types::{FilterEditState, FilterPanelPosition, InputFocusTarget};
+use crate::types::{
+    AdbStreamState, BookmarkDrawerState, FilterEditState, FilterPanelPosition, InputFocusTarget,
+    SearchState, SplitViewState,
+};
+
+/// Default workspace visibility/mode flags applied on workspace initialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceDefaults {
+    pub is_timeline_visible: bool,
+    pub is_zen_mode: bool,
+}
+
+/// Canonical default flags for newly initialized workspaces.
+pub const WORKSPACE_DEFAULTS: WorkspaceDefaults = WorkspaceDefaults {
+    is_timeline_visible: false,
+    is_zen_mode: false,
+};
 
 pub struct LogAnalysisWorkspace {
     pub(crate) focus_handle: FocusHandle,
@@ -33,7 +51,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) heatmap_data: Option<Arc<HeatmapData>>,
     pub(crate) timeline_data: Option<Arc<EpsTimelineData>>,
     pub(crate) is_timeline_visible: bool,
-    pub(crate) analytics_seq: u64,
+    pub(crate) analytics_cancel_gen: Arc<AtomicU64>,
     pub(crate) scroll_handle: UniformListScrollHandle,
     pub(crate) selection: SelectionModel,
     pub(crate) theme: Theme,
@@ -44,33 +62,19 @@ pub struct LogAnalysisWorkspace {
     pub(crate) active_tab_index: usize,
     pub(crate) show_only_filtered: bool,
     pub(crate) filter_cancel_gen: Arc<AtomicU64>,
+    pub(crate) cached_stream_filters: Option<Arc<CompiledStreamFilters>>,
     pub(crate) filter_edit_modal: FilterEditState,
     pub(crate) modal_pattern_input: Entity<TextInput>,
     pub(crate) filter_search_query: String,
     pub(crate) filter_rule_input: Entity<TextInput>,
 
     // Search state
-    pub(crate) search_query: String,
-    pub(crate) is_search_visible: bool,
-    pub(crate) is_search_regex: bool,
-    pub(crate) is_search_case_sensitive: bool,
-    pub(crate) cached_search_matcher: Option<Arc<loganalysis_core::CompiledMatcher>>,
+    pub(crate) search_ctrl: SearchController,
     pub(crate) search_cancel_gen: Arc<AtomicU64>,
     pub(crate) find_input: Entity<TextInput>,
-    pub(crate) search_match_status: Option<String>,
 
     // ADB state
-    pub(crate) adb_devices: Vec<String>,
-    pub(crate) adb_device_details: Vec<loganalysis_core::AdbDeviceInfo>,
-    pub(crate) selected_device: Option<String>,
-    pub(crate) is_device_selector_open: bool,
-    pub(crate) is_scanning_adb: bool,
-    pub(crate) adb_stream_handle: Option<LogcatStreamHandle>,
-    pub(crate) is_streaming: bool,
-    pub(crate) is_stream_paused: bool,
-    pub(crate) auto_scroll: bool,
-    pub(crate) paused_stream_buffer: VecDeque<Vec<String>>,
-    pub(crate) paused_stream_line_count: usize,
+    pub(crate) adb: AdbController,
 
     // Display & Status
     pub(crate) font_size: Pixels,
@@ -91,21 +95,11 @@ pub struct LogAnalysisWorkspace {
     pub(crate) palette_selected_index: usize,
 
     // Bookmark state
-    pub(crate) bookmarks: BookmarkManager,
-    pub(crate) is_bookmark_drawer_open: bool,
-    pub(crate) bookmark_drawer_selected_index: usize,
-    pub(crate) is_note_modal_open: bool,
-    pub(crate) note_editing_source_idx: Option<usize>,
+    pub(crate) bookmarks: BookmarkController,
     pub(crate) note_input: Entity<TextInput>,
 
     // Split View state
-    pub(crate) is_split_view: bool,
-    pub(crate) is_split_vertical: bool,
-    pub(crate) is_scroll_synced: bool,
-    pub(crate) active_split_pane_is_secondary: bool,
-    pub(crate) secondary_log_source: Option<Arc<ActiveLogSource>>,
-    pub(crate) secondary_file_name: Option<SharedString>,
-    pub(crate) secondary_filter_result: Option<Arc<FilterResult>>,
+    pub(crate) split_view: SplitViewController,
     pub(crate) secondary_filter_cancel_gen: Arc<AtomicU64>,
     pub(crate) secondary_scroll_handle: UniformListScrollHandle,
     pub(crate) secondary_selection: SelectionModel,
@@ -218,20 +212,20 @@ impl LogAnalysisWorkspace {
             &find_input,
             |this, input, event: &TextInputEvent, cx| match event {
                 TextInputEvent::Submit => {
-                    this.search_query = input.read(cx).text().to_string();
+                    this.search_ctrl.query = input.read(cx).text().to_string();
                     this.update_cached_search_matcher();
                     this.search(true, cx);
                 }
                 TextInputEvent::Cancel => {
-                    this.is_search_visible = false;
+                    this.search_ctrl.is_visible = false;
                     this.input_focus = InputFocusTarget::None;
                     this.update_cached_search_matcher();
                     cx.notify();
                 }
                 TextInputEvent::Change => {
-                    this.search_query = input.read(cx).text().to_string();
-                    if this.search_query.trim().is_empty() {
-                        this.search_match_status = None;
+                    this.search_ctrl.query = input.read(cx).text().to_string();
+                    if this.search_ctrl.query.trim().is_empty() {
+                        this.search_ctrl.match_status = None;
                     }
                     this.update_cached_search_matcher();
                     cx.notify();
@@ -298,14 +292,17 @@ impl LogAnalysisWorkspace {
         )
         .detach();
 
+        let mut split_view = SplitViewController::new();
+        split_view.is_split_vertical = true;
+
         Self {
             focus_handle: cx.focus_handle(),
             log_source: None,
             filter_result: None,
             heatmap_data: None,
             timeline_data: None,
-            is_timeline_visible: false,
-            analytics_seq: 0,
+            is_timeline_visible: WORKSPACE_DEFAULTS.is_timeline_visible,
+            analytics_cancel_gen: Arc::new(AtomicU64::new(0)),
             scroll_handle: UniformListScrollHandle::new(),
             selection: SelectionModel::new(),
             theme: Theme::default(),
@@ -315,31 +312,17 @@ impl LogAnalysisWorkspace {
             active_tab_index: 0,
             show_only_filtered: false,
             filter_cancel_gen: Arc::new(AtomicU64::new(0)),
+            cached_stream_filters: None,
             filter_edit_modal: FilterEditState::default(),
             modal_pattern_input,
             filter_search_query: String::new(),
             filter_rule_input,
 
-            search_query: String::new(),
-            is_search_visible: false,
-            is_search_regex: false,
-            is_search_case_sensitive: false,
-            cached_search_matcher: None,
+            search_ctrl: SearchController::new(),
             search_cancel_gen: Arc::new(AtomicU64::new(0)),
             find_input,
-            search_match_status: None,
 
-            adb_devices: Vec::new(),
-            adb_device_details: Vec::new(),
-            selected_device: None,
-            is_device_selector_open: false,
-            is_scanning_adb: false,
-            adb_stream_handle: None,
-            is_streaming: false,
-            is_stream_paused: false,
-            auto_scroll: true,
-            paused_stream_buffer: VecDeque::new(),
-            paused_stream_line_count: 0,
+            adb: AdbController::new(),
 
             font_size: px(12.0),
             status_text: "Ready | Open a file or start ADB streaming".into(),
@@ -351,24 +334,14 @@ impl LogAnalysisWorkspace {
             is_dragging_scrollbar: false,
             is_dragging_secondary_scrollbar: false,
             is_overflow_menu_open: false,
-            is_zen_mode: false,
+            is_zen_mode: WORKSPACE_DEFAULTS.is_zen_mode,
             is_command_palette_open: false,
             palette_input,
             palette_selected_index: 0,
-            bookmarks: BookmarkManager::new(),
-            is_bookmark_drawer_open: false,
-            bookmark_drawer_selected_index: 0,
-            is_note_modal_open: false,
-            note_editing_source_idx: None,
+            bookmarks: BookmarkController::new(),
             note_input,
 
-            is_split_view: false,
-            is_split_vertical: true,
-            is_scroll_synced: true,
-            active_split_pane_is_secondary: false,
-            secondary_log_source: None,
-            secondary_file_name: None,
-            secondary_filter_result: None,
+            split_view,
             secondary_filter_cancel_gen: Arc::new(AtomicU64::new(0)),
             secondary_scroll_handle: UniformListScrollHandle::new(),
             secondary_selection: SelectionModel::new(),
@@ -385,37 +358,68 @@ impl LogAnalysisWorkspace {
         }
     }
 
+    /// Returns a snapshot of ADB controller state.
+    pub fn adb_state(&self) -> AdbStreamState {
+        self.adb.state()
+    }
+
+    /// Returns a snapshot of bookmark drawer & note modal state.
+    pub fn bookmark_drawer_state(&self) -> BookmarkDrawerState {
+        self.bookmarks.state()
+    }
+
+    /// Returns a snapshot of search bar controller state.
+    pub fn search_state(&self) -> SearchState {
+        self.search_ctrl.state()
+    }
+
+    /// Returns a snapshot of dual-pane split-view state.
+    pub fn split_view_state(&self) -> SplitViewState {
+        self.split_view.state()
+    }
+
+    /// Collects all active filter rules across enabled filter tabs.
+    pub(crate) fn collect_active_flat_filters(&self) -> Vec<FilterRule> {
+        let mut active_filters = Vec::new();
+        for tab in &self.filter_tabs {
+            if tab.enabled {
+                for rule in &tab.filters {
+                    if rule.active {
+                        active_filters.push(rule.clone());
+                    }
+                }
+            }
+        }
+        active_filters
+    }
+
+    /// Rebuilds and caches pre-compiled stream filters from active rules.
+    pub(crate) fn rebuild_cached_stream_filters(&mut self) -> Arc<CompiledStreamFilters> {
+        let active_filters = self.collect_active_flat_filters();
+        let compiled = Arc::new(CompiledStreamFilters::new(&active_filters));
+        self.cached_stream_filters = Some(Arc::clone(&compiled));
+        compiled
+    }
+
+    /// Returns the cached compiled stream filters, building them on first demand.
+    pub(crate) fn ensure_cached_stream_filters(&mut self) -> Arc<CompiledStreamFilters> {
+        if let Some(existing) = &self.cached_stream_filters {
+            return Arc::clone(existing);
+        }
+        self.rebuild_cached_stream_filters()
+    }
+
     /// Prompts user to select a log file using native OS file dialog attached to window
     pub fn prompt_open_file(&mut self, parent: Option<&Window>, cx: &mut Context<Self>) {
         let base_dialog = crate::dialogs::build_open_log_dialog_base();
-        let is_x11 = crate::dialogs::is_x11_session();
-        let dialog = if !is_x11 {
-            crate::dialogs::attach_dialog_parent(base_dialog, parent)
-        } else {
-            base_dialog
-        };
+        let dialog = crate::dialogs::prepare_dialog_with_parent(base_dialog, parent);
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
             async move {
-                let dialog = if is_x11 {
-                    let xid = bg_executor
-                        .spawn(async move {
-                            #[cfg(target_os = "linux")]
-                            {
-                                crate::dialogs::get_active_x11_window_id()
-                            }
-                            #[cfg(not(target_os = "linux"))]
-                            {
-                                None
-                            }
-                        })
-                        .await;
-                    crate::dialogs::attach_dialog_x11_id(dialog, xid)
-                } else {
-                    dialog
-                };
+                let dialog =
+                    crate::dialogs::resolve_dialog_for_display(dialog, &bg_executor).await;
 
                 let file = dialog.pick_file().await;
                 if let Some(handle) = file {
@@ -431,7 +435,7 @@ impl LogAnalysisWorkspace {
 
     /// Loads a log file using FileLogBuffer asynchronously on the background executor and executes filtering
     pub fn open_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
-        if self.is_streaming {
+        if self.adb.is_streaming {
             self.stop_adb_stream(cx);
         }
         let path_buf = path.to_path_buf();
@@ -483,32 +487,24 @@ impl LogAnalysisWorkspace {
 
     /// Re-evaluates active filters in the background using Rayon
     pub fn reapply_filters(&mut self, cx: &mut Context<Self>) {
-        if self.is_split_view && self.secondary_log_source.is_some() {
+        if self.split_view.is_split_view && self.split_view.secondary_log_source.is_some() {
             self.reapply_secondary_filters(cx);
         }
+
+        let compiled = self.rebuild_cached_stream_filters();
 
         let Some(source) = self.log_source.clone() else {
             return;
         };
 
-        let mut active_filters = Vec::new();
-        for tab in &self.filter_tabs {
-            if tab.enabled {
-                for rule in &tab.filters {
-                    if rule.active {
-                        active_filters.push(rule.clone());
-                    }
-                }
-            }
-        }
-
+        let active_filters = compiled.rules().to_vec();
         let generation = self.filter_cancel_gen.fetch_add(1, Ordering::SeqCst) + 1;
         let token = self.filter_cancel_gen.clone();
         let show_only = self.show_only_filtered;
 
         let snapshot_len = source.line_count();
         let snapshot_trimmed = source.total_trimmed();
-        let filters_for_ui = active_filters.clone();
+        let compiled_for_ui = Arc::clone(&compiled);
 
         let source_for_bg = source.clone();
         let source_for_ui = source.clone();
@@ -559,11 +555,12 @@ impl LogAnalysisWorkspace {
                             src,
                             snapshot_len,
                             snapshot_trimmed,
-                            &filters_for_ui,
+                            &compiled_for_ui,
                             show_only,
                         );
 
                         let prev_anchor = workspace.selection.anchor_source_idx;
+                        workspace.analytics_cancel_gen.fetch_add(1, Ordering::SeqCst);
                         workspace.filter_result = Some(Arc::new(final_res));
                         workspace.heatmap_data = Some(Arc::new(heatmap));
                         workspace.timeline_data = Some(Arc::new(timeline));
@@ -617,58 +614,66 @@ impl LogAnalysisWorkspace {
         self.show_only_filtered = !self.show_only_filtered;
         self.reapply_filters(cx);
     }
+    /// Handles Escape key dismissal using reverse z-order priority.
+    /// Returns `true` if the Escape key was consumed.
+    pub fn handle_escape(&mut self, cx: &mut Context<Self>) -> bool {
+        let has_selection = self.selection.selected_row.is_some()
+            || self.secondary_selection.selected_row.is_some();
+        match determine_escape_action(
+            self.is_overflow_menu_open,
+            self.adb.is_device_selector_open,
+            self.filter_edit_modal.is_open,
+            self.bookmarks.is_note_modal_open,
+            self.bookmarks.is_drawer_open,
+            self.is_command_palette_open,
+            has_selection,
+        ) {
+            EscapeAction::CloseOverflowMenu => {
+                self.close_overflow_menu(cx);
+                true
+            }
+            EscapeAction::CloseDeviceSelector => {
+                self.close_device_selector(cx);
+                true
+            }
+            EscapeAction::CloseFilterModal => {
+                self.close_filter_modal(cx);
+                true
+            }
+            EscapeAction::CloseNoteModal => {
+                self.close_note_modal(cx);
+                true
+            }
+            EscapeAction::CloseBookmarkDrawer => {
+                self.close_bookmark_drawer(cx);
+                true
+            }
+            EscapeAction::CloseCommandPalette => {
+                self.close_command_palette(cx);
+                true
+            }
+            EscapeAction::ClearSelection => {
+                self.clear_selection(cx);
+                true
+            }
+            EscapeAction::None => {
+                if self.is_zen_mode {
+                    self.toggle_zen_mode(cx);
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
     /// Handles keyboard events across application components
     pub fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
 
         // Handle Escape key dismissal using reverse z-order priority
-        if key == "escape" {
-            let has_selection = self.selection.selected_row.is_some()
-                || self.secondary_selection.selected_row.is_some();
-            match determine_escape_action(
-                self.is_overflow_menu_open,
-                self.is_device_selector_open,
-                self.filter_edit_modal.is_open,
-                self.is_note_modal_open,
-                self.is_bookmark_drawer_open,
-                self.is_command_palette_open,
-                has_selection,
-            ) {
-                EscapeAction::CloseOverflowMenu => {
-                    self.close_overflow_menu(cx);
-                    return;
-                }
-                EscapeAction::CloseDeviceSelector => {
-                    self.close_device_selector(cx);
-                    return;
-                }
-                EscapeAction::CloseFilterModal => {
-                    self.close_filter_modal(cx);
-                    return;
-                }
-                EscapeAction::CloseNoteModal => {
-                    self.close_note_modal(cx);
-                    return;
-                }
-                EscapeAction::CloseBookmarkDrawer => {
-                    self.close_bookmark_drawer(cx);
-                    return;
-                }
-                EscapeAction::CloseCommandPalette => {
-                    self.close_command_palette(cx);
-                    return;
-                }
-                EscapeAction::ClearSelection => {
-                    self.clear_selection(cx);
-                    return;
-                }
-                EscapeAction::None => {
-                    if self.is_zen_mode {
-                        self.toggle_zen_mode(cx);
-                        return;
-                    }
-                }
-            }
+        if key == "escape" && self.handle_escape(cx) {
+            return;
         }
 
         // If the filter modal is open, handle Enter fallback when focus is on non-input elements
@@ -678,34 +683,34 @@ impl LogAnalysisWorkspace {
         }
 
         // If the note modal is open, handle Enter
-        if self.is_note_modal_open && key == "enter" {
+        if self.bookmarks.is_note_modal_open && key == "enter" {
             self.save_bookmark_note(cx);
             return;
         }
 
         // If the bookmark drawer is open, handle navigation keys
-        if self.is_bookmark_drawer_open {
+        if self.bookmarks.is_drawer_open {
             if key == "up" {
-                if self.bookmark_drawer_selected_index > 0 {
-                    self.bookmark_drawer_selected_index -= 1;
+                if self.bookmarks.drawer_selected_index > 0 {
+                    self.bookmarks.drawer_selected_index -= 1;
                     cx.notify();
                 }
                 return;
             } else if key == "down" {
-                if self.bookmark_drawer_selected_index + 1 < self.bookmarks.len() {
-                    self.bookmark_drawer_selected_index += 1;
+                if self.bookmarks.drawer_selected_index + 1 < self.bookmarks.len() {
+                    self.bookmarks.drawer_selected_index += 1;
                     cx.notify();
                 }
                 return;
             } else if key == "enter" {
-                if let Some(b) = self.bookmarks.items().get(self.bookmark_drawer_selected_index) {
+                if let Some(b) = self.bookmarks.items().get(self.bookmarks.drawer_selected_index) {
                     let src_idx = b.source_idx;
                     self.jump_to_bookmark_source_idx(src_idx, cx);
                     self.close_bookmark_drawer(cx);
                 }
                 return;
             } else if key == "delete" || key == "backspace" {
-                if let Some(b) = self.bookmarks.items().get(self.bookmark_drawer_selected_index) {
+                if let Some(b) = self.bookmarks.items().get(self.bookmarks.drawer_selected_index) {
                     let src_idx = b.source_idx;
                     let line_num = b.line_number;
                     self.bookmarks.remove(src_idx);
@@ -719,14 +724,14 @@ impl LogAnalysisWorkspace {
         // Navigate log lines with Up and Down arrows
         if self.input_focus == InputFocusTarget::None
             && !self.filter_edit_modal.is_open
-            && !self.is_note_modal_open
-            && !self.is_bookmark_drawer_open
+            && !self.bookmarks.is_note_modal_open
+            && !self.bookmarks.is_drawer_open
             && !self.is_command_palette_open
         {
-            let is_sec = self.is_split_view && self.active_split_pane_is_secondary;
+            let is_sec = self.split_view.is_split_view && self.split_view.active_pane_is_secondary;
             if key == "up" {
                 if is_sec {
-                    if let Some(res) = &self.secondary_filter_result {
+                    if let Some(res) = &self.split_view.secondary_filter_result {
                         let total_rows = res.visible_indices.len();
                         if total_rows > 0 {
                             let cur_row = self.secondary_selection.selected_row.unwrap_or(0);
@@ -750,7 +755,7 @@ impl LogAnalysisWorkspace {
                 }
             } else if key == "down" {
                 if is_sec {
-                    if let Some(res) = &self.secondary_filter_result {
+                    if let Some(res) = &self.split_view.secondary_filter_result {
                         let total_rows = res.visible_indices.len();
                         if total_rows > 0 {
                             let cur_row = self.secondary_selection.selected_row.map(|r| r + 1).unwrap_or(0);
@@ -819,8 +824,8 @@ impl LogAnalysisWorkspace {
 
         if let Some(fname) = &self.active_file_name {
             self.status_text = format!("Loaded {}", fname).into();
-        } else if self.is_streaming {
-            if self.is_stream_paused {
+        } else if self.adb.is_streaming {
+            if self.adb.is_paused {
                 self.status_text = "ADB streaming PAUSED".into();
             } else {
                 self.status_text = "Streaming live ADB logcat...".into();
@@ -833,17 +838,12 @@ impl LogAnalysisWorkspace {
 
     /// Clears currently loaded logs (Ctrl+K)
     pub fn clear_logs(&mut self, cx: &mut Context<Self>) {
-        if self.is_streaming {
+        if self.adb.is_streaming {
             self.stop_adb_stream(cx);
         }
         self.log_source = None;
-        self.filter_result = None;
-        self.heatmap_data = None;
-        self.timeline_data = None;
-        self.selection.clear();
-        self.bookmarks.clear();
-        self.facet_tags.clear();
         self.active_file_name = None;
+        self.reset_derived_log_state();
         self.status_text = "Logs cleared".into();
         cx.notify();
     }
@@ -893,6 +893,7 @@ impl LogAnalysisWorkspace {
     /// Scrolls the secondary log viewport based on mouse vertical position in the scrollbar track
     pub fn scroll_secondary_to_ratio_from_mouse_y(&mut self, mouse_y: Pixels, cx: &mut Context<Self>) {
         let row_count = self
+            .split_view
             .secondary_filter_result
             .as_ref()
             .map(|r| r.visible_indices.len())
@@ -952,8 +953,8 @@ impl LogAnalysisWorkspace {
 
     /// Toggles smart auto-scroll for streaming
     pub fn toggle_auto_scroll(&mut self, cx: &mut Context<Self>) {
-        self.auto_scroll = !self.auto_scroll;
-        self.status_text = if self.auto_scroll {
+        self.adb.auto_scroll = !self.adb.auto_scroll;
+        self.status_text = if self.adb.auto_scroll {
             "Auto-scroll: ON".into()
         } else {
             "Auto-scroll: OFF".into()
@@ -978,7 +979,7 @@ impl LogAnalysisWorkspace {
     pub fn toggle_overflow_menu(&mut self, cx: &mut Context<Self>) {
         self.is_overflow_menu_open = !self.is_overflow_menu_open;
         if self.is_overflow_menu_open {
-            self.is_device_selector_open = false;
+            self.adb.is_device_selector_open = false;
         }
         cx.notify();
     }
@@ -1029,19 +1030,18 @@ impl LogAnalysisWorkspace {
     pub(crate) fn reset_derived_log_state(&mut self) {
         self.filter_cancel_gen.fetch_add(1, Ordering::Relaxed);
         self.search_cancel_gen.fetch_add(1, Ordering::Relaxed);
+        self.analytics_cancel_gen.fetch_add(1, Ordering::SeqCst);
         self.filter_result = None;
         self.heatmap_data = None;
         self.timeline_data = None;
         self.selection.clear();
-        self.search_match_status = None;
+        self.search_ctrl.match_status = None;
         self.bookmarks.clear();
         self.facet_tags.clear();
-        self.is_bookmark_drawer_open = false;
-        self.bookmark_drawer_selected_index = 0;
-        self.is_note_modal_open = false;
-        self.note_editing_source_idx = None;
-        self.paused_stream_buffer.clear();
-        self.paused_stream_line_count = 0;
+        self.bookmarks.close_drawer();
+        self.bookmarks.close_note_modal();
+        self.adb.paused_buffer.clear();
+        self.adb.paused_line_count = 0;
     }
 
     /// Recomputes heatmap density and EPS timeline data for the active filter result.
@@ -1067,65 +1067,7 @@ impl LogAnalysisWorkspace {
 
     /// Asynchronously recomputes heatmap density and EPS timeline data off the UI thread.
     pub(crate) fn update_analytics_data_async(&mut self, cx: &mut Context<Self>) {
-        let (Some(filter_res), Some(src_ref)) =
-            (self.filter_result.clone(), self.log_source.clone())
-        else {
-            return;
-        };
-
-        let compute_timeline = self.is_timeline_visible;
-        let filter_gen = self.filter_cancel_gen.load(Ordering::Relaxed);
-        let src_check = src_ref.clone();
-        let filter_check = filter_res.clone();
-
-        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let bg_executor = cx.background_executor().clone();
-            let mut async_cx = cx.clone();
-
-            async move {
-                let (heatmap, timeline) = bg_executor
-                    .spawn(async move {
-                        let heatmap = Arc::new(HeatmapData::compute(
-                            &*src_ref,
-                            &filter_res.visible_indices,
-                            &filter_res.visible_styles,
-                            200,
-                        ));
-                        let timeline = if compute_timeline {
-                            Some(Arc::new(EpsTimelineData::compute(
-                                &*src_ref,
-                                &filter_res.visible_indices,
-                                &filter_res.visible_styles,
-                                80,
-                            )))
-                        } else {
-                            None
-                        };
-                        (heatmap, timeline)
-                    })
-                    .await;
-
-                let _ = this.update(&mut async_cx, |workspace, cx| {
-                    if workspace.filter_cancel_gen.load(Ordering::Relaxed) == filter_gen
-                        && workspace
-                            .log_source
-                            .as_ref()
-                            .is_some_and(|s| Arc::ptr_eq(s, &src_check))
-                        && workspace
-                            .filter_result
-                            .as_ref()
-                            .is_some_and(|f| Arc::ptr_eq(f, &filter_check))
-                    {
-                        workspace.heatmap_data = Some(heatmap);
-                        if timeline.is_some() {
-                            workspace.timeline_data = timeline;
-                        }
-                        cx.notify();
-                    }
-                });
-            }
-        })
-        .detach();
+        self.spawn_and_apply_stream_analytics(cx);
     }
 
     /// Toggles the Throughput & EPS Timeline Sparkline ribbon (Ctrl+Shift+T)
@@ -1239,19 +1181,18 @@ fn reconcile_snapshot_filter_result(
     live_src: &ActiveLogSource,
     snapshot_len: usize,
     snapshot_trimmed: usize,
-    filters: &[FilterRule],
+    compiled: &CompiledStreamFilters,
     show_only: bool,
 ) -> bool {
     let current_len = live_src.line_count();
     let delta_trimmed = live_src.head_trimmed_since(snapshot_trimmed);
     let catchup_start = snapshot_len.saturating_sub(delta_trimmed);
     if current_len > catchup_start || delta_trimmed > 0 {
-        loganalysis_core::filter::engine::append_streaming_batch(
+        compiled.append_streaming_batch(
             final_res,
             live_src,
             catchup_start..current_len,
             delta_trimmed,
-            filters,
             show_only,
         );
         true
@@ -1263,7 +1204,10 @@ fn reconcile_snapshot_filter_result(
 #[cfg(test)]
 mod tests {
     use super::reconcile_snapshot_filter_result;
-    use loganalysis_core::{execute_filtering, ActiveLogSource, FilterRule, LogSource, StreamLogBuffer};
+    use loganalysis_core::{
+        execute_filtering, ActiveLogSource, CompiledStreamFilters, FilterRule, LogSource,
+        StreamLogBuffer,
+    };
 
     #[test]
     fn test_reconcile_snapshot_filter_result_with_append_and_trim() {
@@ -1284,6 +1228,7 @@ mod tests {
             active: true,
             ..Default::default()
         }];
+        let compiled = CompiledStreamFilters::new(&filters);
 
         // Snapshot before streaming mutations
         let snapshot_len = stream.line_count();
@@ -1308,7 +1253,7 @@ mod tests {
             &live_src,
             snapshot_len,
             snapshot_trimmed,
-            &filters,
+            &compiled,
             true,
         );
         assert!(caught_up);

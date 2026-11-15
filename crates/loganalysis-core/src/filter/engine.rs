@@ -372,19 +372,30 @@ pub fn find_nearest_anchor_row(visible_indices: &[usize], target_idx: usize) -> 
 }
 
 /// Incrementally updates a `FilterResult` when a new batch of lines is appended to a streaming log buffer.
+/// Evaluates newly added lines against pre-compiled matchers and updates `result` incrementally.
 ///
 /// If `trimmed_count > 0` (head of rolling buffer was trimmed), removes visible lines that fell off
 /// and shifts remaining indices down by `trimmed_count`.
-/// Evaluates only the newly added lines (`new_lines_range`) against the active filters,
-/// appending matches directly to `visible_indices` and `visible_styles`.
-pub fn append_streaming_batch(
+/// Note: callers maintaining `FilterResult::rule_counts` should sync `rule_counts` from
+/// `filter_counts` (or use [`CompiledStreamFilters::append_streaming_batch`]).
+pub fn append_streaming_batch_with_matcher(
     result: &mut FilterResult,
     source: &(dyn LogSource + Sync),
     new_lines_range: std::ops::Range<usize>,
     trimmed_count: usize,
-    filters: &[FilterRule],
+    prepared: &[PreparedFilter],
+    multi_matcher: &MultiFilterMatcher,
     show_only_filtered: bool,
 ) {
+    let required_counts = prepared
+        .iter()
+        .map(|pf| pf.flat_index + 1)
+        .max()
+        .unwrap_or(0);
+    if result.filter_counts.len() < required_counts {
+        result.filter_counts.resize(required_counts, 0);
+    }
+
     if trimmed_count > 0 && !result.visible_indices.is_empty() {
         let drop_count = result.visible_indices.partition_point(|&idx| idx < trimmed_count);
         if drop_count > 0 {
@@ -396,9 +407,14 @@ pub fn append_streaming_batch(
                     .get(..drop_count)
                     .map(|slice| slice.iter().filter(|m| !m.is_empty()).count())
                     .unwrap_or_else(|| {
-                        result.visible_filter_matches.iter().filter(|m| !m.is_empty()).count()
+                        result
+                            .visible_filter_matches
+                            .iter()
+                            .filter(|m| !m.is_empty())
+                            .count()
                     });
-                result.total_matched_lines = result.total_matched_lines.saturating_sub(dropped_matches);
+                result.total_matched_lines =
+                    result.total_matched_lines.saturating_sub(dropped_matches);
             }
 
             // Exact per-rule counter decrement on buffer trim [INV-09]
@@ -406,7 +422,8 @@ pub fn append_streaming_batch(
                 for matches in result.visible_filter_matches.drain(0..drop_count) {
                     for flat_idx in matches {
                         if flat_idx < result.filter_counts.len() {
-                            result.filter_counts[flat_idx] = result.filter_counts[flat_idx].saturating_sub(1);
+                            result.filter_counts[flat_idx] =
+                                result.filter_counts[flat_idx].saturating_sub(1);
                         }
                     }
                 }
@@ -416,10 +433,6 @@ pub fn append_streaming_batch(
 
             result.visible_indices.drain(0..drop_count);
             result.visible_styles.drain(0..drop_count);
-
-            for (rule, &cnt) in filters.iter().zip(result.filter_counts.iter()) {
-                result.rule_counts.insert(rule.id, cnt);
-            }
         }
         for idx in &mut result.visible_indices {
             *idx = idx.saturating_sub(trimmed_count);
@@ -430,30 +443,18 @@ pub fn append_streaming_batch(
         return;
     }
 
-    let filter_count = filters.len();
-    let mut prepared = Vec::new();
-    for (idx, rule) in filters.iter().enumerate() {
-        if rule.active && !rule.text.is_empty() {
-            if let Ok(pf) = PreparedFilter::new(rule.clone(), idx) {
-                prepared.push(pf);
-            }
-        }
-    }
-    let multi_matcher = MultiFilterMatcher::new(&prepared);
-
-    if result.filter_counts.len() < filter_count {
-        result.filter_counts.resize(filter_count, 0);
-    }
-
     for line_idx in new_lines_range {
-        let raw_line = source.get_raw_line(line_idx).unwrap_or(b"");
-        let (is_visible, style, is_matched, flat_matches) = evaluate_and_style_line_with_matcher_full(
-            raw_line,
-            &prepared,
-            &multi_matcher,
-            show_only_filtered,
-            Some(&mut result.filter_counts),
-        );
+        let Some(raw_line) = source.get_raw_line(line_idx) else {
+            continue;
+        };
+        let (is_visible, style, is_matched, flat_matches) =
+            evaluate_and_style_line_with_matcher_full(
+                raw_line,
+                prepared,
+                multi_matcher,
+                show_only_filtered,
+                Some(&mut result.filter_counts),
+            );
 
         if is_matched && is_visible {
             result.total_matched_lines += 1;
@@ -472,8 +473,113 @@ pub fn append_streaming_batch(
             result.visible_filter_matches.push(flat_matches);
         }
     }
+}
 
-    for (rule, &cnt) in filters.iter().zip(result.filter_counts.iter()) {
-        result.rule_counts.insert(rule.id, cnt);
+/// Pre-compiled filter set cached across streaming batches to avoid recompiling regexes
+/// and rebuilding the Aho-Corasick automaton on every periodic stream flush.
+#[derive(Clone)]
+pub struct CompiledStreamFilters {
+    rules: Vec<FilterRule>,
+    prepared: Vec<PreparedFilter>,
+    matcher: MultiFilterMatcher,
+}
+
+impl std::fmt::Debug for CompiledStreamFilters {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompiledStreamFilters")
+            .field("rules_len", &self.rules.len())
+            .field("prepared_len", &self.prepared.len())
+            .finish()
     }
+}
+
+impl CompiledStreamFilters {
+    /// Compiles `filters` into `PreparedFilter` entries and a [`MultiFilterMatcher`].
+    ///
+    /// Indices preserve `0..filters.len()` slots (`flat_index`) so `filter_counts` and
+    /// `rule_counts` remain aligned even when inactive or invalid-regex rules are present.
+    pub fn new(filters: &[FilterRule]) -> Self {
+        let rules = filters.to_vec();
+        let mut prepared = Vec::new();
+        for (idx, rule) in rules.iter().enumerate() {
+            if rule.active && !rule.text.is_empty() {
+                if let Ok(pf) = PreparedFilter::new(rule.clone(), idx) {
+                    prepared.push(pf);
+                }
+            }
+        }
+        let matcher = MultiFilterMatcher::new(&prepared);
+        Self {
+            rules,
+            prepared,
+            matcher,
+        }
+    }
+
+    /// Compiled filter rules currently active.
+    pub fn prepared(&self) -> &[PreparedFilter] {
+        &self.prepared
+    }
+
+    /// Shared SIMD multi-pattern automaton covering literal filters.
+    pub fn matcher(&self) -> &MultiFilterMatcher {
+        &self.matcher
+    }
+
+    /// Complete filter rule slice used to construct this compiled set (defining `flat_index` alignment).
+    pub fn rules(&self) -> &[FilterRule] {
+        &self.rules
+    }
+
+    /// Incrementally updates `result` using the cached compiled matchers and synchronizes `rule_counts`.
+    pub fn append_streaming_batch(
+        &self,
+        result: &mut FilterResult,
+        source: &(dyn LogSource + Sync),
+        new_lines_range: std::ops::Range<usize>,
+        trimmed_count: usize,
+        show_only_filtered: bool,
+    ) {
+        if result.filter_counts.len() != self.rules.len() {
+            result.filter_counts.resize(self.rules.len(), 0);
+        }
+
+        append_streaming_batch_with_matcher(
+            result,
+            source,
+            new_lines_range,
+            trimmed_count,
+            &self.prepared,
+            &self.matcher,
+            show_only_filtered,
+        );
+
+        // Maintain [INV-09] rule_counts parity on both trim and append paths
+        for (rule, &cnt) in self.rules.iter().zip(result.filter_counts.iter()) {
+            result.rule_counts.insert(rule.id, cnt);
+        }
+    }
+}
+
+/// Incrementally updates an existing `FilterResult` without rescanning old unchanged lines.
+///
+/// If `trimmed_count > 0` (head of rolling buffer was trimmed), removes visible lines that fell off
+/// and shifts remaining indices down by `trimmed_count`.
+/// Evaluates only the newly added lines (`new_lines_range`) against the active filters,
+/// appending matches directly to `visible_indices` and `visible_styles`.
+pub fn append_streaming_batch(
+    result: &mut FilterResult,
+    source: &(dyn LogSource + Sync),
+    new_lines_range: std::ops::Range<usize>,
+    trimmed_count: usize,
+    filters: &[FilterRule],
+    show_only_filtered: bool,
+) {
+    CompiledStreamFilters::new(filters).append_streaming_batch(
+        result,
+        source,
+        new_lines_range,
+        trimmed_count,
+        show_only_filtered,
+    );
 }

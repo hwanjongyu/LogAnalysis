@@ -13,9 +13,12 @@ pub use correlation::find_nearest_timestamp_row;
 pub use file_buffer::FileLogBuffer;
 pub type SingleLogBuffer = FileLogBuffer;
 pub use merged_buffer::{MergedLineRef, MergedLogBuffer};
-pub use stream_buffer::StreamLogBuffer;
+pub use stream_buffer::{
+    SharedStreamBuffer, StreamBufferInner, StreamLogBuffer, STREAM_PAGE_SIZE,
+};
 pub use timestamp::{
-    compute_delta_micros, extract_timestamp, format_delta_micros, LatencyLevel, LogTimestamp,
+    compute_delta_micros, extract_timestamp, format_delta_micros, format_epoch_utc, LatencyLevel,
+    LogTimestamp,
 };
 
 /// Unified log source enum representing either a file-backed mmap buffer, streaming buffer, or merged multi-file buffer.
@@ -139,7 +142,7 @@ pub trait LogSource: Send + Sync {
         self.get_raw_line(idx).map(|bytes| String::from_utf8_lossy(bytes))
     }
 
-    /// Retrieve the line as an Arc<str>, reusing existing Arc when available to eliminate copying
+    /// Retrieve the line as an `Arc<str>`, reusing existing Arc when available to eliminate copying
     fn get_line_arc(&self, idx: usize) -> Option<Arc<str>> {
         self.get_line(idx).map(|s| Arc::from(s.as_ref()))
     }

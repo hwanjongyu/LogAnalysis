@@ -50,3 +50,57 @@ actions!(
         ToggleZenMode,
     ]
 );
+
+/// Total number of GPUI actions registered in this crate.
+pub const REGISTERED_ACTION_COUNT: usize = 45;
+
+/// Returns the canonical GPUI action names of all registered workspace actions.
+pub fn all_action_names() -> Vec<&'static str> {
+    vec![
+        gpui::Action::name(&OpenFile),
+        gpui::Action::name(&ToggleFilteredOnly),
+        gpui::Action::name(&Find),
+        gpui::Action::name(&FindNext),
+        gpui::Action::name(&FindPrev),
+        gpui::Action::name(&CloseFind),
+        gpui::Action::name(&StartAdb),
+        gpui::Action::name(&StopAdb),
+        gpui::Action::name(&RefreshAdbDevices),
+        gpui::Action::name(&AddFilter),
+        gpui::Action::name(&CopySelection),
+        gpui::Action::name(&SaveFilters),
+        gpui::Action::name(&SaveFiltersAs),
+        gpui::Action::name(&LoadFilters),
+        gpui::Action::name(&ClearLogs),
+        gpui::Action::name(&ZoomIn),
+        gpui::Action::name(&ZoomOut),
+        gpui::Action::name(&TogglePauseStream),
+        gpui::Action::name(&AddIncludeFromSelection),
+        gpui::Action::name(&AddExcludeFromSelection),
+        gpui::Action::name(&AddFilterTab),
+        gpui::Action::name(&DeleteFilterTab),
+        gpui::Action::name(&RenameFilterTab),
+        gpui::Action::name(&ToggleTheme),
+        gpui::Action::name(&ToggleFullLineDisplay),
+        gpui::Action::name(&ToggleAutoScroll),
+        gpui::Action::name(&ToggleFilterPanelPosition),
+        gpui::Action::name(&ToggleCommandPalette),
+        gpui::Action::name(&ToggleBookmark),
+        gpui::Action::name(&NextBookmark),
+        gpui::Action::name(&PrevBookmark),
+        gpui::Action::name(&ClearBookmarks),
+        gpui::Action::name(&ExportHtmlReport),
+        gpui::Action::name(&ToggleBookmarkDrawer),
+        gpui::Action::name(&EditBookmarkNote),
+        gpui::Action::name(&ToggleEpsTimeline),
+        gpui::Action::name(&ToggleSplitView),
+        gpui::Action::name(&ToggleSplitOrientation),
+        gpui::Action::name(&ToggleSyncedScroll),
+        gpui::Action::name(&OpenSecondaryLog),
+        gpui::Action::name(&ToggleColumnView),
+        gpui::Action::name(&OpenMergedLogs),
+        gpui::Action::name(&ToggleFilterDock),
+        gpui::Action::name(&ToggleFacetsBar),
+        gpui::Action::name(&ToggleZenMode),
+    ]
+}
