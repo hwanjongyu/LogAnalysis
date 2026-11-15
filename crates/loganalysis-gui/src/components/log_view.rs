@@ -1,6 +1,6 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use loganalysis_core::{parse_logcat_column_line, LineSeverity, LogSource};
+use loganalysis_core::{parse_column_line_auto, LineSeverity, LogSource};
 
 use crate::components::find_bar::render_find_bar;
 use crate::components::tooltip::render_tooltip;
@@ -996,8 +996,9 @@ fn render_log_list(
                 }
 
                 if is_col_view {
-                    let parsed = parse_logcat_column_line(text.as_ref());
-                    if let Some(time_str) = parsed.time {
+                    let parsed = parse_column_line_auto(text.as_ref());
+                    if parsed.time.is_some() || parsed.level_char.is_some() {
+                        let time_str = parsed.time.unwrap_or("-");
                         let (lvl_bg, lvl_fg) = crate::theme::severity_badge_colors(
                             parsed.level_char,
                             is_dark_theme,

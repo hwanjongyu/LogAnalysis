@@ -18,7 +18,7 @@ pub fn compute_facet_tags(source: &ActiveLogSource) -> Vec<(String, usize)> {
 
     for i in 0..sample_limit {
         if let Some(line) = source.get_line(i) {
-            let parsed = loganalysis_core::parse_logcat_column_line(&line);
+            let parsed = loganalysis_core::parse_column_line_auto(&line);
             if let Some(tag) = parsed.tag {
                 let tag_trimmed = tag.trim();
                 if !tag_trimmed.is_empty() && tag_trimmed.len() <= 32 {

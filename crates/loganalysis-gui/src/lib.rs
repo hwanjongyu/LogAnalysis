@@ -611,4 +611,5 @@ pub fn run_app() {
             );
         }
     });
+    logging::flush_logs();
 }

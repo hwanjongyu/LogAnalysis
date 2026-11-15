@@ -12,7 +12,11 @@ pub use adb::{
     AdbDeviceInfo, LogcatStreamHandle,
 };
 pub use buffer::{
-    column::parse_logcat_column_line, column::ParsedColumnLine,
+    column::{
+        parse_column_line_auto, parse_column_line_with_parsers, parse_logcat_column_line,
+        BriefColumnParser, LogFormatParser, ParsedColumnLine, ThreadtimeColumnParser,
+        BRIEF_COLUMN_PARSER, DEFAULT_COLUMN_PARSERS, THREADTIME_COLUMN_PARSER,
+    },
     correlation::find_nearest_timestamp_row, file_buffer::FileLogBuffer,
     merged_buffer::{MergedLineRef, MergedLogBuffer},
     stream_buffer::{SharedStreamBuffer, StreamBufferInner, StreamLogBuffer, STREAM_PAGE_SIZE},

@@ -18,11 +18,24 @@ pub struct FilterResult {
     pub visible_indices: Vec<usize>,
     pub visible_styles: Vec<ResolvedStyle>,
     pub visible_filter_matches: Vec<SmallVec<[usize; 2]>>,
+    /// Chronologically ordered `(source_line_idx, matched_flat_filter_indices)` for
+    /// exclude-suppressed lines whose matches incremented `filter_counts` (`[INV-09]`).
+    #[doc(hidden)]
+    pub excluded_filter_matches: Vec<(usize, SmallVec<[usize; 2]>)>,
     pub filter_counts: Vec<usize>,
     pub rule_counts: std::collections::HashMap<uuid::Uuid, usize>,
     pub total_matched_lines: usize,
     pub widest_visible_text: String,
     pub widest_visible_length: usize,
+}
+
+#[inline]
+fn decrement_filter_counts(filter_counts: &mut [usize], matches: &[usize]) {
+    for &flat_idx in matches {
+        if let Some(count) = filter_counts.get_mut(flat_idx) {
+            *count = count.saturating_sub(1);
+        }
+    }
 }
 
 impl FilterResult {
@@ -217,6 +230,7 @@ pub fn execute_filtering(
             visible_indices: Vec::new(),
             visible_styles: Vec::new(),
             visible_filter_matches: Vec::new(),
+            excluded_filter_matches: Vec::new(),
             filter_counts: vec![0; filter_count],
             rule_counts,
             total_matched_lines: 0,
@@ -244,6 +258,7 @@ pub fn execute_filtering(
             let mut visible_indices = Vec::with_capacity(end - start);
             let mut visible_styles = Vec::with_capacity(end - start);
             let mut visible_filter_matches = Vec::with_capacity(end - start);
+            let mut excluded_filter_matches: Vec<(usize, SmallVec<[usize; 2]>)> = Vec::new();
             let mut chunk_matched_count = 0;
             let mut local_max_len = 0;
             let mut local_longest_idx = None;
@@ -269,6 +284,8 @@ pub fn execute_filtering(
                         local_max_len = len;
                         local_longest_idx = Some(line_idx);
                     }
+                } else if !flat_matches.is_empty() {
+                    excluded_filter_matches.push((line_idx, flat_matches));
                 }
 
                 // Match counting in a single pass without re-evaluating regexes
@@ -281,6 +298,7 @@ pub fn execute_filtering(
                 visible_indices,
                 visible_styles,
                 visible_filter_matches,
+                excluded_filter_matches,
                 chunk_matched_count,
                 local_max_len,
                 local_longest_idx,
@@ -293,18 +311,31 @@ pub fn execute_filtering(
 
     // Combine results from chunks
     let total_visible: usize = chunks.iter().map(|c| c.0.len()).sum();
+    let total_excluded: usize = chunks.iter().map(|c| c.3.len()).sum();
     let mut combined_indices = Vec::with_capacity(total_visible);
     let mut combined_styles = Vec::with_capacity(total_visible);
     let mut combined_filter_matches = Vec::with_capacity(total_visible);
+    let mut combined_excluded_matches = Vec::with_capacity(total_excluded);
     let mut combined_counts = vec![0usize; filter_count];
     let mut total_matched_lines = 0;
     let mut max_len = 0;
     let mut longest_idx = None;
 
-    for (indices, styles, matches, matched_count, local_max, local_idx, local_counts) in chunks {
+    for (
+        indices,
+        styles,
+        matches,
+        excluded_matches,
+        matched_count,
+        local_max,
+        local_idx,
+        local_counts,
+    ) in chunks
+    {
         combined_indices.extend(indices);
         combined_styles.extend(styles);
         combined_filter_matches.extend(matches);
+        combined_excluded_matches.extend(excluded_matches);
         total_matched_lines += matched_count;
         for (i, &cnt) in local_counts.iter().enumerate() {
             combined_counts[i] += cnt;
@@ -335,6 +366,7 @@ pub fn execute_filtering(
         visible_indices: combined_indices,
         visible_styles: combined_styles,
         visible_filter_matches: combined_filter_matches,
+        excluded_filter_matches: combined_excluded_matches,
         filter_counts: combined_counts,
         rule_counts,
         total_matched_lines,
@@ -396,46 +428,60 @@ pub fn append_streaming_batch_with_matcher(
         result.filter_counts.resize(required_counts, 0);
     }
 
-    if trimmed_count > 0 && !result.visible_indices.is_empty() {
-        let drop_count = result.visible_indices.partition_point(|&idx| idx < trimmed_count);
-        if drop_count > 0 {
-            if show_only_filtered {
-                result.total_matched_lines = result.total_matched_lines.saturating_sub(drop_count);
-            } else {
-                let dropped_matches = result
-                    .visible_filter_matches
-                    .get(..drop_count)
-                    .map(|slice| slice.iter().filter(|m| !m.is_empty()).count())
-                    .unwrap_or_else(|| {
-                        result
-                            .visible_filter_matches
-                            .iter()
-                            .filter(|m| !m.is_empty())
-                            .count()
-                    });
-                result.total_matched_lines =
-                    result.total_matched_lines.saturating_sub(dropped_matches);
-            }
-
-            // Exact per-rule counter decrement on buffer trim [INV-09]
-            if drop_count <= result.visible_filter_matches.len() {
-                for matches in result.visible_filter_matches.drain(0..drop_count) {
-                    for flat_idx in matches {
-                        if flat_idx < result.filter_counts.len() {
-                            result.filter_counts[flat_idx] =
-                                result.filter_counts[flat_idx].saturating_sub(1);
-                        }
-                    }
+    if trimmed_count > 0 {
+        if !result.visible_indices.is_empty() {
+            let drop_count = result.visible_indices.partition_point(|&idx| idx < trimmed_count);
+            if drop_count > 0 {
+                if show_only_filtered {
+                    result.total_matched_lines =
+                        result.total_matched_lines.saturating_sub(drop_count);
+                } else {
+                    let dropped_matches = result
+                        .visible_filter_matches
+                        .get(..drop_count)
+                        .map(|slice| slice.iter().filter(|m| !m.is_empty()).count())
+                        .unwrap_or_else(|| {
+                            result
+                                .visible_filter_matches
+                                .iter()
+                                .filter(|m| !m.is_empty())
+                                .count()
+                        });
+                    result.total_matched_lines =
+                        result.total_matched_lines.saturating_sub(dropped_matches);
                 }
-            } else {
-                result.visible_filter_matches.clear();
-            }
 
-            result.visible_indices.drain(0..drop_count);
-            result.visible_styles.drain(0..drop_count);
+                // Exact per-rule counter decrement for visible trimmed lines [INV-09]
+                if drop_count <= result.visible_filter_matches.len() {
+                    for matches in result.visible_filter_matches.drain(0..drop_count) {
+                        decrement_filter_counts(&mut result.filter_counts, &matches);
+                    }
+                } else {
+                    result.visible_filter_matches.clear();
+                }
+
+                result.visible_indices.drain(0..drop_count);
+                result.visible_styles.drain(0..drop_count);
+            }
+            for idx in &mut result.visible_indices {
+                *idx = idx.saturating_sub(trimmed_count);
+            }
         }
-        for idx in &mut result.visible_indices {
-            *idx = idx.saturating_sub(trimmed_count);
+
+        // Exact per-rule counter decrement for excluded trimmed lines [INV-09]
+        // Runs unconditionally even when `visible_indices` is empty.
+        if !result.excluded_filter_matches.is_empty() {
+            let drop_excluded = result
+                .excluded_filter_matches
+                .partition_point(|(idx, _)| *idx < trimmed_count);
+            if drop_excluded > 0 {
+                for (_, matches) in result.excluded_filter_matches.drain(0..drop_excluded) {
+                    decrement_filter_counts(&mut result.filter_counts, &matches);
+                }
+            }
+            for (idx, _) in &mut result.excluded_filter_matches {
+                *idx = idx.saturating_sub(trimmed_count);
+            }
         }
     }
 
@@ -471,6 +517,8 @@ pub fn append_streaming_batch_with_matcher(
             result.visible_indices.push(line_idx);
             result.visible_styles.push(style);
             result.visible_filter_matches.push(flat_matches);
+        } else if !flat_matches.is_empty() {
+            result.excluded_filter_matches.push((line_idx, flat_matches));
         }
     }
 }

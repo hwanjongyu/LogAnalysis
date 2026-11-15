@@ -1267,6 +1267,10 @@ fn test_compiled_stream_filters_parity_with_append_streaming_batch() {
             a.visible_filter_matches, b.visible_filter_matches,
             "{label}: visible_filter_matches"
         );
+        assert_eq!(
+            a.excluded_filter_matches, b.excluded_filter_matches,
+            "{label}: excluded_filter_matches"
+        );
         assert_eq!(a.filter_counts, b.filter_counts, "{label}: filter_counts");
         assert_eq!(a.rule_counts, b.rule_counts, "{label}: rule_counts");
         assert_eq!(
@@ -1381,7 +1385,7 @@ fn test_compiled_stream_filters_parity_with_append_streaming_batch() {
         );
         assert_incremental_eq(&compiled_res, &full_3, false, "trim-only compiled vs full");
 
-        // 4. Trim-only step dropping the excluded line: compiled vs standalone still match identically
+        // 4. Trim-only step dropping the excluded line: full parity across compiled, standalone, and execute_filtering [INV-09]
         let mut drop_excl_stream = StreamLogBuffer::new(4, 1);
         let rem2: Vec<String> = (0..shrink_stream.len())
             .filter_map(|i| shrink_stream.get_line(i).map(|s| s.into_owned()))
@@ -1407,12 +1411,15 @@ fn test_compiled_stream_filters_parity_with_append_streaming_batch() {
             &rules,
             show_only_filtered,
         );
+        let full_4 = execute_filtering(&drop_excl_stream, &rules, show_only_filtered, None, 0)
+            .expect("full filtering phase 4");
         assert_incremental_eq(
             &compiled_res,
             &standalone_res,
             true,
             "trim-excluded compiled vs standalone",
         );
+        assert_incremental_eq(&compiled_res, &full_4, false, "trim-excluded compiled vs full");
     }
 }
 
@@ -1477,4 +1484,243 @@ fn test_compiled_stream_filters_trim_syncs_rule_counts() {
     assert_eq!(res.count_for_rule(&r_beta.id), 0);
     assert_eq!(res.total_matched_lines, 0);
     assert!(res.visible_indices.is_empty());
+}
+
+#[test]
+fn test_excluded_line_trim_counter_parity_when_visible_empty() {
+    let r_err = FilterRule {
+        text: "ERROR".to_string(),
+        active: true,
+        ..Default::default()
+    };
+    let r_warn = FilterRule {
+        text: "WARN".to_string(),
+        active: true,
+        ..Default::default()
+    };
+    let r_drop = FilterRule {
+        text: "DROP".to_string(),
+        exclude: true,
+        active: true,
+        ..Default::default()
+    };
+    let rules = vec![r_err.clone(), r_warn.clone(), r_drop.clone()];
+    let compiled = CompiledStreamFilters::new(&rules);
+
+    let initial_lines = vec![
+        "ERROR DROP one".to_string(),
+        "WARN DROP two".to_string(),
+        "ERROR WARN DROP three".to_string(),
+        "DROP four".to_string(),
+    ];
+
+    let mut stream = StreamLogBuffer::new(10, 1);
+    stream.append_chunk(initial_lines.clone());
+
+    let mut res = FilterResult::default();
+    compiled.append_streaming_batch(&mut res, &stream, 0..4, 0, true);
+    let full_0 = execute_filtering(&stream, &rules, true, None, 0).expect("full 0");
+
+    assert!(res.visible_indices.is_empty());
+    assert_eq!(res.total_matched_lines, 0);
+    assert_eq!(res.filter_counts, vec![2, 2, 4]);
+    assert_eq!(res.count_for_rule(&r_err.id), 2);
+    assert_eq!(res.count_for_rule(&r_warn.id), 2);
+    assert_eq!(res.count_for_rule(&r_drop.id), 4);
+    assert_eq!(res.filter_counts, full_0.filter_counts);
+    assert_eq!(res.rule_counts, full_0.rule_counts);
+    assert_eq!(res.excluded_filter_matches, full_0.excluded_filter_matches);
+
+    // Partial trim of 2 lines when visible_indices is empty: lines 2 and 3 survive shifted to 0 and 1
+    let mut partial_1 = StreamLogBuffer::new(2, 1);
+    partial_1.append_chunk(initial_lines.clone());
+    assert_eq!(partial_1.trim_if_needed(), Some(2));
+    compiled.append_streaming_batch(&mut res, &partial_1, 2..2, 2, true);
+    let full_1 = execute_filtering(&partial_1, &rules, true, None, 0).expect("full 1");
+
+    assert!(res.visible_indices.is_empty());
+    assert_eq!(res.total_matched_lines, 0);
+    assert_eq!(res.filter_counts, vec![1, 1, 2]);
+    assert_eq!(res.count_for_rule(&r_err.id), 1);
+    assert_eq!(res.count_for_rule(&r_warn.id), 1);
+    assert_eq!(res.count_for_rule(&r_drop.id), 2);
+    assert_eq!(res.filter_counts, full_1.filter_counts);
+    assert_eq!(res.rule_counts, full_1.rule_counts);
+    assert_eq!(res.excluded_filter_matches, full_1.excluded_filter_matches);
+
+    // Second partial trim of 1 line: only "DROP four" survives at index 0
+    let mut partial_2 = StreamLogBuffer::new(1, 1);
+    partial_2.append_chunk(vec![
+        "ERROR WARN DROP three".to_string(),
+        "DROP four".to_string(),
+    ]);
+    assert_eq!(partial_2.trim_if_needed(), Some(1));
+    compiled.append_streaming_batch(&mut res, &partial_2, 1..1, 1, true);
+    let full_2 = execute_filtering(&partial_2, &rules, true, None, 0).expect("full 2");
+
+    assert!(res.visible_indices.is_empty());
+    assert_eq!(res.total_matched_lines, 0);
+    assert_eq!(res.filter_counts, vec![0, 0, 1]);
+    assert_eq!(res.count_for_rule(&r_err.id), 0);
+    assert_eq!(res.count_for_rule(&r_warn.id), 0);
+    assert_eq!(res.count_for_rule(&r_drop.id), 1);
+    assert_eq!(res.filter_counts, full_2.filter_counts);
+    assert_eq!(res.rule_counts, full_2.rule_counts);
+    assert_eq!(res.excluded_filter_matches, full_2.excluded_filter_matches);
+
+    // Final trim draining all remaining excluded lines to 0
+    partial_2.clear();
+    compiled.append_streaming_batch(&mut res, &partial_2, 0..0, 1, true);
+    let full_3 = execute_filtering(&partial_2, &rules, true, None, 0).expect("full 3");
+
+    assert!(res.visible_indices.is_empty());
+    assert_eq!(res.total_matched_lines, 0);
+    assert_eq!(res.filter_counts, vec![0, 0, 0]);
+    assert_eq!(res.count_for_rule(&r_err.id), 0);
+    assert_eq!(res.count_for_rule(&r_warn.id), 0);
+    assert_eq!(res.count_for_rule(&r_drop.id), 0);
+    assert_eq!(res.rule_counts, full_3.rule_counts);
+    assert!(res.excluded_filter_matches.is_empty());
+}
+
+#[test]
+fn test_excluded_line_partial_trim_and_shift_parity() {
+    let r_alpha = FilterRule {
+        text: "ALPHA".to_string(),
+        active: true,
+        ..Default::default()
+    };
+    let r_beta = FilterRule {
+        text: "BETA".to_string(),
+        active: true,
+        ..Default::default()
+    };
+    let r_excl = FilterRule {
+        text: "EXCLUDE".to_string(),
+        exclude: true,
+        active: true,
+        ..Default::default()
+    };
+    let rules = vec![r_alpha.clone(), r_beta.clone(), r_excl.clone()];
+    let compiled = CompiledStreamFilters::new(&rules);
+
+    for show_only_filtered in [true, false] {
+        let mut stream = StreamLogBuffer::new(5, 1);
+        let mut compiled_res = FilterResult::default();
+        let mut standalone_res = FilterResult::default();
+
+        // Phase 1: Interleaved unmatched, excluded, and visible lines (no trim)
+        stream.append_chunk(vec![
+            "NOISE zero".to_string(),
+            "ALPHA EXCLUDE one".to_string(),
+            "ALPHA visible two".to_string(),
+            "BETA EXCLUDE three".to_string(),
+            "ALPHA BETA EXCLUDE four".to_string(),
+        ]);
+        compiled.append_streaming_batch(&mut compiled_res, &stream, 0..5, 0, show_only_filtered);
+        append_streaming_batch(
+            &mut standalone_res,
+            &stream,
+            0..5,
+            0,
+            &rules,
+            show_only_filtered,
+        );
+        let full_1 = execute_filtering(&stream, &rules, show_only_filtered, None, 0).expect("full 1");
+        assert_eq!(compiled_res.filter_counts, full_1.filter_counts);
+        assert_eq!(compiled_res.rule_counts, full_1.rule_counts);
+        assert_eq!(compiled_res.excluded_filter_matches, full_1.excluded_filter_matches);
+        assert_eq!(compiled_res.visible_indices, full_1.visible_indices);
+        assert_eq!(compiled_res.total_matched_lines, full_1.total_matched_lines);
+        assert_eq!(standalone_res.filter_counts, full_1.filter_counts);
+        assert_eq!(
+            standalone_res.excluded_filter_matches,
+            full_1.excluded_filter_matches
+        );
+
+        // Phase 2: Rolling append + trim dropping idx 0 ("NOISE") and idx 1 ("ALPHA EXCLUDE")
+        stream.append_chunk(vec![
+            "ALPHA visible five".to_string(),
+            "BETA EXCLUDE six".to_string(),
+        ]);
+        let trimmed_2 = stream.trim_if_needed().expect("phase 2 trim");
+        assert_eq!(trimmed_2, 2);
+        compiled.append_streaming_batch(&mut compiled_res, &stream, 3..5, trimmed_2, show_only_filtered);
+        append_streaming_batch(
+            &mut standalone_res,
+            &stream,
+            3..5,
+            trimmed_2,
+            &rules,
+            show_only_filtered,
+        );
+        let full_2 = execute_filtering(&stream, &rules, show_only_filtered, None, 0).expect("full 2");
+        assert_eq!(compiled_res.filter_counts, full_2.filter_counts);
+        assert_eq!(compiled_res.rule_counts, full_2.rule_counts);
+        assert_eq!(compiled_res.excluded_filter_matches, full_2.excluded_filter_matches);
+        assert_eq!(compiled_res.visible_indices, full_2.visible_indices);
+        assert_eq!(compiled_res.total_matched_lines, full_2.total_matched_lines);
+        assert_eq!(standalone_res.filter_counts, full_2.filter_counts);
+        assert_eq!(
+            standalone_res.excluded_filter_matches,
+            full_2.excluded_filter_matches
+        );
+
+        // Phase 3: Consecutive rolling append + trim dropping shifted visible (0) and excluded (1),
+        // shifting "ALPHA BETA EXCLUDE four" from idx 2 -> 0 and "BETA EXCLUDE six" from idx 4 -> 2
+        stream.append_chunk(vec![
+            "NOISE seven".to_string(),
+            "ALPHA EXCLUDE eight".to_string(),
+        ]);
+        let trimmed_3 = stream.trim_if_needed().expect("phase 3 trim");
+        assert_eq!(trimmed_3, 2);
+        compiled.append_streaming_batch(&mut compiled_res, &stream, 3..5, trimmed_3, show_only_filtered);
+        append_streaming_batch(
+            &mut standalone_res,
+            &stream,
+            3..5,
+            trimmed_3,
+            &rules,
+            show_only_filtered,
+        );
+        let full_3 = execute_filtering(&stream, &rules, show_only_filtered, None, 0).expect("full 3");
+        assert_eq!(compiled_res.filter_counts, full_3.filter_counts);
+        assert_eq!(compiled_res.rule_counts, full_3.rule_counts);
+        assert_eq!(compiled_res.excluded_filter_matches, full_3.excluded_filter_matches);
+        assert_eq!(compiled_res.visible_indices, full_3.visible_indices);
+        assert_eq!(compiled_res.total_matched_lines, full_3.total_matched_lines);
+        assert_eq!(standalone_res.filter_counts, full_3.filter_counts);
+        assert_eq!(
+            standalone_res.excluded_filter_matches,
+            full_3.excluded_filter_matches
+        );
+
+        // Phase 4: Trim-only keeping last 2 lines (one NOISE, one excluded) so visible_indices becomes empty
+        let mut tail_stream = StreamLogBuffer::new(2, 1);
+        let all_remaining: Vec<String> = (0..stream.len())
+            .filter_map(|i| stream.get_line(i).map(|s| s.into_owned()))
+            .collect();
+        tail_stream.append_chunk(all_remaining);
+        let trimmed_4 = tail_stream.trim_if_needed().expect("phase 4 trim");
+        assert_eq!(trimmed_4, 3);
+        compiled.append_streaming_batch(&mut compiled_res, &tail_stream, 2..2, trimmed_4, show_only_filtered);
+        let full_4 =
+            execute_filtering(&tail_stream, &rules, show_only_filtered, None, 0).expect("full 4");
+        assert_eq!(compiled_res.filter_counts, full_4.filter_counts);
+        assert_eq!(compiled_res.rule_counts, full_4.rule_counts);
+        assert_eq!(compiled_res.excluded_filter_matches, full_4.excluded_filter_matches);
+        assert_eq!(compiled_res.visible_indices, full_4.visible_indices);
+        assert_eq!(compiled_res.total_matched_lines, full_4.total_matched_lines);
+
+        // Phase 5: Drain remaining tail to 0
+        tail_stream.clear();
+        compiled.append_streaming_batch(&mut compiled_res, &tail_stream, 0..0, 2, show_only_filtered);
+        let full_5 =
+            execute_filtering(&tail_stream, &rules, show_only_filtered, None, 0).expect("full 5");
+        assert_eq!(compiled_res.filter_counts, vec![0, 0, 0]);
+        assert_eq!(compiled_res.rule_counts, full_5.rule_counts);
+        assert!(compiled_res.excluded_filter_matches.is_empty());
+        assert!(compiled_res.visible_indices.is_empty());
+        assert_eq!(compiled_res.total_matched_lines, 0);
+    }
 }

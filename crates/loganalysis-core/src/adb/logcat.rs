@@ -9,6 +9,43 @@ use crossbeam_channel::{SendTimeoutError, Sender};
 use super::device::is_valid_device_serial;
 use crate::error::AdbError;
 
+/// Terminates `child` and reaps its exit status without blocking the calling thread.
+///
+/// Fast-paths via `try_wait()` when the process exits immediately after `kill()`,
+/// otherwise hands ownership to a detached `"adb-child-reaper"` background thread.
+/// Falls back to synchronous `wait()` only if spawning the reaper thread fails.
+fn reap_child_nonblocking(mut child: Child) {
+    let _ = child.kill();
+    match child.try_wait() {
+        Ok(Some(_)) => {}
+        Ok(None) | Err(_) => {
+            let child_slot = Arc::new(Mutex::new(Some(child)));
+            let reaper_slot = Arc::clone(&child_slot);
+            if thread::Builder::new()
+                .name("adb-child-reaper".to_string())
+                .spawn(move || {
+                    let child = {
+                        let mut lock = reaper_slot.lock().unwrap_or_else(|e| e.into_inner());
+                        lock.take()
+                    };
+                    if let Some(mut c) = child {
+                        let _ = c.wait();
+                    }
+                })
+                .is_err()
+            {
+                let child = {
+                    let mut lock = child_slot.lock().unwrap_or_else(|e| e.into_inner());
+                    lock.take()
+                };
+                if let Some(mut c) = child {
+                    let _ = c.wait();
+                }
+            }
+        }
+    }
+}
+
 /// RAII handle to a running adb logcat background stream.
 /// Automatically terminates the child process on drop or stop.
 pub struct LogcatStreamHandle {
@@ -18,13 +55,16 @@ pub struct LogcatStreamHandle {
 }
 
 impl LogcatStreamHandle {
-    /// Signals the background thread and terminates the child process to unblock I/O.
+    /// Signals the background thread and terminates the child process without blocking
+    /// the caller/UI thread while the OS reaps the subprocess.
     pub fn stop(&self) {
         self.stop_flag.store(true, Ordering::SeqCst);
-        let mut lock = self.child.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(mut child) = lock.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        let child = {
+            let mut lock = self.child.lock().unwrap_or_else(|e| e.into_inner());
+            lock.take()
+        };
+        if let Some(child) = child {
+            reap_child_nonblocking(child);
         }
     }
 
@@ -479,5 +519,171 @@ mod tests {
         // Chunk 2 must start with '한' without any \u{FFFD}
         assert!(all_lines[1].starts_with('한'));
         assert!(!all_lines[1].contains('\u{FFFD}'));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_stop_with_live_child_is_nonblocking_and_clears_slot() {
+        let child = Command::new("sh")
+            .args(["-c", "exec sleep 30"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn long-running sleep subprocess");
+        let pid = child.id();
+
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let child_slot = Arc::new(Mutex::new(Some(child)));
+        let handle = LogcatStreamHandle {
+            thread_handle: None,
+            child: Arc::clone(&child_slot),
+            stop_flag: Arc::clone(&stop_flag),
+        };
+
+        let start = Instant::now();
+        handle.stop();
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "LogcatStreamHandle::stop blocked caller: {:?}",
+            elapsed
+        );
+        assert!(
+            stop_flag.load(Ordering::SeqCst),
+            "stop() must set stop_flag"
+        );
+        assert!(
+            child_slot.lock().unwrap().is_none(),
+            "stop() must take and clear child slot"
+        );
+
+        #[cfg(target_os = "linux")]
+        if std::path::Path::new("/proc/self/status").exists() {
+            let proc_status = format!("/proc/{pid}/status");
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut reaped = false;
+            while Instant::now() < deadline {
+                if std::fs::read_to_string(&proc_status).is_err() {
+                    reaped = true;
+                    break;
+                }
+                thread::yield_now();
+            }
+            assert!(
+                reaped,
+                "Subprocess PID {pid} was not reaped within 2s (potential zombie)"
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = pid;
+    }
+
+    #[test]
+    fn test_reap_child_nonblocking_already_exited() {
+        #[cfg(unix)]
+        let mut child = Command::new("sh")
+            .args(["-c", "exit 0"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn exit-0 subprocess");
+        #[cfg(windows)]
+        let mut child = Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn exit-0 subprocess");
+
+        // Deterministically wait for exit via bounded try_wait + yield_now (no hard sleep)
+        let wait_deadline = Instant::now() + Duration::from_secs(2);
+        let mut exited = false;
+        while Instant::now() < wait_deadline {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    assert!(status.success());
+                    exited = true;
+                    break;
+                }
+                Ok(None) => thread::yield_now(),
+                Err(e) => panic!("try_wait failed unexpectedly: {e}"),
+            }
+        }
+        assert!(exited, "short-lived child failed to exit within 2s");
+
+        let pid = child.id();
+        let start = Instant::now();
+        reap_child_nonblocking(child);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "reap_child_nonblocking blocked on already-exited child: {:?}",
+            elapsed
+        );
+
+        #[cfg(target_os = "linux")]
+        if std::path::Path::new("/proc/self/status").exists() {
+            let proc_status = format!("/proc/{pid}/status");
+            assert!(
+                std::fs::read_to_string(&proc_status).is_err(),
+                "Already-exited child PID {pid} must leave no /proc entry"
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = pid;
+
+        // On Linux, also verify the OS-zombie fast path where Child has already exited
+        // (`State:\tZ`) before any prior `try_wait()` call cached its exit status.
+        #[cfg(target_os = "linux")]
+        if std::path::Path::new("/proc/self/status").exists() {
+            let zombie_child = Command::new("sh")
+                .args(["-c", "exit 0"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn exit-0 subprocess for zombie fast-path");
+            let zombie_pid = zombie_child.id();
+            let proc_status = format!("/proc/{zombie_pid}/status");
+            let zombie_deadline = Instant::now() + Duration::from_secs(2);
+            let mut became_zombie = false;
+            while Instant::now() < zombie_deadline {
+                if let Ok(status_text) = std::fs::read_to_string(&proc_status) {
+                    if status_text.contains("State:\tZ") {
+                        became_zombie = true;
+                        break;
+                    }
+                }
+                thread::yield_now();
+            }
+            assert!(
+                became_zombie,
+                "short-lived child PID {zombie_pid} did not reach zombie state within 2s"
+            );
+
+            let z_start = Instant::now();
+            reap_child_nonblocking(zombie_child);
+            let z_elapsed = z_start.elapsed();
+            assert!(
+                z_elapsed < Duration::from_millis(50),
+                "reap_child_nonblocking blocked on OS zombie child: {:?}",
+                z_elapsed
+            );
+
+            let reap_deadline = Instant::now() + Duration::from_secs(2);
+            let mut z_reaped = false;
+            while Instant::now() < reap_deadline {
+                if std::fs::read_to_string(&proc_status).is_err() {
+                    z_reaped = true;
+                    break;
+                }
+                thread::yield_now();
+            }
+            assert!(
+                z_reaped,
+                "Zombie child PID {zombie_pid} was not reaped cleanly"
+            );
+        }
     }
 }

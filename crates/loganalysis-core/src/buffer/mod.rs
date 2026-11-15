@@ -8,7 +8,11 @@ pub mod timestamp;
 use std::borrow::Cow;
 use std::sync::Arc;
 
-pub use column::{parse_logcat_column_line, ParsedColumnLine};
+pub use column::{
+    parse_column_line_auto, parse_column_line_with_parsers, parse_logcat_column_line,
+    BriefColumnParser, LogFormatParser, ParsedColumnLine, ThreadtimeColumnParser,
+    BRIEF_COLUMN_PARSER, DEFAULT_COLUMN_PARSERS, THREADTIME_COLUMN_PARSER,
+};
 pub use correlation::find_nearest_timestamp_row;
 pub use file_buffer::FileLogBuffer;
 pub type SingleLogBuffer = FileLogBuffer;
