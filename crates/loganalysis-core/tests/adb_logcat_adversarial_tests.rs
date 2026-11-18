@@ -8,15 +8,67 @@
 
 #[cfg(unix)]
 use std::fs;
-use std::io::BufReader;
+use std::io::{self, BufReader, Read};
 #[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Barrier};
-#[cfg(unix)]
-use std::sync::Mutex;
+use std::sync::{Arc, Barrier, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+struct SignalingReader {
+    chunks: Vec<Vec<u8>>,
+    index: usize,
+    notify_at_index: usize,
+    signal: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl Read for SignalingReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.index == self.notify_at_index {
+            let (lock, cvar) = &*self.signal;
+            let mut ready = lock.lock().unwrap();
+            *ready = true;
+            cvar.notify_all();
+        }
+        if self.index >= self.chunks.len() {
+            return Ok(0);
+        }
+        let chunk = &self.chunks[self.index];
+        let to_copy = chunk.len().min(buf.len());
+        buf[..to_copy].copy_from_slice(&chunk[..to_copy]);
+        if to_copy == chunk.len() {
+            self.index += 1;
+        } else {
+            self.chunks[self.index] = chunk[to_copy..].to_vec();
+        }
+        Ok(to_copy)
+    }
+}
+
+fn wait_until_ready(signal: &(Mutex<bool>, Condvar)) {
+    let (lock, cvar) = signal;
+    let guard = lock.lock().unwrap();
+    let (guard, timeout) = cvar
+        .wait_timeout_while(guard, Duration::from_secs(2), |ready| !*ready)
+        .unwrap();
+    assert!(
+        *guard && !timeout.timed_out(),
+        "Timed out waiting for signaling reader"
+    );
+}
+
+#[cfg(unix)]
+fn wait_until_channel_full<T>(rx: &crossbeam_channel::Receiver<T>) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !rx.is_full() {
+        assert!(
+            Instant::now() < deadline,
+            "Timed out waiting for mock adb to saturate bounded channel"
+        );
+        thread::yield_now();
+    }
+}
 
 use crossbeam_channel::bounded;
 #[cfg(unix)]
@@ -66,24 +118,29 @@ fn test_adversarial_stop_flag_exit_latency_50_iterations() {
     let mut latencies = Vec::with_capacity(50);
 
     for i in 0..50 {
-        let (tx, _rx) = bounded(1);
-        // Pre-saturate channel
-        tx.send(vec!["saturation item".to_string()]).unwrap();
-
+        let (tx, rx) = bounded(1);
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_clone = stop_flag.clone();
-
-        // Feed endless lines so buffer repeatedly reaches flush threshold
-        let input_lines = "11-08 04:00:00.000 1 1 I Tag: Line\n".repeat(250);
+        let signal = Arc::new((Mutex::new(false), Condvar::new()));
+        let signal_clone = Arc::clone(&signal);
         let worker_tx = tx.clone();
 
         let worker = thread::spawn(move || {
-            let reader = BufReader::new(input_lines.as_bytes());
+            let reader = BufReader::new(SignalingReader {
+                chunks: vec![
+                    b"11-08 04:00:00.000 1 1 I Tag: Fill\n".to_vec(),
+                    b"11-08 04:00:00.000 1 1 I Tag: Line\n".repeat(250),
+                ],
+                index: 0,
+                notify_at_index: 1,
+                signal: signal_clone,
+            });
             stream_log_lines(reader, worker_tx, stop_flag_clone);
         });
 
-        // Let worker hit send_timeout loop
-        thread::sleep(Duration::from_millis(10));
+        // Deterministically wait until channel is saturated and second read begins
+        wait_until_ready(&signal);
+        assert!(rx.is_full(), "Iteration {i}: channel must be saturated");
 
         let start = Instant::now();
         stop_flag.store(true, Ordering::SeqCst);
@@ -126,7 +183,7 @@ fn test_adversarial_drop_handle_latency_with_live_subprocess() {
     std::env::set_var("ANDROID_HOME", temp_home.path());
     std::env::remove_var("ANDROID_SDK_ROOT");
 
-    let (tx, _rx) = bounded(2);
+    let (tx, rx) = bounded(2);
     let stop_flag = Arc::new(AtomicBool::new(false));
 
     let handle_res = start_logcat_stream(Some("emulator-5554"), tx, stop_flag.clone());
@@ -142,8 +199,8 @@ fn test_adversarial_drop_handle_latency_with_live_subprocess() {
 
     let handle = handle_res.expect("start_logcat_stream must succeed with mock adb");
 
-    // Allow mock adb to flood and saturate bounded channel
-    thread::sleep(Duration::from_millis(40));
+    // Wait deterministically for mock adb to flood and saturate bounded channel
+    wait_until_channel_full(&rx);
 
     // Measure drop latency: MUST complete in < 50ms on UI thread
     let start = Instant::now();
@@ -175,22 +232,29 @@ fn test_adversarial_high_concurrency_multi_stream_drop() {
     for id in 0..CONCURRENCY {
         let b = Arc::clone(&barrier);
         handles.push(thread::spawn(move || {
-            let (tx, _rx) = bounded(1);
-            tx.send(vec!["saturation".to_string()]).unwrap();
-
+            let (tx, rx) = bounded(1);
             let stop_flag = Arc::new(AtomicBool::new(false));
             let stop_flag_clone = stop_flag.clone();
-
-            let input_lines = "11-08 04:00:00.000 1 1 I Tag: ConcurrentLine\n".repeat(500);
+            let signal = Arc::new((Mutex::new(false), Condvar::new()));
+            let signal_clone = Arc::clone(&signal);
             let worker_tx = tx.clone();
 
             let worker = thread::spawn(move || {
-                let reader = BufReader::new(input_lines.as_bytes());
+                let reader = BufReader::new(SignalingReader {
+                    chunks: vec![
+                        b"11-08 04:00:00.000 1 1 I Tag: Fill\n".to_vec(),
+                        b"11-08 04:00:00.000 1 1 I Tag: ConcurrentLine\n".repeat(500),
+                    ],
+                    index: 0,
+                    notify_at_index: 1,
+                    signal: signal_clone,
+                });
                 stream_log_lines(reader, worker_tx, stop_flag_clone);
             });
 
-            // Wait until worker is definitely in timed send loop
-            thread::sleep(Duration::from_millis(15));
+            // Deterministically wait until channel is saturated and second read starts
+            wait_until_ready(&signal);
+            assert!(rx.is_full(), "Worker {id}: channel must be saturated");
 
             // Synchronize all threads to drop at the exact same microsecond
             b.wait();
@@ -251,20 +315,27 @@ fn test_adversarial_stop_flag_pre_set_immediate_return() {
 #[test]
 fn test_adversarial_receiver_drop_unblocks_worker() {
     let (tx, rx) = bounded(1);
-    tx.send(vec!["fill".to_string()]).unwrap();
-
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_flag_clone = stop_flag.clone();
-
-    let input_lines = "11-08 04:00:00.000 1 1 I Tag: DisconnectTest\n".repeat(200);
+    let signal = Arc::new((Mutex::new(false), Condvar::new()));
+    let signal_clone = Arc::clone(&signal);
     let worker_tx = tx.clone();
 
     let worker = thread::spawn(move || {
-        let reader = BufReader::new(input_lines.as_bytes());
+        let reader = BufReader::new(SignalingReader {
+            chunks: vec![
+                b"11-08 04:00:00.000 1 1 I Tag: Fill\n".to_vec(),
+                b"11-08 04:00:00.000 1 1 I Tag: DisconnectTest\n".repeat(200),
+            ],
+            index: 0,
+            notify_at_index: 1,
+            signal: signal_clone,
+        });
         stream_log_lines(reader, worker_tx, stop_flag_clone);
     });
 
-    thread::sleep(Duration::from_millis(15));
+    wait_until_ready(&signal);
+    assert!(rx.is_full(), "Channel must be saturated before drop");
 
     // Drop receiver while worker is waiting on send_timeout
     let start = Instant::now();
@@ -294,7 +365,7 @@ fn test_adversarial_explicit_join_latency_with_live_subprocess() {
     std::env::set_var("ANDROID_HOME", temp_home.path());
     std::env::remove_var("ANDROID_SDK_ROOT");
 
-    let (tx, _rx) = bounded(2);
+    let (tx, rx) = bounded(2);
     let stop_flag = Arc::new(AtomicBool::new(false));
 
     let handle_res = start_logcat_stream(Some("emulator-5554"), tx, stop_flag.clone());
@@ -309,8 +380,8 @@ fn test_adversarial_explicit_join_latency_with_live_subprocess() {
 
     let handle = handle_res.expect("start_logcat_stream must succeed with mock adb");
 
-    // Allow mock adb to flood and saturate bounded channel
-    thread::sleep(Duration::from_millis(40));
+    // Wait deterministically for mock adb to flood and saturate bounded channel
+    wait_until_channel_full(&rx);
 
     // Calling join() explicitly must terminate child, wait for worker, and return < 100ms
     let start = Instant::now();
@@ -339,8 +410,8 @@ fn test_adversarial_explicit_join_latency_with_live_subprocess() {
 fn test_scan_adb_devices_mock_daemon_inherited_pipe_hang() {
     use std::os::unix::fs::PermissionsExt;
 
-    let temp_dir = tempfile::tempdir().expect("tempdir");
-    let platform_tools = temp_dir.path().join("platform-tools");
+    let sdk_dir = tempfile::tempdir().expect("tempdir");
+    let platform_tools = sdk_dir.path().join("platform-tools");
     std::fs::create_dir_all(&platform_tools).expect("mkdir");
     let adb_path = platform_tools.join("adb");
 
@@ -363,7 +434,7 @@ exit 0
 
     let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let old_home = std::env::var("ANDROID_HOME").ok();
-    std::env::set_var("ANDROID_HOME", temp_dir.path());
+    std::env::set_var("ANDROID_HOME", sdk_dir.path());
 
     let start = Instant::now();
     let res = loganalysis_core::scan_adb_device_details(Duration::from_millis(500));

@@ -5,6 +5,50 @@ use crate::components::tooltip::render_tooltip;
 use crate::types::FilterPanelPosition;
 use crate::workspace::LogAnalysisWorkspace;
 
+fn render_filter_rule_search_box(
+    workspace: &LogAnalysisWorkspace,
+    input_id: &'static str,
+    clear_id: &'static str,
+    height_px: f32,
+    width_px: Option<f32>,
+    cx: &mut Context<LogAnalysisWorkspace>,
+) -> Stateful<Div> {
+    let theme = workspace.theme;
+    div()
+        .id(input_id)
+        .h(px(height_px))
+        .when_some(width_px, |s, w| s.w(px(w)))
+        .when(width_px.is_none(), |s| s.w_full())
+        .flex()
+        .items_center()
+        .gap_1()
+        .child(
+            div()
+                .flex_1()
+                .h_full()
+                .child(workspace.filter_rule_input.clone()),
+        )
+        .children(if !workspace.filter_search_query.is_empty() {
+            Some(
+                div()
+                    .id(clear_id)
+                    .px(px(4.0))
+                    .cursor_pointer()
+                    .text_size(px(10.0))
+                    .text_color(theme.text_muted)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.filter_rule_input
+                            .update(cx, |inp, cx| inp.set_text("", cx));
+                        this.filter_search_query.clear();
+                        cx.notify();
+                    }))
+                    .child("✕"),
+            )
+        } else {
+            None
+        })
+}
+
 /// Renders an interactive splitter/divider between Filter Dock and Log Viewport
 pub fn render_filter_dock_splitter(
     workspace: &LogAnalysisWorkspace,
@@ -188,40 +232,14 @@ pub fn render_filter_dock(
                                 .child("FILTER RULES"),
                         )
                         .children(if is_bottom_dock {
-                            Some(
-                                div()
-                                    .id("input-filter-rule-search-inline")
-                                    .h(px(24.0))
-                                    .w(px(220.0))
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .h_full()
-                                            .child(workspace.filter_rule_input.clone()),
-                                    )
-                                    .children(if !workspace.filter_search_query.is_empty() {
-                                        Some(
-                                            div()
-                                                .id("btn-clear-filter-search-inline")
-                                                .px(px(4.0))
-                                                .cursor_pointer()
-                                                .text_size(px(10.0))
-                                                .text_color(theme.text_muted)
-                                                .on_click(cx.listener(|this, _, _window, cx| {
-                                                    this.filter_rule_input
-                                                        .update(cx, |inp, cx| inp.set_text("", cx));
-                                                    this.filter_search_query.clear();
-                                                    cx.notify();
-                                                }))
-                                                .child("✕"),
-                                        )
-                                    } else {
-                                        None
-                                    }),
-                            )
+                            Some(render_filter_rule_search_box(
+                                workspace,
+                                "input-filter-rule-search-inline",
+                                "btn-clear-filter-search-inline",
+                                24.0,
+                                Some(220.0),
+                                cx,
+                            ))
                         } else {
                             None
                         }),
@@ -256,40 +274,14 @@ pub fn render_filter_dock(
                     .p(px(8.0))
                     .border_b_1()
                     .border_color(theme.border_subtle)
-                    .child(
-                        div()
-                            .id("input-filter-rule-search")
-                            .h(px(28.0))
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .h_full()
-                                    .child(workspace.filter_rule_input.clone()),
-                            )
-                            .children(if !workspace.filter_search_query.is_empty() {
-                                Some(
-                                    div()
-                                        .id("btn-clear-filter-search")
-                                        .px(px(4.0))
-                                        .cursor_pointer()
-                                        .text_size(px(10.0))
-                                        .text_color(theme.text_muted)
-                                        .on_click(cx.listener(|this, _, _window, cx| {
-                                            this.filter_rule_input
-                                                .update(cx, |inp, cx| inp.set_text("", cx));
-                                            this.filter_search_query.clear();
-                                            cx.notify();
-                                        }))
-                                        .child("✕"),
-                                )
-                            } else {
-                                None
-                            }),
-                    ),
+                    .child(render_filter_rule_search_box(
+                        workspace,
+                        "input-filter-rule-search",
+                        "btn-clear-filter-search",
+                        28.0,
+                        None,
+                        cx,
+                    )),
             )
         } else {
             None

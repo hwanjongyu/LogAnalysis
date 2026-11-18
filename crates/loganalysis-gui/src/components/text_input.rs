@@ -980,23 +980,39 @@ mod tests {
 
     #[test]
     fn test_ime_composition_marked_range_semantics() {
-        // Test that marked_range is tracked accurately during IME preedit
-        let mut marked_range = Some(0..6);
-        assert!(marked_range.is_some(), "Preedit must be active");
+        let mut state = TextInputState::default();
 
-        // Simulating Submit action when IME is active: must not emit submit
-        let should_submit = marked_range.is_none();
-        assert!(!should_submit, "Must guard submit during active IME composition");
+        // 1. Insert committed ASCII prefix
+        state.replace_text_state(None, "prefix ");
+        assert_eq!(state.content.as_ref(), "prefix ");
+        assert!(state.marked_range.is_none());
+        assert_eq!(state.selected_range, 7..7);
 
-        // Simulating Cancel action when IME is active: clears preedit without closing modal
-        if marked_range.is_some() {
-            marked_range = None;
-        }
-        assert!(marked_range.is_none());
+        // 2. Start Hangul IME preedit composition and verify UTF-8 / UTF-16 range consistency
+        state.replace_and_mark_state(None, "가나", Some(0..2));
+        assert_eq!(state.content.as_ref(), "prefix 가나");
+        assert_eq!(state.marked_range, Some(7..13));
+        assert_eq!(state.selected_range, 7..13);
+        assert_eq!(state.range_to_utf16(&(7..13)), 7..9);
+        assert_eq!(state.range_to_utf16(&state.selected_range), 7..9);
 
-        // Subsequent Submit after IME committed
-        let should_submit_now = marked_range.is_none();
-        assert!(should_submit_now, "Can submit after IME commit");
+        // 3. Cancel active IME preedit (Escape): strips uncommitted slice, second cancel is a no-op
+        assert!(state.cancel_ime_preedit());
+        assert!(state.marked_range.is_none());
+        assert_eq!(state.content.as_ref(), "prefix ");
+        assert_eq!(state.selected_range, 7..7);
+        assert_eq!(state.pivot, 7);
+        assert!(!state.cancel_ime_preedit());
+
+        // 4. Re-enter preedit and commit final Hangul text
+        state.replace_and_mark_state(None, "한", None);
+        assert_eq!(state.content.as_ref(), "prefix 한");
+        assert_eq!(state.marked_range, Some(7..10));
+
+        state.replace_text_state(None, "한글");
+        assert!(state.marked_range.is_none());
+        assert_eq!(state.content.as_ref(), "prefix 한글");
+        assert_eq!(state.selected_range, 13..13);
     }
 
     #[test]

@@ -5,19 +5,15 @@ static ENV_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn test_ui_ux_log_level_color_presets_validity() {
-    let presets = [
-        ("🔴 ERROR", "error", "Red", "DarkRed"),
-        ("🟡 WARN", "warn", "Orange", "Black"),
-        ("🔵 INFO", "info", "Blue", "DarkBlue"),
-        ("🟣 DEBUG", "debug", "Purple", "Purple"),
-        ("⚪ TRACE", "trace", "Gray", "Black"),
-        ("⚡ FATAL", "fatal", "Salmon", "DarkRed"),
-        ("✓ SUCCESS", "success", "Green", "DarkGreen"),
-        ("⚙ ActivityTaskManager", "ActivityTaskManager", "Cyan", "Black"),
-        ("⚙ System", "System", "Blue", "DarkBlue"),
-    ];
+    use loganalysis_gui::modals::filter_edit_modal::QUICK_FILTER_PRESETS;
 
-    for (label, pattern, bg, fg) in presets {
+    assert!(
+        !QUICK_FILTER_PRESETS.is_empty(),
+        "QUICK_FILTER_PRESETS must contain at least one preset"
+    );
+
+    for &(label, pattern, bg, fg) in QUICK_FILTER_PRESETS {
+        assert!(!label.is_empty(), "Label in preset cannot be empty");
         assert!(!pattern.is_empty(), "Pattern for {} cannot be empty", label);
         assert!(
             parse_color_spec(bg, true).is_some() || bg.eq_ignore_ascii_case("none"),
@@ -284,15 +280,13 @@ fn test_dual_pane_split_and_timestamp_lockstep_correlation() {
                         \tat com.example.Server.parse(Server.java:42)\n\
                         01-01 10:00:06.000 W Server cleanup\n";
 
-    let mut a_dir = std::env::temp_dir();
-    a_dir.push(format!("pane_a_test_{}.log", uuid::Uuid::new_v4()));
-    std::fs::write(&a_dir, pane_a_data).unwrap();
-    let buf_a = FileLogBuffer::open(&a_dir).unwrap();
+    let mut a_file = tempfile::NamedTempFile::new().unwrap();
+    std::io::Write::write_all(&mut a_file, pane_a_data).unwrap();
+    let buf_a = FileLogBuffer::open(a_file.path()).unwrap();
 
-    let mut b_dir = std::env::temp_dir();
-    b_dir.push(format!("pane_b_test_{}.log", uuid::Uuid::new_v4()));
-    std::fs::write(&b_dir, pane_b_data).unwrap();
-    let buf_b = FileLogBuffer::open(&b_dir).unwrap();
+    let mut b_file = tempfile::NamedTempFile::new().unwrap();
+    std::io::Write::write_all(&mut b_file, pane_b_data).unwrap();
+    let buf_b = FileLogBuffer::open(b_file.path()).unwrap();
 
     let source_a = ActiveLogSource::File(buf_a);
     let source_b = ActiveLogSource::File(buf_b);
@@ -330,17 +324,11 @@ fn test_dual_pane_split_and_timestamp_lockstep_correlation() {
 
     // 4. Test boundary: if no timestamp within 10 lines backwards, returns None
     let unparsed_data = b"line without timestamp\n".repeat(15);
-    let mut unparsed_dir = std::env::temp_dir();
-    unparsed_dir.push(format!("unparsed_{}.log", uuid::Uuid::new_v4()));
-    std::fs::write(&unparsed_dir, unparsed_data).unwrap();
-    let unparsed_buf = FileLogBuffer::open(&unparsed_dir).unwrap();
+    let mut unparsed_file = tempfile::NamedTempFile::new().unwrap();
+    std::io::Write::write_all(&mut unparsed_file, &unparsed_data).unwrap();
+    let unparsed_buf = FileLogBuffer::open(unparsed_file.path()).unwrap();
     let unparsed_src = ActiveLogSource::File(unparsed_buf);
     assert_eq!(probe_parent_timestamp(&unparsed_src, 12), None);
-    let _ = std::fs::remove_file(unparsed_dir);
-
-    // Clean up temp files
-    let _ = std::fs::remove_file(a_dir);
-    let _ = std::fs::remove_file(b_dir);
 }
 
 #[test]
@@ -389,9 +377,9 @@ fn test_chronological_multi_file_merge_view_and_filtering() {
     use loganalysis_core::*;
     use std::io::Write;
 
-    let dir = std::env::temp_dir();
-    let client_path = dir.join("test_merge_client.log");
-    let server_path = dir.join("test_merge_server.log");
+    let dir = tempfile::TempDir::new().unwrap();
+    let client_path = dir.path().join("test_merge_client.log");
+    let server_path = dir.path().join("test_merge_server.log");
 
     let client_content = "11-06 12:00:01.000 Client sends request\n\
                           11-06 12:00:03.000 Client timeout waiting for reply\n\
@@ -459,30 +447,40 @@ fn test_chronological_multi_file_merge_view_and_filtering() {
     let filter_res = execute_filtering(&active_source, &[rule], true, None, 0).unwrap();
     assert_eq!(filter_res.total_matched_lines, 1);
     assert_eq!(filter_res.visible_indices, vec![2]);
-
-    // Cleanup
-    let _ = std::fs::remove_file(client_path);
-    let _ = std::fs::remove_file(server_path);
 }
 
 #[test]
 fn test_render_highlighted_text_zero_allocation() {
     use gpui::{HighlightStyle, SharedString};
     use loganalysis_core::CompiledMatcher;
-    use loganalysis_gui::components::log_view::render_highlighted_text;
+    use loganalysis_gui::components::log_view::{compute_highlight_ranges, render_highlighted_text};
+    use std::ops::Range;
 
     let text = SharedString::from("2026-11-06 12:00:00 Normal log line");
     let style = HighlightStyle::default();
 
-    // 1. Without matcher: returns element directly
+    // 1. Without matcher: returns empty ranges and renders element directly
+    assert_eq!(
+        compute_highlight_ranges(text.as_ref(), &None),
+        Vec::<Range<usize>>::new()
+    );
     let _elem1 = render_highlighted_text(text.clone(), &None, style);
 
-    // 2. With matcher and matches
+    // 2. With matcher and matches: computes exact byte span [20..26]
     let matcher = std::sync::Arc::new(CompiledMatcher::new("Normal", false, false).unwrap());
-    let _elem2 = render_highlighted_text(text.clone(), &Some(matcher.clone()), style);
+    assert_eq!(
+        compute_highlight_ranges(text.as_ref(), &Some(matcher.clone())),
+        vec![20..26]
+    );
+    let _elem2 = render_highlighted_text(text.clone(), &Some(matcher), style);
 
-    // 3. With matcher but no matches
-    let no_matcher = std::sync::Arc::new(CompiledMatcher::new("NonExistentPattern", false, false).unwrap());
+    // 3. With matcher but no matches: returns empty ranges
+    let no_matcher =
+        std::sync::Arc::new(CompiledMatcher::new("NonExistentPattern", false, false).unwrap());
+    assert_eq!(
+        compute_highlight_ranges(text.as_ref(), &Some(no_matcher.clone())),
+        Vec::<Range<usize>>::new()
+    );
     let _elem3 = render_highlighted_text(text, &Some(no_matcher), style);
 }
 
@@ -504,95 +502,151 @@ fn test_simple_tooltip_initialization() {
 
 #[test]
 fn test_recent_files_lru_and_persistence() {
-    use std::path::PathBuf;
-
-    let mut recents: Vec<PathBuf> = Vec::new();
-
-    // Helper matching workspace.add_recent_file logic
-    let add_rec = |list: &mut Vec<PathBuf>, p: PathBuf| {
-        list.retain(|item| item != &p);
-        list.insert(0, p);
-        list.truncate(5);
+    use loganalysis_gui::workspace::{
+        load_recent_files_from_path, push_recent_path, save_recent_files_to_path,
     };
 
-    let p1 = PathBuf::from("/tmp/log1.txt");
-    let p2 = PathBuf::from("/tmp/log2.txt");
-    let p3 = PathBuf::from("/tmp/log3.txt");
-    let p4 = PathBuf::from("/tmp/log4.txt");
-    let p5 = PathBuf::from("/tmp/log5.txt");
-    let p6 = PathBuf::from("/tmp/log6.txt");
+    let dir = tempfile::TempDir::new().unwrap();
+    let p1 = dir.path().join("log1.txt");
+    let p2 = dir.path().join("log2.txt");
+    let p3 = dir.path().join("log3.txt");
+    let p4 = dir.path().join("log4.txt");
+    let p5 = dir.path().join("log5.txt");
+    let p6 = dir.path().join("log6.txt");
+    let missing = dir.path().join("nonexistent.txt");
 
-    add_rec(&mut recents, p1.clone());
-    add_rec(&mut recents, p2.clone());
+    for p in [&p1, &p2, &p3, &p4, &p5, &p6] {
+        std::fs::write(p, b"log line\n").unwrap();
+    }
+
+    let mut recents = Vec::new();
+    push_recent_path(&mut recents, p1.clone());
+    push_recent_path(&mut recents, p2.clone());
     assert_eq!(recents, vec![p2.clone(), p1.clone()]);
 
-    // Duplicate re-order to front
-    add_rec(&mut recents, p1.clone());
+    // Duplicate promotion to index 0
+    push_recent_path(&mut recents, p1.clone());
     assert_eq!(recents, vec![p1.clone(), p2.clone()]);
 
-    // Truncate at 5 items
-    add_rec(&mut recents, p3.clone());
-    add_rec(&mut recents, p4.clone());
-    add_rec(&mut recents, p5.clone());
-    add_rec(&mut recents, p6.clone());
+    // Truncate at 5 items (evicts p2)
+    push_recent_path(&mut recents, p3.clone());
+    push_recent_path(&mut recents, p4.clone());
+    push_recent_path(&mut recents, p5.clone());
+    push_recent_path(&mut recents, p6.clone());
     assert_eq!(recents.len(), 5);
     assert_eq!(recents[0], p6);
-    assert_eq!(recents[4], p1); // p2 was evicted
+    assert_eq!(recents[4], p1);
 
-    // JSON serialization roundtrip
-    let serialized = serde_json::to_string_pretty(&recents).expect("serialization failed");
-    let deserialized: Vec<PathBuf> = serde_json::from_str(&serialized).expect("deserialization failed");
-    assert_eq!(deserialized, recents);
+    // Atomic persistence roundtrip on disk
+    let store_path = dir.path().join("nested/recent_files.json");
+    save_recent_files_to_path(&store_path, &recents).unwrap();
+    assert_eq!(load_recent_files_from_path(&store_path), recents);
+
+    // Missing-file filtering on load
+    save_recent_files_to_path(&store_path, &[p6.clone(), missing, p1.clone()]).unwrap();
+    assert_eq!(
+        load_recent_files_from_path(&store_path),
+        vec![p6.clone(), p1.clone()]
+    );
+
+    // Deleted file filtering on load
+    std::fs::remove_file(&p1).unwrap();
+    assert_eq!(load_recent_files_from_path(&store_path), vec![p6]);
+
+    // Malformed JSON recovery
+    std::fs::write(&store_path, b"{corrupted json").unwrap();
+    assert!(load_recent_files_from_path(&store_path).is_empty());
 }
 
 #[test]
 fn test_phase3_workstation_facets_and_telemetry() {
-    use loganalysis_core::parse_logcat_column_line;
-    use loganalysis_gui::modals::command_palette::{get_palette_commands, PaletteCommandId};
-    use std::collections::HashMap;
-
-    // 1. Tag extraction and ranking verification
-    let sample_lines = [
-        "11-06 18:00:00.123 1000 1000 I ActivityManager: Starting activity",
-        "11-06 18:00:00.124 1001 1001 D SurfaceFlinger: Frame submitted",
-        "11-06 18:00:00.125 1000 1000 I ActivityManager: Activity displayed",
-        "11-06 18:00:00.126 1002 1002 E AudioFlinger: Underrun detected",
-        "11-06 18:00:00.127 1000 1000 W ActivityManager: Slow binding",
-    ];
-
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for line in sample_lines {
-        let parsed = parse_logcat_column_line(line);
-        if let Some(tag) = parsed.tag {
-            let tag_trimmed = tag.trim();
-            if !tag_trimmed.is_empty() {
-                *counts.entry(tag_trimmed.to_string()).or_insert(0) += 1;
-            }
-        }
-    }
-
-    let mut sorted: Vec<(String, usize)> = counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-
-    assert_eq!(sorted[0], ("ActivityManager".to_string(), 3));
-    assert_eq!(sorted.len(), 3);
-
-    // 2. Memory telemetry display formatting
-    let format_bytes = |bytes: usize| -> String {
-        if bytes < 1024 * 1024 {
-            format!("{:.1} KB", bytes as f64 / 1024.0)
-        } else if bytes < 1024 * 1024 * 1024 {
-            format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-        } else {
-            format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-        }
+    use loganalysis_core::{
+        ActiveLogSource, FileLogBuffer, FilterTabData, MergedLogBuffer, StreamLogBuffer,
     };
+    use loganalysis_gui::modals::command_palette::{get_palette_commands, PaletteCommandId};
+    use loganalysis_gui::workspace::{
+        apply_facet_filter_to_tab, compute_facet_tags, format_byte_size,
+        format_source_memory_display,
+    };
+    use std::io::Write;
 
-    assert_eq!(format_bytes(512 * 1024), "512.0 KB");
-    assert_eq!(format_bytes(16 * 1024 * 1024), "16.0 MB");
-    assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2.00 GB");
+    // 1. Tag extraction and ranking via production compute_facet_tags
+    let sample_data = "\
+11-06 18:00:00.123 1000 1000 I ActivityManager: Starting activity\n\
+11-06 18:00:00.124 1001 1001 D SurfaceFlinger: Frame submitted\n\
+11-06 18:00:00.125 1000 1000 I ActivityManager: Activity displayed\n\
+11-06 18:00:00.126 1002 1002 E AudioFlinger: Underrun detected\n\
+11-06 18:00:00.127 1000 1000 W ActivityManager: Slow binding\n";
 
-    // 3. Verify Command Palette shortcut alignment (no Shift+F text input collision)
+    let mut tmp = tempfile::NamedTempFile::new().unwrap();
+    tmp.write_all(sample_data.as_bytes()).unwrap();
+    tmp.flush().unwrap();
+
+    let file_buf = FileLogBuffer::open(tmp.path()).unwrap();
+    let file_byte_size = file_buf.byte_size();
+    let file_source = ActiveLogSource::File(file_buf);
+
+    let facets = compute_facet_tags(&file_source);
+    assert_eq!(facets.len(), 3);
+    assert_eq!(facets[0], ("ActivityManager".to_string(), 3));
+
+    // 2. Production apply_facet_filter_to_tab state transitions and dirty flag
+    let mut tab = FilterTabData::default();
+    assert!(!tab.modified);
+
+    // Initial add (include)
+    let _status_add = apply_facet_filter_to_tab(&mut tab, "ActivityManager", false);
+    assert!(tab.modified, "Initial facet add must mark tab.modified");
+    assert_eq!(tab.filters.len(), 1);
+    assert_eq!(tab.filters[0].text, "ActivityManager");
+    assert!(!tab.filters[0].exclude);
+    assert!(tab.filters[0].active);
+
+    // Toggle existing rule active -> inactive
+    tab.modified = false;
+    let _status_toggle = apply_facet_filter_to_tab(&mut tab, "ActivityManager", false);
+    assert!(tab.modified, "Toggling facet rule must mark tab.modified");
+    assert!(!tab.filters[0].active);
+
+    // Switch include -> exclude
+    tab.modified = false;
+    let _status_switch = apply_facet_filter_to_tab(&mut tab, "ActivityManager", true);
+    assert!(tab.modified, "Switching facet mode must mark tab.modified");
+    assert!(tab.filters[0].exclude);
+    assert_eq!(tab.filters[0].bg_color, "None");
+    assert_eq!(tab.filters[0].text_color, "None");
+    assert!(tab.filters[0].active);
+
+    // 3. Production memory telemetry formatting across all ActiveLogSource variants + byte size boundaries
+    assert_eq!(
+        format_source_memory_display(None),
+        ("0 MB".to_string(), "Idle")
+    );
+    assert_eq!(
+        format_source_memory_display(Some(&file_source)),
+        (format_byte_size(file_byte_size), "MMap")
+    );
+
+    let mut stream_buf = StreamLogBuffer::new(100, 10);
+    stream_buf.append_chunk(vec!["line 1".into(), "line 2".into()]);
+    let stream_source = ActiveLogSource::Stream(stream_buf);
+    assert_eq!(
+        format_source_memory_display(Some(&stream_source)),
+        (format_byte_size(2 * 128), "Heap")
+    );
+
+    let merged_buf = MergedLogBuffer::open_multiple(&[tmp.path().to_path_buf()]).unwrap();
+    let merged_source = ActiveLogSource::Merged(merged_buf);
+    assert_eq!(
+        format_source_memory_display(Some(&merged_source)),
+        (format_byte_size(5 * 128), "Merged")
+    );
+
+    assert_eq!(format_byte_size(512 * 1024), "512.0 KB");
+    assert_eq!(format_byte_size(16 * 1024 * 1024), "16.0 MB");
+    assert_eq!(format_byte_size(2 * 1024 * 1024 * 1024), "2.00 GB");
+
+    // 4. Verify Command Palette shortcut alignment (no Shift+F text input collision)
     let cmds = get_palette_commands();
     let dock_cmd = cmds
         .iter()
@@ -609,25 +663,25 @@ fn test_phase3_workstation_facets_and_telemetry() {
 
 #[test]
 fn test_resizable_filter_dock_clamping_and_reset() {
-    // Test clamp bounds and reset defaults for Filter Dock resizer
-    let default_width = 310.0f32;
-    let default_height = 220.0f32;
+    use loganalysis_gui::workspace::{
+        clamp_filter_dock_height, clamp_filter_dock_width, default_filter_dock_size,
+        DEFAULT_FILTER_DOCK_HEIGHT, DEFAULT_FILTER_DOCK_WIDTH,
+    };
 
     // 1. Left dock width clamping [180.0, 800.0]
-    let clamp_width = |start: f32, delta: f32| (start + delta).clamp(180.0, 800.0);
-    assert_eq!(clamp_width(default_width, 100.0), 410.0);
-    assert_eq!(clamp_width(default_width, 999.0), 800.0); // max clamped
-    assert_eq!(clamp_width(default_width, -500.0), 180.0); // min clamped
+    assert_eq!(clamp_filter_dock_width(DEFAULT_FILTER_DOCK_WIDTH, 100.0), 410.0);
+    assert_eq!(clamp_filter_dock_width(DEFAULT_FILTER_DOCK_WIDTH, 999.0), 800.0);
+    assert_eq!(clamp_filter_dock_width(DEFAULT_FILTER_DOCK_WIDTH, -500.0), 180.0);
 
     // 2. Bottom dock height clamping [100.0, 700.0]
-    let clamp_height = |start: f32, delta: f32| (start + delta).clamp(100.0, 700.0);
-    assert_eq!(clamp_height(default_height, 80.0), 300.0);
-    assert_eq!(clamp_height(default_height, 1000.0), 700.0); // max clamped
-    assert_eq!(clamp_height(default_height, -300.0), 100.0); // min clamped
+    assert_eq!(clamp_filter_dock_height(DEFAULT_FILTER_DOCK_HEIGHT, 80.0), 300.0);
+    assert_eq!(clamp_filter_dock_height(DEFAULT_FILTER_DOCK_HEIGHT, 1000.0), 700.0);
+    assert_eq!(clamp_filter_dock_height(DEFAULT_FILTER_DOCK_HEIGHT, -300.0), 100.0);
 
     // 3. Preset defaults
-    assert_eq!(default_width, 310.0);
-    assert_eq!(default_height, 220.0);
+    assert_eq!(DEFAULT_FILTER_DOCK_WIDTH, 310.0);
+    assert_eq!(DEFAULT_FILTER_DOCK_HEIGHT, 220.0);
+    assert_eq!(default_filter_dock_size(), (310.0, 220.0));
 }
 
 #[test]

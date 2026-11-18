@@ -4,7 +4,6 @@ pub struct SelectionModel {
     pub anchor_source_idx: Option<usize>,
 }
 
-#[allow(dead_code)]
 impl SelectionModel {
     pub fn new() -> Self {
         Self::default()

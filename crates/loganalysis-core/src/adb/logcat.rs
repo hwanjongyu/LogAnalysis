@@ -111,17 +111,7 @@ pub fn start_logcat_stream(
     cmd.stderr(Stdio::null());
 
     #[cfg(target_os = "linux")]
-    unsafe {
-        use std::os::unix::process::CommandExt;
-        let parent_pid = libc::getpid();
-        cmd.pre_exec(move || {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-            if libc::getppid() != parent_pid {
-                libc::_exit(1);
-            }
-            Ok(())
-        });
-    }
+    super::configure_linux_pdeathsig(&mut cmd);
 
     let child_arc = Arc::new(Mutex::new(None));
     let child_clone = Arc::clone(&child_arc);
@@ -330,6 +320,47 @@ pub fn stream_log_lines<R: std::io::Read>(
 mod tests {
     use super::*;
     use crossbeam_channel::bounded;
+    use std::io::{self, Read};
+    use std::sync::{Condvar, Mutex};
+
+    struct SignalingReader {
+        chunks: Vec<&'static [u8]>,
+        index: usize,
+        notify_at_index: usize,
+        signal: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl Read for SignalingReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.index == self.notify_at_index {
+                let (lock, cvar) = &*self.signal;
+                let mut ready = lock.lock().unwrap();
+                *ready = true;
+                cvar.notify_all();
+            }
+            if self.index >= self.chunks.len() {
+                return Ok(0);
+            }
+            let chunk = self.chunks[self.index];
+            let to_copy = chunk.len().min(buf.len());
+            buf[..to_copy].copy_from_slice(&chunk[..to_copy]);
+            if to_copy == chunk.len() {
+                self.index += 1;
+            } else {
+                self.chunks[self.index] = &chunk[to_copy..];
+            }
+            Ok(to_copy)
+        }
+    }
+
+    fn wait_until_ready(signal: &(Mutex<bool>, Condvar)) {
+        let (lock, cvar) = signal;
+        let guard = lock.lock().unwrap();
+        let (guard, timeout) = cvar
+            .wait_timeout_while(guard, Duration::from_secs(2), |ready| !*ready)
+            .unwrap();
+        assert!(*guard && !timeout.timed_out(), "Timed out waiting for signaling reader");
+    }
 
     #[test]
     fn test_invalid_device_serial_rejected() {
@@ -368,24 +399,29 @@ mod tests {
 
     #[test]
     fn test_stream_log_lines_stop_flag_unblocks_saturated_channel() {
-        let (tx, _rx) = bounded(1);
-        // Saturate the bounded channel with 1 item
-        tx.send(vec!["saturate".to_string()]).unwrap();
-
+        let (tx, rx) = bounded(1);
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_clone = stop_flag.clone();
+        let signal = Arc::new((Mutex::new(false), Condvar::new()));
+        let signal_clone = Arc::clone(&signal);
 
-        // Feed multiple lines so buffer flushes
-        let input_lines = "11-08 04:00:00.000 1 1 I Tag: Line 1\n".repeat(150);
+        // Read 0 flushes a single line to fill bounded(1); Read 1 triggers signal and enters send_timeout
         let worker_tx = tx.clone();
-
         let worker = thread::spawn(move || {
-            let reader = BufReader::new(input_lines.as_bytes());
+            let reader = BufReader::new(SignalingReader {
+                chunks: vec![
+                    b"11-08 04:00:00.000 1 1 I Tag: Fill\n",
+                    b"11-08 04:00:00.000 1 1 I Tag: Saturated\n",
+                ],
+                index: 0,
+                notify_at_index: 1,
+                signal: signal_clone,
+            });
             stream_log_lines(reader, worker_tx, stop_flag_clone);
         });
 
-        // Allow worker to start and block inside send_timeout on saturated channel
-        thread::sleep(Duration::from_millis(30));
+        wait_until_ready(&signal);
+        assert!(rx.is_full(), "Channel must be saturated once second read starts");
 
         // Signal stop flag
         let start = Instant::now();

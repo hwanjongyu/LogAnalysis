@@ -16,7 +16,7 @@ ignore = [
 ]
 
 [licenses]
-# Workspace crates currently omit `license` in Cargo.toml; ignore private/unpublished workspace packages cleanly
+# Both workspace crates declare license = "MIT"; private = { ignore = true } skips unpublished workspace packages cleanly
 private = { ignore = true }
 allow = [
     "MIT",

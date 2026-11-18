@@ -9,7 +9,15 @@ mod search;
 mod selection;
 mod split_view;
 
-#[allow(unused_imports)]
+pub use dock::{
+    apply_facet_filter_to_tab, clamp_filter_dock_height, clamp_filter_dock_width,
+    compute_facet_tags, default_filter_dock_size, DEFAULT_FILTER_DOCK_HEIGHT,
+    DEFAULT_FILTER_DOCK_WIDTH, MAX_FILTER_DOCK_HEIGHT, MAX_FILTER_DOCK_WIDTH,
+    MIN_FILTER_DOCK_HEIGHT, MIN_FILTER_DOCK_WIDTH,
+};
+pub use recent_files::{
+    load_recent_files_from_path, push_recent_path, save_recent_files_to_path,
+};
 pub use split_view::probe_parent_timestamp;
 
 
@@ -292,6 +300,7 @@ impl LogAnalysisWorkspace {
 
         let mut split_view = SplitViewController::new();
         split_view.is_split_vertical = true;
+        let (default_dock_width, default_dock_height) = default_filter_dock_size();
 
         let mut workspace = Self {
             focus_handle: cx.focus_handle(),
@@ -351,8 +360,8 @@ impl LogAnalysisWorkspace {
             is_facets_visible: true,
             facet_tags: Vec::new(),
             has_auto_sampled_facets: false,
-            filter_dock_width: 310.0,
-            filter_dock_height: 220.0,
+            filter_dock_width: default_dock_width,
+            filter_dock_height: default_dock_height,
             is_resizing_filter_dock: false,
             filter_dock_drag_start_pos: None,
             filter_dock_drag_start_size: 0.0,
@@ -873,29 +882,9 @@ impl LogAnalysisWorkspace {
             .map(|r| r.visible_indices.len())
             .unwrap_or(0);
 
-        if row_count == 0 {
-            return;
+        if scroll_handle_to_mouse_y(&self.scroll_handle, row_count, self.font_size, mouse_y) {
+            cx.notify();
         }
-
-        let bounds = self.scroll_handle.0.borrow().base_handle.bounds();
-        let track_top: f32 = bounds.origin.y.into();
-        let track_height: f32 = bounds.size.height.into();
-        let mouse_y_f32: f32 = mouse_y.into();
-
-        if track_height <= 0.0 {
-            return;
-        }
-
-        let relative_y = (mouse_y_f32 - track_top).clamp(0.0, track_height);
-        let ratio = (relative_y / track_height).clamp(0.0, 1.0);
-        let font_size_f32: f32 = self.font_size.into();
-        let row_height_f32 = font_size_f32 * 1.55;
-        let visible_items = (track_height / row_height_f32).floor() as usize;
-        let max_top_idx = row_count.saturating_sub(visible_items.max(1));
-        let target_top_idx = ((ratio * max_top_idx as f32).round() as usize).min(max_top_idx);
-
-        self.scroll_handle.scroll_to_item_strict(target_top_idx, ScrollStrategy::Top);
-        cx.notify();
     }
 
     /// Scrolls the secondary log viewport based on mouse vertical position in the scrollbar track
@@ -907,32 +896,17 @@ impl LogAnalysisWorkspace {
             .map(|r| r.visible_indices.len())
             .unwrap_or(0);
 
-        if row_count == 0 {
-            return;
+        if scroll_handle_to_mouse_y(
+            &self.secondary_scroll_handle,
+            row_count,
+            self.font_size,
+            mouse_y,
+        ) {
+            cx.notify();
         }
-
-        let bounds = self.secondary_scroll_handle.0.borrow().base_handle.bounds();
-        let track_top: f32 = bounds.origin.y.into();
-        let track_height: f32 = bounds.size.height.into();
-        let mouse_y_f32: f32 = mouse_y.into();
-
-        if track_height <= 0.0 {
-            return;
-        }
-
-        let relative_y = (mouse_y_f32 - track_top).clamp(0.0, track_height);
-        let ratio = (relative_y / track_height).clamp(0.0, 1.0);
-        let font_size_f32: f32 = self.font_size.into();
-        let row_height_f32 = font_size_f32 * 1.55;
-        let visible_items = (track_height / row_height_f32).floor() as usize;
-        let max_top_idx = row_count.saturating_sub(visible_items.max(1));
-        let target_top_idx = ((ratio * max_top_idx as f32).round() as usize).min(max_top_idx);
-
-        self.secondary_scroll_handle.scroll_to_item_strict(target_top_idx, ScrollStrategy::Top);
-        cx.notify();
     }
 
-    /// Adds a new filter tab (Ctrl+T)
+    /// Toggles between Light and Dark theme (Ctrl+U / F10)
     pub fn toggle_theme(&mut self, cx: &mut Context<Self>) {
         self.is_dark_theme = !self.is_dark_theme;
         self.theme = if self.is_dark_theme {
@@ -1000,39 +974,9 @@ impl LogAnalysisWorkspace {
         }
     }
 
-    /// Toggles filter dock visibility between shown and hidden
     /// Returns human-readable buffer memory footprint and storage mechanism
     pub fn get_buffer_memory_display(&self) -> (String, &'static str) {
-        if let Some(source) = &self.log_source {
-            match &**source {
-                ActiveLogSource::File(fb) => {
-                    let bytes = fb.byte_size();
-                    if bytes < 1024 * 1024 {
-                        (format!("{:.1} KB", bytes as f64 / 1024.0), "MMap")
-                    } else if bytes < 1024 * 1024 * 1024 {
-                        (format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0)), "MMap")
-                    } else {
-                        (format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0)), "MMap")
-                    }
-                }
-                ActiveLogSource::Stream(sb) => {
-                    let lines = sb.line_count();
-                    let approx_bytes = lines * 128;
-                    if approx_bytes < 1024 * 1024 {
-                        (format!("{:.1} KB", approx_bytes as f64 / 1024.0), "Heap")
-                    } else {
-                        (format!("{:.1} MB", approx_bytes as f64 / (1024.0 * 1024.0)), "Heap")
-                    }
-                }
-                ActiveLogSource::Merged(mb) => {
-                    let lines = mb.line_count();
-                    let approx_bytes = lines * 128;
-                    (format!("{:.1} MB", approx_bytes as f64 / (1024.0 * 1024.0)), "Merged")
-                }
-            }
-        } else {
-            ("0 MB".to_string(), "Idle")
-        }
+        format_source_memory_display(self.log_source.as_deref())
     }
     /// Clears derived analytics, selection, bookmarks, facets, and cancels in-flight background work when switching primary log sources.
     pub(crate) fn reset_derived_log_state(&mut self) {
@@ -1049,27 +993,6 @@ impl LogAnalysisWorkspace {
         self.heatmap_data = None;
         self.timeline_data = None;
         self.facet_tags.clear();
-    }
-
-    /// Recomputes heatmap density and EPS timeline data for the active filter result.
-    #[allow(dead_code)]
-    pub(crate) fn update_analytics_data(&mut self) {
-        if let (Some(filter_res), Some(src_ref)) = (&self.filter_result, &self.log_source) {
-            self.heatmap_data = Some(Arc::new(HeatmapData::compute(
-                &**src_ref,
-                &filter_res.visible_indices,
-                &filter_res.visible_styles,
-                200,
-            )));
-            if self.is_timeline_visible {
-                self.timeline_data = Some(Arc::new(EpsTimelineData::compute(
-                    &**src_ref,
-                    &filter_res.visible_indices,
-                    &filter_res.visible_styles,
-                    80,
-                )));
-            }
-        }
     }
 
     /// Asynchronously recomputes heatmap density and EPS timeline data off the UI thread.
@@ -1179,6 +1102,60 @@ impl LogAnalysisWorkspace {
         self.status_text = format!("Added quick filter for tag: {}", trimmed).into();
     }
 
+}
+
+/// Formats a byte count uniformly into human-readable `KB`, `MB`, or `GB`.
+pub fn format_byte_size(bytes: usize) -> String {
+    const MB: usize = 1024 * 1024;
+    const GB: usize = 1024 * 1024 * 1024;
+    if bytes < MB {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < GB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    }
+}
+
+/// Formats human-readable buffer memory footprint and storage backend label for an optional [`ActiveLogSource`].
+pub fn format_source_memory_display(source: Option<&ActiveLogSource>) -> (String, &'static str) {
+    match source {
+        Some(ActiveLogSource::File(fb)) => (format_byte_size(fb.byte_size()), "MMap"),
+        Some(ActiveLogSource::Stream(sb)) => (format_byte_size(sb.line_count() * 128), "Heap"),
+        Some(ActiveLogSource::Merged(mb)) => (format_byte_size(mb.line_count() * 128), "Merged"),
+        None => ("0 MB".to_string(), "Idle"),
+    }
+}
+
+fn scroll_handle_to_mouse_y(
+    handle: &UniformListScrollHandle,
+    row_count: usize,
+    font_size: Pixels,
+    mouse_y: Pixels,
+) -> bool {
+    if row_count == 0 {
+        return false;
+    }
+
+    let bounds = handle.0.borrow().base_handle.bounds();
+    let track_top: f32 = bounds.origin.y.into();
+    let track_height: f32 = bounds.size.height.into();
+    let mouse_y_f32: f32 = mouse_y.into();
+
+    if track_height <= 0.0 {
+        return false;
+    }
+
+    let relative_y = (mouse_y_f32 - track_top).clamp(0.0, track_height);
+    let ratio = (relative_y / track_height).clamp(0.0, 1.0);
+    let font_size_f32: f32 = font_size.into();
+    let row_height_f32 = crate::components::log_view::log_row_height_px(font_size_f32);
+    let visible_items = (track_height / row_height_f32).floor() as usize;
+    let max_top_idx = row_count.saturating_sub(visible_items.max(1));
+    let target_top_idx = ((ratio * max_top_idx as f32).round() as usize).min(max_top_idx);
+
+    handle.scroll_to_item_strict(target_top_idx, ScrollStrategy::Top);
+    true
 }
 
 /// Advances and returns a monotonic async load generation token.
@@ -1556,5 +1533,49 @@ mod tests {
         let open_b = next_source_generation(&mut primary_gen);
         assert!(!is_source_generation_current(primary_gen, open_a));
         assert!(is_source_generation_current(primary_gen, open_b));
+    }
+
+    #[test]
+    fn test_format_byte_size_and_source_memory_display() {
+        use super::{format_byte_size, format_source_memory_display};
+        use loganalysis_core::{FileLogBuffer, MergedLogBuffer};
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        assert_eq!(format_byte_size(0), "0.0 KB");
+        assert_eq!(format_byte_size(512 * 1024), "512.0 KB");
+        assert_eq!(format_byte_size(16 * 1024 * 1024), "16.0 MB");
+        assert_eq!(format_byte_size(2 * 1024 * 1024 * 1024), "2.00 GB");
+
+        assert_eq!(
+            format_source_memory_display(None),
+            ("0 MB".to_string(), "Idle")
+        );
+
+        let mut tmp_file = NamedTempFile::new().expect("create temp log file");
+        writeln!(tmp_file, "11-06 18:00:00.000 100 100 I Tag: line one").unwrap();
+        tmp_file.flush().unwrap();
+
+        let file_buf = FileLogBuffer::open(tmp_file.path()).unwrap();
+        let file_src = ActiveLogSource::File(file_buf);
+        let (file_mem, file_backend) = format_source_memory_display(Some(&file_src));
+        assert_eq!(file_backend, "MMap");
+        assert!(file_mem.ends_with("KB"));
+
+        let mut stream_buf = StreamLogBuffer::new(100, 10);
+        stream_buf.append_chunk(vec!["line a".into(), "line b".into()]);
+        let stream_src = ActiveLogSource::Stream(stream_buf);
+        assert_eq!(
+            format_source_memory_display(Some(&stream_src)),
+            (format_byte_size(2 * 128), "Heap")
+        );
+
+        let merged_buf =
+            MergedLogBuffer::open_multiple(&[tmp_file.path().to_path_buf()]).unwrap();
+        let merged_src = ActiveLogSource::Merged(merged_buf);
+        assert_eq!(
+            format_source_memory_display(Some(&merged_src)),
+            (format_byte_size(128), "Merged")
+        );
     }
 }

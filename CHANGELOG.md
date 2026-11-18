@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Root `LICENSE`**: Added standard MIT License file (`Copyright (c) 2026 Drew Yu`).
+- **Extracted Production Helpers & Coverage**: Extracted reusable workspace and GUI helpers (`apply_facet_filter_to_tab`, `clamp_filter_dock_width`, `clamp_filter_dock_height`, `default_filter_dock_size`, `compute_highlight_ranges`, `LOG_ROW_HEIGHT_MULTIPLIER`, `log_row_height_px`, `format_byte_size`, `format_source_memory_display`, `QUICK_FILTER_PRESETS`, `push_recent_path`, `load_recent_files_from_path`, `save_recent_files_to_path`, `build_desktop_entry_content`, `write_if_changed`) along with comprehensive `contrast.rs` and `searcher.rs` unit test suites.
+
+### Changed
+- **Documentation & Configuration Alignment**: Synchronized `README.md`, `PROJECT.md`, `CHANGELOG.md`, `docs/INVARIANTS.md`, `deny.toml`, and `scripts/status_dashboard.sh` with verified codebase behavior, removing unverified benchmark claims and correcting historical symbol/shortcut inaccuracies.
+- **Deduplication & Build/Startup Polish**: Unified viewport builders, unstructured line wrappers, heatmap tick coalescing (`build_heatmap_ticks`), scrollbar ratio dragging (`scroll_handle_to_mouse_y`), split-view timestamp correlation (`sync_pane_to_timestamp`), filter dock search boxes (`render_filter_rule_search_box`), atomic file writes (`write_file_atomically`), Linux `PR_SET_PDEATHSIG` configuration (`configure_linux_pdeathsig`), multi-arch `libxkbcommon-x11` discovery in `build.rs`, and conditional non-blocking desktop integration in `ensure_desktop_integration`.
+- **Test Quality Strengthening**: Replaced local simulation tests with calls to real production symbols, migrated temporary file tests to `tempfile`, and replaced `std::thread::sleep` synchronization in tests with deterministic signaling/yield loops.
+
+### Fixed
+- **Facet Dirty Flag Parity**: Fixed `add_facet_filter` / `apply_facet_filter_to_tab` so toggling or switching an existing facet rule always marks filter tabs as modified.
+- **Dead Code & Lint Cleanup**: Removed obsolete stubs (`render_titlebar`, `render_toolbar`, `update_analytics_data`, `build_*_dialog`), stale `#[allow(...)]` attributes, and stale doc comments.
+- **`fix-all-bugs` Remediation**: Incorporated upstream bugfixes and regression hardening prior to release cleanup.
+
+---
+
 ## [0.2.4] - 2026-11-14
 
 ### Added
@@ -17,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Streaming CoW Buffer & GUI Modularization (`MAJ-07`, `MAJ-11`, `MAJ-02`)**: Refactored `StreamLogBuffer` to `1024`-line Copy-on-Write (`Arc<Vec<Arc<str>>>`) pages with `SharedStreamBuffer`, wired headless controllers (`AdbController`, `BookmarkController`, `SearchController`, `SplitViewController`), and split `loganalysis-gui` into `[lib]` and thin `[[bin]]` targets.
 - **Buffered Logging & OS User Dir Precedence (`MIN-03`)**: Switched `loganalysis-gui` logging to cache `BufWriter<File>` (`LogWriterState`), prefer the OS user log directory exclusively (`cwd` fallback only when env lookup returns `None`), flush immediately on `ERROR`/`CRITICAL`/`CRITICAL_PANIC`/`FATAL` and clean exit, flush buffered logs ahead of crash reports, and isolate tests from repo checkout files.
-- **Supply Chain & CI Hardening (`MAJ-01`, `MAJ-12`, `INF-06`)**: Enforced `cargo clippy -- -D warnings`, `RUSTDOCFLAGS="-D warnings" cargo doc`, `cargo audit`, and `cargo deny check` in CI; pinned `appimagetool` to tag `13` with SHA256 verification; pinned `crates.io-index` allowlist in `deny.toml`.
+- **Supply Chain & CI Hardening (`MAJ-01`, `MAJ-12`, `INF-06`)**: Enforced `cargo clippy -- -D warnings`, `RUSTDOCFLAGS="-D warnings" cargo doc`, `cargo audit`, and `cargo deny check` in CI; pinned `appimagetool` to tag `1.9.1` with SHA256 verification; pinned `crates.io-index` allowlist in `deny.toml`.
 
 ### Fixed
 - **Streaming Filter Reconciliation & Selection Sync (`CRIT-01`, `CRIT-02`)**: Tracked cumulative ring-buffer trims via `reconcile_snapshot_filter_result` and decoupled `SelectionModel::shift_on_trim(dropped_visible_rows, raw_trimmed_count)`.
@@ -40,8 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Windows Log Paths**: `%LOCALAPPDATA%` / `%APPDATA%` fallbacks in log path resolution.
 
 ### Changed
-- **Background Streaming Analytics**: `HeatmapData` and `EpsTimelineData` computation moved off the GPUI main thread, with an `analytics_seq` monotonic guard against out-of-order batch results.
-- **Workspace Modularization**: Split the ~3,200-line `workspace.rs` into focused `src/workspace/` and `src/controllers/` modules (each < 1,000 lines).
+- **Background Streaming Analytics**: `HeatmapData` and `EpsTimelineData` computation moved off the GPUI main thread, with an `analytics_cancel_gen` monotonic guard against out-of-order batch results.
+- **Workspace Modularization**: Split the ~3,200-line `workspace.rs` into focused `src/workspace/` and `src/controllers/` modules.
 - **Decluttered Toolbar**: Inline shortcut badges removed from action buttons; shortcuts are surfaced via tooltips and the Command Palette.
 - **CI**: macOS runners migrated from `macos-13` to `macos-15`; fixed release workflow input tag fallback.
 
@@ -86,8 +104,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Zero-Allocation Viewport Rendering**: Refactored `render_highlighted_text` to accept `SharedString` and directly return `into_any_element()` when unhighlighted, eliminating ~3,600 heap allocations per second during smooth scrolling.
-- **Scrollbar Heatmap Quad Coalescing**: Culled `LineSeverity::Normal` buckets and coalesced contiguous severity buckets in `render_scrollbar_track`, reducing GPU heatmap quad allocations by ~90% per render tick.
-- **EPS Timeline Profiling Throttling**: Guarded `EpsTimelineData::compute` behind `is_timeline_visible` during live streaming ingestion, computing timeline bins lazily only when toggled on.
+- **Scrollbar Heatmap Quad Coalescing**: Culled `LineSeverity::Normal` buckets and coalesced contiguous severity buckets in `render_log_list`, reducing GPU heatmap quad allocations per render tick.
+- **EPS Timeline Profiling Throttling**: Guarded `EpsTimelineData::compute` behind `is_timeline_visible` during live ADB streaming (`workspace/adb.rs`) and `toggle_eps_timeline`, whereas `reapply_filters` (`workspace/mod.rs`) computes timeline bins eagerly.
 - **Column Parser Pointer Slicing**: Replaced fragile substring matching with subslice pointer arithmetic in `parse_logcat_column_line`, strictly enforcing standard logcat severities (`V`, `D`, `I`, `W`, `E`, `F`).
 
 ### Security
@@ -100,14 +118,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Dual-Pane Split View (`Ctrl+\`)**: Side-by-side or stacked split view with timestamp lockstep synchronization (`[INV-11]`) for cross-log causal comparison.
-- **Chronological Multi-File Merge View (`Ctrl+Shift+M`)**: Interleaves multiple asynchronous log files into a unified timeline using priority heap k-way merge.
-- **Structured Column Grid View (`Ctrl+G`)**: High-performance grid mode parsing logcat timestamps, PID/TID, tags, and severity levels into dedicated sortable columns.
+- **Chronological Multi-File Merge View (`Ctrl+Shift+M`)**: Interleaves multiple asynchronous log files into a unified timeline using stable chronological sorting (`entries.sort_by_key(...)`).
+- **Structured Column Grid View (`Ctrl+G`)**: High-performance grid mode parsing logcat timestamps, PID/TID, tags, and severity levels into dedicated fixed-width columns.
 - **Interactive Command Palette (`Ctrl+P` / `Ctrl+Shift+P`)**: Fuzzy-searchable catalog of all application actions, filter presets, and viewing modes.
-- **Interactive Bookmarks & Notes (`F2`, `Ctrl+B`)**: Slide-over bookmark drawer with inline annotations (`Alt+Enter`) and cyclic navigation (`F2` / `Shift+F2`).
+- **Interactive Bookmarks & Notes (`F2`, `Ctrl+B`)**: Slide-over bookmark drawer with inline annotations (`Alt+Enter`), `F2` / `Ctrl+F2` toggle, and `Shift+F2` / `Alt+F2` previous/next cyclic navigation.
 - **Interactive Offline HTML Incident Reports**: Export self-contained HTML reports with embedded CSS styling, filter tags, and bookmarks.
 - **Real-Time Throughput Sparkline & EPS Timeline**: Live events-per-second visual histogram with statistical 3σ anomaly spike detection.
 - **Delta-Time Inspector (Δt)**: Real-time visual latency badges measuring microsecond intervals between consecutive log lines.
-- **Automotive Preset Profiles**: Quick-import presets for Android Automotive OS (VHAL, CarService, Audio/Camera HALs).
+- **Built-In Quick Filter Presets**: Modal quick-import presets (`ERROR`, `WARN`, `INFO`, `DEBUG`, `TRACE`, `FATAL`, `SUCCESS`, `ActivityTaskManager`, `System`) defined in `modals/filter_edit_modal.rs`.
 - **GPU Scrollbar Error Heatmap**: Overview rail displaying distribution of errors and warnings across the entire log buffer.
 
 ### Changed
@@ -120,7 +138,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Interactive Window Resize Borders**: 8-direction resize handles for Wayland Client-Side Decorations (CSD).
-- **CLI Flags**: Added `--version` / `-V` support with titlebar and statusbar version badges.
+- **CLI Flags**: Added `--version` / `-V` / `-v` support with status bar and onboarding view version badges.
 - **Auto-Detection for Wayland CSD**: Automatically detects window manager capabilities and adapts decorations.
 - **Custom X11 Window Handle**: Non-blocking asynchronous window attachment resolving native file dialog lockups.
 

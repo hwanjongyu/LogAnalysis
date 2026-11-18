@@ -147,15 +147,3 @@ pub fn render_window_controls(
     )
 }
 
-/// Backwards compatibility stub for render_titlebar.
-/// In the unified header architecture, all titlebar features are consolidated into the 38px unified header.
-#[allow(dead_code)]
-pub fn render_titlebar(
-    _workspace: &LogAnalysisWorkspace,
-    _window: &mut Window,
-    _cx: &mut Context<LogAnalysisWorkspace>,
-) -> impl IntoElement {
-    div().id("titlebar-empty")
-}
-
-

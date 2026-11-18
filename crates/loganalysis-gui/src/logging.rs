@@ -299,36 +299,9 @@ pub fn init_crash_handler() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use tempfile::TempDir;
 
     static LOG_TEST_MUTEX: Mutex<()> = Mutex::new(());
-    static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    struct TestTempDir(PathBuf);
-
-    impl TestTempDir {
-        fn new(prefix: &str) -> Self {
-            let seq = TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let dir = std::env::temp_dir().join(format!(
-                "loganalysis_gui_test_{prefix}_{}_{}",
-                std::process::id(),
-                seq
-            ));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("create temp test dir");
-            Self(dir)
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TestTempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     struct ResetLogWriterOnDrop;
 
@@ -434,11 +407,11 @@ mod tests {
     #[test]
     fn test_safe_write_stderr_resilience() {
         let _guard = LOG_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = TestTempDir::new("stderr_resilience");
+        let log_dir = TempDir::new().expect("create temp test dir");
         let _reset = ResetLogWriterOnDrop;
         reset_log_writer_for_test();
 
-        let temp_log = temp_dir.path().join("loganalysis.log");
+        let temp_log = log_dir.path().join("loganalysis.log");
 
         // Must never panic regardless of bytes or stdio state
         safe_write_stderr(b"Test safe stderr write\n");
@@ -500,12 +473,12 @@ mod tests {
     #[test]
     fn test_buffered_logging_defers_until_flush_and_flushes_errors_immediately() {
         let _guard = LOG_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = TestTempDir::new("buffered_logging");
+        let log_dir = TempDir::new().expect("create temp test dir");
         let _reset = ResetLogWriterOnDrop;
         reset_log_writer_for_test();
 
-        let log1 = temp_dir.path().join("first.log");
-        let log2 = temp_dir.path().join("second.log");
+        let log1 = log_dir.path().join("first.log");
+        let log2 = log_dir.path().join("second.log");
 
         // INFO stays buffered in BufWriter until flush_logs()
         log_event_to_path("INFO", "buffered info line", Some(&log1));
@@ -555,7 +528,7 @@ mod tests {
         assert!(log2_after_flush.contains("[INFO] buffered on second path\n"));
 
         // Also verify LogWriterState directly for isolated unit state transitions
-        let log3 = temp_dir.path().join("direct_state.log");
+        let log3 = log_dir.path().join("direct_state.log");
         let mut state = LogWriterState::default();
         state.write_line(&log3, "direct buffered\n", false);
         assert!(std::fs::read_to_string(&log3).expect("read log3").is_empty());
@@ -574,12 +547,12 @@ mod tests {
     #[test]
     fn test_record_crash_report_flushes_buffered_logs_first() {
         let _guard = LOG_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = TestTempDir::new("record_crash");
+        let log_dir = TempDir::new().expect("create temp test dir");
         let _reset = ResetLogWriterOnDrop;
         reset_log_writer_for_test();
 
-        let crash_log = temp_dir.path().join("crash.log");
-        let app_log = temp_dir.path().join("loganalysis.log");
+        let crash_log = log_dir.path().join("crash.log");
+        let app_log = log_dir.path().join("loganalysis.log");
 
         // Buffer a non-error log event first; verify it is not yet on disk
         log_event_to_path("INFO", "pre-crash buffered context", Some(&app_log));

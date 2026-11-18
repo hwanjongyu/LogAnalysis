@@ -6,53 +6,23 @@ use crate::components::find_bar::render_find_bar;
 use crate::components::tooltip::render_tooltip;
 use crate::workspace::LogAnalysisWorkspace;
 
+/// Multiplier applied to font size to compute uniform log row height in logical pixels.
+pub const LOG_ROW_HEIGHT_MULTIPLIER: f32 = 1.55;
+
+/// Computes the rendered log row height in logical pixels for a given `font_size`.
+#[inline]
+pub fn log_row_height_px(font_size: f32) -> f32 {
+    font_size * LOG_ROW_HEIGHT_MULTIPLIER
+}
+
 pub fn render_log_viewport(
     workspace: &LogAnalysisWorkspace,
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> impl IntoElement {
     let theme = workspace.theme;
 
-    if !workspace.split_view.is_split_view {
-        div()
-            .flex_1()
-            .h_full()
-            .relative()
-            .flex()
-            .flex_col()
-            .bg(theme.bg_dark)
-            .overflow_hidden()
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                if this.is_dragging_scrollbar && event.dragging() {
-                    this.scroll_to_ratio_from_mouse_y(event.position.y, cx);
-                } else if this.is_dragging_secondary_scrollbar && event.dragging() {
-                    this.scroll_secondary_to_ratio_from_mouse_y(event.position.y, cx);
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    let mut changed = false;
-                    if this.is_dragging_scrollbar {
-                        this.is_dragging_scrollbar = false;
-                        changed = true;
-                    }
-                    if this.is_dragging_secondary_scrollbar {
-                        this.is_dragging_secondary_scrollbar = false;
-                        changed = true;
-                    }
-                    if changed {
-                        cx.notify();
-                    }
-                }),
-            )
-            // Forensic Facets Bar
-            .children(crate::components::facets_bar::render_facets_bar(workspace, cx))
-            // Single primary viewport content
-            .child(render_pane_content(workspace, true, false, cx))
-            // Modern Floating Find Widget (over log content without reflow)
-            .children(render_find_bar(workspace, cx))
-            // Contextual Floating Selection Mini-Bar
-            .children(render_selection_action_bar(workspace, cx))
+    let main_content = if !workspace.split_view.is_split_view {
+        render_pane_content(workspace, true, false, cx).into_any_element()
     } else {
         let is_vertical = workspace.split_view.is_split_vertical;
         let mut split_container = div()
@@ -75,47 +45,49 @@ pub fn render_log_viewport(
                 .child(render_pane_container(workspace, false, cx));
         }
 
-        div()
-            .flex_1()
-            .h_full()
-            .relative()
-            .flex()
-            .flex_col()
-            .bg(theme.bg_dark)
-            .overflow_hidden()
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                if this.is_dragging_scrollbar && event.dragging() {
-                    this.scroll_to_ratio_from_mouse_y(event.position.y, cx);
-                } else if this.is_dragging_secondary_scrollbar && event.dragging() {
-                    this.scroll_secondary_to_ratio_from_mouse_y(event.position.y, cx);
+        split_container.into_any_element()
+    };
+
+    div()
+        .flex_1()
+        .h_full()
+        .relative()
+        .flex()
+        .flex_col()
+        .bg(theme.bg_dark)
+        .overflow_hidden()
+        .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+            if this.is_dragging_scrollbar && event.dragging() {
+                this.scroll_to_ratio_from_mouse_y(event.position.y, cx);
+            } else if this.is_dragging_secondary_scrollbar && event.dragging() {
+                this.scroll_secondary_to_ratio_from_mouse_y(event.position.y, cx);
+            }
+        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                let mut changed = false;
+                if this.is_dragging_scrollbar {
+                    this.is_dragging_scrollbar = false;
+                    changed = true;
                 }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    let mut changed = false;
-                    if this.is_dragging_scrollbar {
-                        this.is_dragging_scrollbar = false;
-                        changed = true;
-                    }
-                    if this.is_dragging_secondary_scrollbar {
-                        this.is_dragging_secondary_scrollbar = false;
-                        changed = true;
-                    }
-                    if changed {
-                        cx.notify();
-                    }
-                }),
-            )
-            // Forensic Facets Bar
-            .children(crate::components::facets_bar::render_facets_bar(workspace, cx))
-            // Dual-Pane Split Container
-            .child(split_container)
-            // Modern Floating Find Widget (over split container without reflow)
-            .children(render_find_bar(workspace, cx))
-            // Contextual Floating Selection Mini-Bar
-            .children(render_selection_action_bar(workspace, cx))
-    }
+                if this.is_dragging_secondary_scrollbar {
+                    this.is_dragging_secondary_scrollbar = false;
+                    changed = true;
+                }
+                if changed {
+                    cx.notify();
+                }
+            }),
+        )
+        // Forensic Facets Bar
+        .children(crate::components::facets_bar::render_facets_bar(workspace, cx))
+        // Single primary viewport or Dual-Pane Split Container
+        .child(main_content)
+        // Modern Floating Find Widget (over log content without reflow)
+        .children(render_find_bar(workspace, cx))
+        // Contextual Floating Selection Mini-Bar
+        .children(render_selection_action_bar(workspace, cx))
 }
 
 /// Calculates the dynamic vertical position of the floating selection action bar
@@ -641,25 +613,126 @@ fn render_pane_content(
     }
 }
 
+/// Computes match highlight byte ranges (capped at 32 per line) for `text`.
+pub fn compute_highlight_ranges(
+    text: &str,
+    search_matcher: &Option<std::sync::Arc<loganalysis_core::CompiledMatcher>>,
+) -> Vec<std::ops::Range<usize>> {
+    match search_matcher {
+        Some(matcher) => matcher.find_match_ranges(text, 32),
+        None => Vec::new(),
+    }
+}
+
 /// Helper to render text with search match highlighting with zero unnecessary string allocations
 pub fn render_highlighted_text(
     text_content: SharedString,
     search_matcher: &Option<std::sync::Arc<loganalysis_core::CompiledMatcher>>,
     highlight_style: HighlightStyle,
 ) -> AnyElement {
-    if let Some(ref matcher) = search_matcher {
-        let ranges = matcher.find_match_ranges(text_content.as_ref(), 32);
-        if !ranges.is_empty() {
-            let highlights = ranges.into_iter().map(|r| (r, highlight_style));
-            StyledText::new(text_content)
-                .with_highlights(highlights)
-                .into_any_element()
-        } else {
-            text_content.into_any_element()
-        }
+    let ranges = compute_highlight_ranges(text_content.as_ref(), search_matcher);
+    if !ranges.is_empty() {
+        let highlights = ranges.into_iter().map(|r| (r, highlight_style));
+        StyledText::new(text_content)
+            .with_highlights(highlights)
+            .into_any_element()
     } else {
         text_content.into_any_element()
     }
+}
+
+fn render_unstructured_line_content(
+    text: SharedString,
+    search_matcher: &Option<std::sync::Arc<loganalysis_core::CompiledMatcher>>,
+    highlight_style: HighlightStyle,
+    border_color: Rgba,
+    stack_indent_px: f32,
+    normal_px: f32,
+    clip_overflow: bool,
+) -> Div {
+    let trimmed = text.as_ref().trim_start();
+    let is_stack_trace = trimmed.starts_with("at ")
+        || trimmed.starts_with("Caused by:")
+        || trimmed.starts_with("...");
+    div()
+        .flex_1()
+        .when(is_stack_trace, |s| {
+            s.pl(px(stack_indent_px))
+                .border_l_2()
+                .border_color(border_color)
+        })
+        .when(!is_stack_trace, |s| s.px(px(normal_px)))
+        .whitespace_nowrap()
+        .when(clip_overflow, |s| s.overflow_hidden())
+        .child(render_highlighted_text(text, search_matcher, highlight_style))
+}
+
+fn push_heatmap_tick(
+    ticks: &mut Vec<Div>,
+    start: usize,
+    count: usize,
+    run_sev: LineSeverity,
+    bucket_step: f32,
+) {
+    let (color, opacity) = match run_sev {
+        LineSeverity::Error => (rgb(0xef4444), 0.95),
+        LineSeverity::Warning => (rgb(0xf59e0b), 0.90),
+        LineSeverity::RuleMatch => (rgb(0x3b82f6), 0.75),
+        LineSeverity::Normal => (rgb(0x000000), 0.0),
+    };
+    let top_pos = (start as f32) * bucket_step;
+    let tick_h = ((count as f32) * bucket_step).max(2.5);
+    ticks.push(
+        div()
+            .absolute()
+            .left(px(1.5))
+            .right(px(1.5))
+            .top(px(top_pos))
+            .h(px(tick_h))
+            .rounded_xs()
+            .bg(color)
+            .opacity(opacity),
+    );
+}
+
+fn build_heatmap_ticks(
+    heatmap: Option<&loganalysis_core::HeatmapData>,
+    track_height: f32,
+) -> Vec<Div> {
+    let Some(heatmap) = heatmap else {
+        return Vec::new();
+    };
+    let total_buckets = heatmap.buckets.len() as f32;
+    if track_height <= 0.0 || total_buckets <= 0.0 {
+        return Vec::new();
+    }
+
+    let bucket_step = track_height / total_buckets;
+    let mut ticks = Vec::new();
+    let mut current_run: Option<(usize, usize, LineSeverity)> = None; // (start_idx, count, severity)
+
+    for (idx, bucket) in heatmap.buckets.iter().enumerate() {
+        let severity = bucket.dominant_severity().filter(|&s| s != LineSeverity::Normal);
+        match (current_run, severity) {
+            (Some((start, count, run_sev)), Some(sev)) if run_sev == sev => {
+                current_run = Some((start, count + 1, run_sev));
+            }
+            (Some((start, count, run_sev)), other) => {
+                push_heatmap_tick(&mut ticks, start, count, run_sev, bucket_step);
+                current_run = other.map(|sev| (idx, 1, sev));
+            }
+            (None, Some(sev)) => {
+                current_run = Some((idx, 1, sev));
+            }
+            (None, None) => {}
+        }
+    }
+
+    if let Some((start, count, run_sev)) = current_run {
+        push_heatmap_tick(&mut ticks, start, count, run_sev, bucket_step);
+    }
+
+    ticks
 }
 
 /// Fixed height in pixels of the Column View header row and its right corner spacer.
@@ -782,7 +855,7 @@ fn render_log_list(
     let theme = workspace.theme;
     let is_column_view = workspace.is_column_view;
     let font_size = workspace.font_size;
-    let row_height = font_size * 1.55;
+    let row_height = px(log_row_height_px(font_size.into()));
     let weak_self = cx.weak_entity();
 
     let row_count = if is_primary {
@@ -1134,42 +1207,27 @@ fn render_log_list(
                             );
                     } else {
                         // Unstructured multiline stack trace fallback
-                        let trimmed = text.as_ref().trim_start();
-                        let is_stack_trace = trimmed.starts_with("at ")
-                            || trimmed.starts_with("Caused by:")
-                            || trimmed.starts_with("...");
-                        row_el = row_el.child(
-                            div()
-                                .flex_1()
-                                .when(is_stack_trace, |s| s.pl(px(24.0)).border_l_2().border_color(row_theme.border_subtle))
-                                .when(!is_stack_trace, |s| s.px(px(12.0)))
-                                .whitespace_nowrap()
-                                .overflow_hidden()
-                                .child(render_highlighted_text(
-                                    text.clone(),
-                                    &search_matcher,
-                                    highlight_style,
-                                )),
-                        );
+                        row_el = row_el.child(render_unstructured_line_content(
+                            text.clone(),
+                            &search_matcher,
+                            highlight_style,
+                            row_theme.border_subtle,
+                            24.0,
+                            12.0,
+                            true,
+                        ));
                     }
                 } else {
                     // Raw monospace line with stack trace indentation
-                    let trimmed = text.as_ref().trim_start();
-                    let is_stack_trace = trimmed.starts_with("at ")
-                        || trimmed.starts_with("Caused by:")
-                        || trimmed.starts_with("...");
-                    row_el = row_el.child(
-                        div()
-                            .flex_1()
-                            .when(is_stack_trace, |s| s.pl(px(22.0)).border_l_2().border_color(theme.border_subtle))
-                            .when(!is_stack_trace, |s| s.px(px(10.0)))
-                            .whitespace_nowrap()
-                            .child(render_highlighted_text(
-                                text.clone(),
-                                &search_matcher,
-                                highlight_style,
-                            )),
-                    );
+                    row_el = row_el.child(render_unstructured_line_content(
+                        text.clone(),
+                        &search_matcher,
+                        highlight_style,
+                        row_theme.border_subtle,
+                        22.0,
+                        10.0,
+                        false,
+                    ));
                 }
 
                 row_el
@@ -1198,7 +1256,7 @@ fn render_log_list(
         drop(scroll_state);
 
         let font_size_f32: f32 = font_size.into();
-        let row_height_f32 = font_size_f32 * 1.55;
+        let row_height_f32 = log_row_height_px(font_size_f32);
         let total_content_height = (row_count as f32) * row_height_f32;
 
         if track_height > 0.0 && total_content_height > track_height {
@@ -1214,77 +1272,7 @@ fn render_log_list(
     };
 
     let heatmap_ticks = if is_primary {
-        if let Some(heatmap) = &workspace.heatmap_data {
-            let total_buckets = heatmap.buckets.len() as f32;
-            if track_height > 0.0 && total_buckets > 0.0 {
-                let bucket_step = track_height / total_buckets;
-                let mut ticks = Vec::new();
-                let mut current_run: Option<(usize, usize, LineSeverity)> = None; // (start_idx, count, severity)
-
-                for (idx, bucket) in heatmap.buckets.iter().enumerate() {
-                    let severity = bucket.dominant_severity().filter(|&s| s != LineSeverity::Normal);
-                    match (current_run, severity) {
-                        (Some((start, count, run_sev)), Some(sev)) if run_sev == sev => {
-                            current_run = Some((start, count + 1, run_sev));
-                        }
-                        (Some((start, count, run_sev)), other) => {
-                            let (color, opacity) = match run_sev {
-                                LineSeverity::Error => (rgb(0xef4444), 0.95),
-                                LineSeverity::Warning => (rgb(0xf59e0b), 0.90),
-                                LineSeverity::RuleMatch => (rgb(0x3b82f6), 0.75),
-                                LineSeverity::Normal => (rgb(0x000000), 0.0),
-                            };
-                            let top_pos = (start as f32) * bucket_step;
-                            let tick_h = ((count as f32) * bucket_step).max(2.5);
-                            ticks.push(
-                                div()
-                                    .absolute()
-                                    .left(px(1.5))
-                                    .right(px(1.5))
-                                    .top(px(top_pos))
-                                    .h(px(tick_h))
-                                    .rounded_xs()
-                                    .bg(color)
-                                    .opacity(opacity),
-                            );
-                            current_run = other.map(|sev| (idx, 1, sev));
-                        }
-                        (None, Some(sev)) => {
-                            current_run = Some((idx, 1, sev));
-                        }
-                        (None, None) => {}
-                    }
-                }
-
-                if let Some((start, count, run_sev)) = current_run {
-                    let (color, opacity) = match run_sev {
-                        LineSeverity::Error => (rgb(0xef4444), 0.95),
-                        LineSeverity::Warning => (rgb(0xf59e0b), 0.90),
-                        LineSeverity::RuleMatch => (rgb(0x3b82f6), 0.75),
-                        LineSeverity::Normal => (rgb(0x000000), 0.0),
-                    };
-                    let top_pos = (start as f32) * bucket_step;
-                    let tick_h = ((count as f32) * bucket_step).max(2.5);
-                    ticks.push(
-                        div()
-                            .absolute()
-                            .left(px(1.5))
-                            .right(px(1.5))
-                            .top(px(top_pos))
-                            .h(px(tick_h))
-                            .rounded_xs()
-                            .bg(color)
-                            .opacity(opacity),
-                    );
-                }
-
-                ticks
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        }
+        build_heatmap_ticks(workspace.heatmap_data.as_deref(), track_height)
     } else {
         Vec::new()
     };
@@ -1748,7 +1736,7 @@ fn render_onboarding_empty_state(
                                                                 .text_size(px(10.5))
                                                                 .font_weight(FontWeight::MEDIUM)
                                                                 .text_color(theme.text_muted)
-                                                                .child("⚡ k-way Priority Heap"),
+                                                                .child("⚡ Chronological Stable Sort"),
                                                         )
                                                         .child(
                                                             div()
@@ -2138,8 +2126,12 @@ fn render_onboarding_empty_state(
 #[cfg(test)]
 mod tests {
     use super::{
-        aligned_list_and_scrollbar_height, COLUMN_HEADER_HEIGHT_PX, SCROLLBAR_TRACK_WIDTH_PX,
+        aligned_list_and_scrollbar_height, build_heatmap_ticks, compute_highlight_ranges,
+        log_row_height_px, COLUMN_HEADER_HEIGHT_PX, LOG_ROW_HEIGHT_MULTIPLIER,
+        SCROLLBAR_TRACK_WIDTH_PX,
     };
+    use loganalysis_core::{CompiledMatcher, HeatmapBucket, HeatmapData};
+    use std::sync::Arc;
 
     #[test]
     fn test_column_view_scrollbar_alignment_constants_and_heights() {
@@ -2147,5 +2139,49 @@ mod tests {
         assert_eq!(SCROLLBAR_TRACK_WIDTH_PX, 15.0);
         assert_eq!(aligned_list_and_scrollbar_height(600.0, false), (600.0, 600.0));
         assert_eq!(aligned_list_and_scrollbar_height(600.0, true), (576.0, 576.0));
+    }
+
+    #[test]
+    fn test_log_row_height_and_compute_highlight_ranges() {
+        assert_eq!(LOG_ROW_HEIGHT_MULTIPLIER, 1.55);
+        assert!((log_row_height_px(12.0) - 18.6).abs() < 1e-5);
+
+        let line = "2026-11-06 12:00:00 Normal log line";
+        assert!(compute_highlight_ranges(line, &None).is_empty());
+
+        let hit_matcher = Arc::new(CompiledMatcher::new("Normal", false, false).unwrap());
+        assert_eq!(compute_highlight_ranges(line, &Some(hit_matcher)), vec![20..26]);
+
+        let miss_matcher =
+            Arc::new(CompiledMatcher::new("NonExistentPattern", false, false).unwrap());
+        assert!(compute_highlight_ranges(line, &Some(miss_matcher)).is_empty());
+    }
+
+    #[test]
+    fn test_build_heatmap_ticks_coalesces_runs_and_skips_normal() {
+        assert!(build_heatmap_ticks(None, 200.0).is_empty());
+
+        let heatmap = HeatmapData {
+            buckets: vec![
+                HeatmapBucket {
+                    error_count: 1,
+                    ..Default::default()
+                },
+                HeatmapBucket {
+                    error_count: 2,
+                    ..Default::default()
+                },
+                HeatmapBucket::default(),
+                HeatmapBucket {
+                    warn_count: 1,
+                    ..Default::default()
+                },
+            ],
+            total_lines: 4,
+            ..Default::default()
+        };
+
+        assert!(build_heatmap_ticks(Some(&heatmap), 0.0).is_empty());
+        assert_eq!(build_heatmap_ticks(Some(&heatmap), 400.0).len(), 2);
     }
 }

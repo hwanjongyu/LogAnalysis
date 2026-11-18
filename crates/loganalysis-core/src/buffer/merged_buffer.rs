@@ -328,6 +328,13 @@ impl LogSource for MergedLogBuffer {
 mod tests {
     use super::*;
 
+    fn write_named_temp(bytes: &[u8]) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, bytes).unwrap();
+        std::io::Write::flush(&mut f).unwrap();
+        f
+    }
+
     #[test]
     fn test_merge_two_files_interleaved_chronologically() {
         let file_a_data = b"01-01 10:00:00.100 Line A1\n\
@@ -338,15 +345,14 @@ mod tests {
                             01-01 10:00:01.500 Line B2\n\
                             01-01 10:00:03.000 Line B3\n";
 
-        let mut a_dir = std::env::temp_dir();
-        a_dir.push(format!("merge_a_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&a_dir, file_a_data).unwrap();
+        let a_file = write_named_temp(file_a_data);
+        let b_file = write_named_temp(file_b_data);
 
-        let mut b_dir = std::env::temp_dir();
-        b_dir.push(format!("merge_b_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&b_dir, file_b_data).unwrap();
-
-        let merged = MergedLogBuffer::open_multiple(&[a_dir.clone(), b_dir.clone()]).unwrap();
+        let merged = MergedLogBuffer::open_multiple(&[
+            a_file.path().to_path_buf(),
+            b_file.path().to_path_buf(),
+        ])
+        .unwrap();
         assert_eq!(merged.line_count(), 6);
         assert_eq!(merged.source_count(), 2);
 
@@ -375,9 +381,6 @@ mod tests {
 
         assert_eq!(merged.get_line_source_id(5), Some(0));
         assert!(merged.get_line(5).unwrap().contains("Line A3"));
-
-        let _ = std::fs::remove_file(a_dir);
-        let _ = std::fs::remove_file(b_dir);
     }
 
     #[test]
@@ -389,15 +392,14 @@ mod tests {
         let file_b_data = b"01-01 10:00:00.500 Server idle\n\
                             01-01 10:00:02.000 Server heartbeat\n";
 
-        let mut a_dir = std::env::temp_dir();
-        a_dir.push(format!("merge_stack_a_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&a_dir, file_a_data).unwrap();
+        let a_file = write_named_temp(file_a_data);
+        let b_file = write_named_temp(file_b_data);
 
-        let mut b_dir = std::env::temp_dir();
-        b_dir.push(format!("merge_stack_b_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&b_dir, file_b_data).unwrap();
-
-        let merged = MergedLogBuffer::open_multiple(&[a_dir.clone(), b_dir.clone()]).unwrap();
+        let merged = MergedLogBuffer::open_multiple(&[
+            a_file.path().to_path_buf(),
+            b_file.path().to_path_buf(),
+        ])
+        .unwrap();
         assert_eq!(merged.line_count(), 5);
 
         // Sequence:
@@ -412,9 +414,6 @@ mod tests {
         assert!(merged.get_line(2).unwrap().contains("App.run"));
         assert!(merged.get_line(3).unwrap().contains("App.main"));
         assert!(merged.get_line(4).unwrap().contains("Server heartbeat"));
-
-        let _ = std::fs::remove_file(a_dir);
-        let _ = std::fs::remove_file(b_dir);
     }
 
     #[test]
@@ -431,11 +430,9 @@ mod tests {
 
     #[test]
     fn test_from_sources_rejects_more_than_255_sources() {
-        let mut tmp = std::env::temp_dir();
-        tmp.push(format!("test_max_sources_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&tmp, b"test line\n").unwrap();
+        let tmp = write_named_temp(b"test line\n");
 
-        let buf = Arc::new(FileLogBuffer::open(&tmp).unwrap());
+        let buf = Arc::new(FileLogBuffer::open(tmp.path()).unwrap());
         let sources = vec![Arc::clone(&buf); 256];
         let names = vec!["test.log".to_string(); 256];
 
@@ -444,8 +441,6 @@ mod tests {
         };
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
         assert!(err.to_string().contains("255"));
-
-        let _ = std::fs::remove_file(tmp);
     }
 
     #[test]
@@ -453,11 +448,9 @@ mod tests {
         let file_data = b"12-31 23:59:59.999 Line Before Midnight\n\
                           01-01 00:00:00.001 Line After Midnight\n";
 
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("merge_rollover_intra_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&dir, file_data).unwrap();
+        let file = write_named_temp(file_data);
 
-        let merged = MergedLogBuffer::open_multiple(std::slice::from_ref(&dir)).unwrap();
+        let merged = MergedLogBuffer::open_multiple(&[file.path().to_path_buf()]).unwrap();
         assert_eq!(merged.line_count(), 2);
 
         // Row 0 should be Dec 31, Row 1 should be Jan 01
@@ -473,8 +466,6 @@ mod tests {
             ts1 > ts0,
             "Jan 01 timestamp must be chronologically after Dec 31"
         );
-
-        let _ = std::fs::remove_file(dir);
     }
 
     #[test]
@@ -485,15 +476,14 @@ mod tests {
         let file_jan = b"01-01 00:00:00.500 S2 Jan01 00s\n\
                          01-01 00:00:01.000 S2 Jan01 01s\n";
 
-        let mut dec_dir = std::env::temp_dir();
-        dec_dir.push(format!("merge_dec_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&dec_dir, file_dec).unwrap();
+        let dec_file = write_named_temp(file_dec);
+        let jan_file = write_named_temp(file_jan);
 
-        let mut jan_dir = std::env::temp_dir();
-        jan_dir.push(format!("merge_jan_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&jan_dir, file_jan).unwrap();
-
-        let merged = MergedLogBuffer::open_multiple(&[dec_dir.clone(), jan_dir.clone()]).unwrap();
+        let merged = MergedLogBuffer::open_multiple(&[
+            dec_file.path().to_path_buf(),
+            jan_file.path().to_path_buf(),
+        ])
+        .unwrap();
         assert_eq!(merged.line_count(), 4);
 
         // Expected chronological sequence:
@@ -526,9 +516,6 @@ mod tests {
         assert!(ts2 < ts3);
         // Time between 23:59:59.500 and 00:00:00.500 is exactly 1 second (1,000,000 micros)
         assert_eq!(ts2 - ts1, 1_000_000);
-
-        let _ = std::fs::remove_file(dec_dir);
-        let _ = std::fs::remove_file(jan_dir);
     }
 
     #[test]
@@ -539,15 +526,14 @@ mod tests {
                          \tat com.example.Boot.main(Boot.java:5)\n\
                          01-01 00:00:02.000 S2 Retry initiated\n";
 
-        let mut dec_dir = std::env::temp_dir();
-        dec_dir.push(format!("merge_multi_dec_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&dec_dir, file_dec).unwrap();
+        let dec_file = write_named_temp(file_dec);
+        let jan_file = write_named_temp(file_jan);
 
-        let mut jan_dir = std::env::temp_dir();
-        jan_dir.push(format!("merge_multi_jan_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&jan_dir, file_jan).unwrap();
-
-        let merged = MergedLogBuffer::open_multiple(&[dec_dir.clone(), jan_dir.clone()]).unwrap();
+        let merged = MergedLogBuffer::open_multiple(&[
+            dec_file.path().to_path_buf(),
+            jan_file.path().to_path_buf(),
+        ])
+        .unwrap();
         assert_eq!(merged.line_count(), 5);
 
         // Expected order:
@@ -572,9 +558,6 @@ mod tests {
         assert_eq!(ts1, ts2);
         assert_eq!(ts2, ts3);
         assert!(ts3 < ts4);
-
-        let _ = std::fs::remove_file(dec_dir);
-        let _ = std::fs::remove_file(jan_dir);
     }
 
     #[test]
@@ -590,20 +573,16 @@ mod tests {
         // Source C only has Jan 01 (cross-file rollover against prior Dec)
         let file_c = b"01-01 00:00:02.000 S_C Jan 02\n";
 
-        let mut a_dir = std::env::temp_dir();
-        a_dir.push(format!("merge_3src_a_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&a_dir, file_a).unwrap();
+        let a_file = write_named_temp(file_a);
+        let b_file = write_named_temp(file_b);
+        let c_file = write_named_temp(file_c);
 
-        let mut b_dir = std::env::temp_dir();
-        b_dir.push(format!("merge_3src_b_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&b_dir, file_b).unwrap();
-
-        let mut c_dir = std::env::temp_dir();
-        c_dir.push(format!("merge_3src_c_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&c_dir, file_c).unwrap();
-
-        let merged =
-            MergedLogBuffer::open_multiple(&[a_dir.clone(), b_dir.clone(), c_dir.clone()]).unwrap();
+        let merged = MergedLogBuffer::open_multiple(&[
+            a_file.path().to_path_buf(),
+            b_file.path().to_path_buf(),
+            c_file.path().to_path_buf(),
+        ])
+        .unwrap();
         assert_eq!(merged.line_count(), 5);
 
         // Expected sorted order:
@@ -617,10 +596,6 @@ mod tests {
         assert!(merged.get_line(2).unwrap().contains("S_B Jan 00.5"));
         assert!(merged.get_line(3).unwrap().contains("S_A Jan 01"));
         assert!(merged.get_line(4).unwrap().contains("S_C Jan 02"));
-
-        let _ = std::fs::remove_file(a_dir);
-        let _ = std::fs::remove_file(b_dir);
-        let _ = std::fs::remove_file(c_dir);
     }
 
     #[test]
@@ -631,16 +606,15 @@ mod tests {
         let file_dec = b"12-31 23:59:58.000 S_Dec Dec31 58s\n\
                          12-31 23:59:59.500 S_Dec Dec31 59s\n";
 
-        let mut jan_dir = std::env::temp_dir();
-        jan_dir.push(format!("merge_rev_jan_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&jan_dir, file_jan).unwrap();
-
-        let mut dec_dir = std::env::temp_dir();
-        dec_dir.push(format!("merge_rev_dec_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&dec_dir, file_dec).unwrap();
+        let jan_file = write_named_temp(file_jan);
+        let dec_file = write_named_temp(file_dec);
 
         // Pass in reverse order: [jan, dec]
-        let merged = MergedLogBuffer::open_multiple(&[jan_dir.clone(), dec_dir.clone()]).unwrap();
+        let merged = MergedLogBuffer::open_multiple(&[
+            jan_file.path().to_path_buf(),
+            dec_file.path().to_path_buf(),
+        ])
+        .unwrap();
         assert_eq!(merged.line_count(), 4);
 
         // Expected chronological sequence: Dec 31 lines first, Jan 01 lines second
@@ -661,9 +635,6 @@ mod tests {
         assert!(ts1 < ts2);
         // Delta between 23:59:59.500 and 00:00:00.500 is exactly 1 second
         assert_eq!(ts2 - ts1, 1_000_000);
-
-        let _ = std::fs::remove_file(jan_dir);
-        let _ = std::fs::remove_file(dec_dir);
     }
 
     #[test]
@@ -671,15 +642,14 @@ mod tests {
         let file_dec = b"12-31 23:59:59.000 S1 Dec\n";
         let file_jan = b"01-01 00:00:01.000 S2 Jan\n";
 
-        let mut dec_dir = std::env::temp_dir();
-        dec_dir.push(format!("merge_ts_trait_dec_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&dec_dir, file_dec).unwrap();
+        let dec_file = write_named_temp(file_dec);
+        let jan_file = write_named_temp(file_jan);
 
-        let mut jan_dir = std::env::temp_dir();
-        jan_dir.push(format!("merge_ts_trait_jan_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&jan_dir, file_jan).unwrap();
-
-        let merged = MergedLogBuffer::open_multiple(&[dec_dir.clone(), jan_dir.clone()]).unwrap();
+        let merged = MergedLogBuffer::open_multiple(&[
+            dec_file.path().to_path_buf(),
+            jan_file.path().to_path_buf(),
+        ])
+        .unwrap();
         let source: &dyn LogSource = &merged;
 
         let ts0 = source.get_timestamp_micros(0).expect("ts0 should exist");
@@ -688,9 +658,6 @@ mod tests {
         // ts1 must have the ONE_YEAR_MICROS offset preserved through the trait
         assert!(ts1 > ts0);
         assert_eq!(ts1 - ts0, 2_000_000); // Exactly 2 seconds
-
-        let _ = std::fs::remove_file(dec_dir);
-        let _ = std::fs::remove_file(jan_dir);
     }
 
     #[test]

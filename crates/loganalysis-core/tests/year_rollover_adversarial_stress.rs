@@ -2,14 +2,14 @@ use loganalysis_core::buffer::merged_buffer::{MergedLogBuffer, ONE_YEAR_MICROS};
 use loganalysis_core::buffer::LogSource;
 use loganalysis_core::filter::timeline::EpsTimelineData;
 use std::io::Write;
-use std::path::PathBuf;
 use std::time::Instant;
+use tempfile::NamedTempFile;
 
-fn create_temp_logfile(prefix: &str, content: &[u8]) -> PathBuf {
-    let mut path = std::env::temp_dir();
-    path.push(format!("{}_{}.log", prefix, uuid::Uuid::new_v4()));
-    std::fs::write(&path, content).expect("Failed to write temp log file");
-    path
+fn create_temp_logfile(content: &[u8]) -> NamedTempFile {
+    let mut file = NamedTempFile::new().expect("Failed to create temp log file");
+    file.write_all(content).expect("Failed to write temp log file");
+    file.flush().expect("Failed to flush temp log file");
+    file
 }
 
 /// Stress Test 1: Massive volume (60,000+ entries) crossing Dec 31 -> Jan 01 midnight
@@ -18,15 +18,12 @@ fn create_temp_logfile(prefix: &str, content: &[u8]) -> PathBuf {
 /// - Verifies monotonicity, microsecond ordering, lack of integer overflow, and high-throughput sorting
 #[test]
 fn test_adversarial_stress_massive_volume_60k_lines_crossing_rollover() {
-    let mut path1 = std::env::temp_dir();
-    path1.push(format!("stress_60k_dec_{}.log", uuid::Uuid::new_v4()));
-    let mut path2 = std::env::temp_dir();
-    path2.push(format!("stress_60k_jan_{}.log", uuid::Uuid::new_v4()));
+    let file1 = NamedTempFile::new().expect("create dec file");
+    let file2 = NamedTempFile::new().expect("create jan file");
 
     // Generate 30,000 lines for Dec 31 (23:30:00 to 23:59:59.999)
     {
-        let file1 = std::fs::File::create(&path1).expect("create dec file");
-        let mut writer = std::io::BufWriter::new(file1);
+        let mut writer = std::io::BufWriter::new(file1.as_file());
         for i in 0..30_000 {
             let total_millis = i * 60; // 0 to 1,800,000 ms (30 mins)
             let sec = (total_millis / 1000) % 60;
@@ -44,8 +41,7 @@ fn test_adversarial_stress_massive_volume_60k_lines_crossing_rollover() {
 
     // Generate 30,000 lines for Jan 01 (00:00:00.000 to 00:30:00.000)
     {
-        let file2 = std::fs::File::create(&path2).expect("create jan file");
-        let mut writer = std::io::BufWriter::new(file2);
+        let mut writer = std::io::BufWriter::new(file2.as_file());
         for i in 0..30_000 {
             let total_millis = i * 60;
             let sec = (total_millis / 1000) % 60;
@@ -62,8 +58,11 @@ fn test_adversarial_stress_massive_volume_60k_lines_crossing_rollover() {
     }
 
     let start = Instant::now();
-    let merged = MergedLogBuffer::open_multiple(&[path1.clone(), path2.clone()])
-        .expect("open_multiple failed on 60k entries");
+    let merged = MergedLogBuffer::open_multiple(&[
+        file1.path().to_path_buf(),
+        file2.path().to_path_buf(),
+    ])
+    .expect("open_multiple failed on 60k entries");
     let elapsed = start.elapsed();
 
     assert_eq!(merged.line_count(), 60_000);
@@ -106,9 +105,6 @@ fn test_adversarial_stress_massive_volume_60k_lines_crossing_rollover() {
         Some(1),
         "Line 30,000 must come from source 1"
     );
-
-    let _ = std::fs::remove_file(path1);
-    let _ = std::fs::remove_file(path2);
 }
 
 /// Stress Test 2: Highly interleaved 4-source jitter across midnight
@@ -135,13 +131,18 @@ fn test_adversarial_interleaved_four_sources_subsecond_jitter() {
                        01-01 00:00:00.010 S3 event 2\n\
                        01-01 00:00:00.300 S3 event 3\n";
 
-    let p0 = create_temp_logfile("s0", s0_content);
-    let p1 = create_temp_logfile("s1", s1_content);
-    let p2 = create_temp_logfile("s2", s2_content);
-    let p3 = create_temp_logfile("s3", s3_content);
+    let f0 = create_temp_logfile(s0_content);
+    let f1 = create_temp_logfile(s1_content);
+    let f2 = create_temp_logfile(s2_content);
+    let f3 = create_temp_logfile(s3_content);
 
-    let merged = MergedLogBuffer::open_multiple(&[p0.clone(), p1.clone(), p2.clone(), p3.clone()])
-        .expect("merge 4 sources failed");
+    let merged = MergedLogBuffer::open_multiple(&[
+        f0.path().to_path_buf(),
+        f1.path().to_path_buf(),
+        f2.path().to_path_buf(),
+        f3.path().to_path_buf(),
+    ])
+    .expect("merge 4 sources failed");
 
     assert_eq!(merged.line_count(), 11);
 
@@ -201,11 +202,6 @@ fn test_adversarial_interleaved_four_sources_subsecond_jitter() {
         );
         prev_ts = ts;
     }
-
-    let _ = std::fs::remove_file(p0);
-    let _ = std::fs::remove_file(p1);
-    let _ = std::fs::remove_file(p2);
-    let _ = std::fs::remove_file(p3);
 }
 
 /// Stress Test 3: Complex multiline stack trace grouping across midnight boundary
@@ -227,10 +223,14 @@ fn test_adversarial_multiline_traces_on_both_sides_of_midnight() {
 \tat com.android.server.am.ActivityManagerService.dump(AMS.java:9999)\n\
 01-01 00:00:00.010 [Watchdog] Killing system server\n";
 
-    let p_dec = create_temp_logfile("multi_dec", dec_file_content);
-    let p_jan = create_temp_logfile("multi_jan", jan_file_content);
+    let f_dec = create_temp_logfile(dec_file_content);
+    let f_jan = create_temp_logfile(jan_file_content);
 
-    let merged = MergedLogBuffer::open_multiple(&[p_dec.clone(), p_jan.clone()]).expect("merge ok");
+    let merged = MergedLogBuffer::open_multiple(&[
+        f_dec.path().to_path_buf(),
+        f_jan.path().to_path_buf(),
+    ])
+    .expect("merge ok");
     assert_eq!(merged.line_count(), 10);
 
     // Verify ordering and timestamp assignment
@@ -267,9 +267,6 @@ fn test_adversarial_multiline_traces_on_both_sides_of_midnight() {
     // Line 9 is Jan 01 00:00:00.010
     let jan_kill_ts = merged.get_line_timestamp_micros(9).unwrap();
     assert!(jan_kill_ts > jan_exception_ts);
-
-    let _ = std::fs::remove_file(p_dec);
-    let _ = std::fs::remove_file(p_jan);
 }
 
 /// Stress Test 4: EpsTimelineData::compute stress across year rollover
@@ -300,10 +297,11 @@ fn test_adversarial_eps_timeline_stress_and_bucket_distribution() {
         file2_bytes.extend_from_slice(b"01-01 00:00:10.000 100 100 I Tag: Jan 01 steady event\n");
     }
 
-    let p1 = create_temp_logfile("timeline_stress_1", &file1_bytes);
-    let p2 = create_temp_logfile("timeline_stress_2", &file2_bytes);
+    let f1 = create_temp_logfile(&file1_bytes);
+    let f2 = create_temp_logfile(&file2_bytes);
 
-    let merged = MergedLogBuffer::open_multiple(&[p1.clone(), p2.clone()]).expect("merged failed");
+    let merged = MergedLogBuffer::open_multiple(&[f1.path().to_path_buf(), f2.path().to_path_buf()])
+        .expect("merged failed");
     assert_eq!(merged.line_count(), 300);
 
     let all_indices: Vec<usize> = (0..300).collect();
@@ -342,9 +340,6 @@ fn test_adversarial_eps_timeline_stress_and_bucket_distribution() {
             "All 200 error lines must be categorized as errors"
         );
     }
-
-    let _ = std::fs::remove_file(p1);
-    let _ = std::fs::remove_file(p2);
 }
 
 /// Stress Test 5: Multi-year sequential rollover (Year 0 -> Year 1 -> Year 2)
@@ -356,8 +351,9 @@ fn test_adversarial_consecutive_multi_year_rollovers() {
 12-31 23:59:59.000 Year 1 final line\n\
 01-01 00:00:01.000 Year 2 first line\n";
 
-    let p = create_temp_logfile("multi_year", content);
-    let merged = MergedLogBuffer::open_multiple(std::slice::from_ref(&p)).expect("open failed");
+    let file = create_temp_logfile(content);
+    let merged =
+        MergedLogBuffer::open_multiple(&[file.path().to_path_buf()]).expect("open failed");
     assert_eq!(merged.line_count(), 4);
 
     let ts0 = merged.get_line_timestamp_micros(0).unwrap();
@@ -373,8 +369,6 @@ fn test_adversarial_consecutive_multi_year_rollovers() {
     assert_eq!(ts1 - ts0, 2_000_000);
     // Year 2 start - Year 1 end is 2 seconds
     assert_eq!(ts3 - ts2, 2_000_000);
-
-    let _ = std::fs::remove_file(p);
 }
 
 /// Stress Test 6: Intra-day small reverse clock skew (jitter) does NOT trigger year rollover
@@ -385,8 +379,9 @@ fn test_adversarial_clock_jitter_does_not_falsely_trigger_rollover() {
 12-31 23:59:59.400 Thread B slight jitter backward\n\
 12-31 23:59:59.600 Thread A resumed\n";
 
-    let p = create_temp_logfile("jitter", content);
-    let merged = MergedLogBuffer::open_multiple(std::slice::from_ref(&p)).expect("open failed");
+    let file = create_temp_logfile(content);
+    let merged =
+        MergedLogBuffer::open_multiple(&[file.path().to_path_buf()]).expect("open failed");
     assert_eq!(merged.line_count(), 3);
 
     // In sort_by:
@@ -406,6 +401,4 @@ fn test_adversarial_clock_jitter_does_not_falsely_trigger_rollover() {
         ts0 < ONE_YEAR_MICROS,
         "Timestamps must not have an extraneous ONE_YEAR_MICROS added"
     );
-
-    let _ = std::fs::remove_file(p);
 }

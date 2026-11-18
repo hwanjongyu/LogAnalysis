@@ -53,3 +53,84 @@ pub fn evaluate_contrast(bg_hex: u32, fg_hex: u32) -> (f64, ContrastLevel) {
     };
     (ratio, level)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_srgb_to_linear_low_and_high_branches() {
+        // Low linear branch: c_byte / 255.0 <= 0.03928 holds for 0..=10
+        assert_eq!(srgb_to_linear(0), 0.0);
+        let expected_10 = (10.0 / 255.0) / 12.92;
+        assert!((srgb_to_linear(10) - expected_10).abs() < 1e-12);
+
+        // High gamma branch: c_byte / 255.0 > 0.03928 holds for 11..=255
+        let expected_11 = ((11.0_f64 / 255.0 + 0.055) / 1.055).powf(2.4);
+        assert!((srgb_to_linear(11) - expected_11).abs() < 1e-12);
+        assert!((srgb_to_linear(255) - 1.0).abs() < 1e-12);
+
+        assert!(srgb_to_linear(0) < srgb_to_linear(10));
+        assert!(srgb_to_linear(10) < srgb_to_linear(11));
+        assert!(srgb_to_linear(11) < srgb_to_linear(255));
+    }
+
+    #[test]
+    fn test_relative_luminance_extremes_and_channel_weights() {
+        assert_eq!(relative_luminance(0x000000), 0.0);
+        assert!((relative_luminance(0xFFFFFF) - 1.0).abs() < 1e-12);
+
+        let l_green = relative_luminance(0x00FF00);
+        let l_red = relative_luminance(0xFF0000);
+        let l_blue = relative_luminance(0x0000FF);
+        assert!(l_green > l_red);
+        assert!(l_red > l_blue);
+    }
+
+    #[test]
+    fn test_contrast_ratio_bounds_and_symmetry() {
+        assert_eq!(contrast_ratio(0x3A7BD5, 0x3A7BD5), 1.0);
+        assert!((contrast_ratio(0x000000, 0xFFFFFF) - 21.0).abs() < 1e-12);
+
+        let ab = contrast_ratio(0xFFB6B6, 0x8B0000);
+        let ba = contrast_ratio(0x8B0000, 0xFFB6B6);
+        assert!((ab - ba).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_evaluate_contrast_levels_and_boundaries() {
+        // High contrast Pass (>= 4.5)
+        let (bw_ratio, bw_level) = evaluate_contrast(0x000000, 0xFFFFFF);
+        assert!((bw_ratio - 21.0).abs() < 1e-12);
+        assert_eq!(bw_level, ContrastLevel::Pass);
+
+        // Low contrast Critical (< 3.0)
+        let (low_ratio, low_level) = evaluate_contrast(0x808080, 0x999999);
+        assert!(low_ratio < 3.0);
+        assert_eq!(low_level, ContrastLevel::Critical);
+
+        // Exact threshold boundary around 3.0 (against black 0x000000)
+        let (below_3, below_3_level) = evaluate_contrast(0x000000, 0x595959);
+        assert!(below_3 < 3.0, "expected < 3.0, got {below_3}");
+        assert_eq!(below_3_level, ContrastLevel::Critical);
+
+        let (above_3, above_3_level) = evaluate_contrast(0x000000, 0x5A5A5A);
+        assert!(
+            (3.0..4.5).contains(&above_3),
+            "expected in [3.0, 4.5), got {above_3}"
+        );
+        assert_eq!(above_3_level, ContrastLevel::Warning);
+
+        // Exact threshold boundary around 4.5 (against black 0x000000)
+        let (below_45, below_45_level) = evaluate_contrast(0x000000, 0x747474);
+        assert!(
+            (3.0..4.5).contains(&below_45),
+            "expected in [3.0, 4.5), got {below_45}"
+        );
+        assert_eq!(below_45_level, ContrastLevel::Warning);
+
+        let (above_45, above_45_level) = evaluate_contrast(0x000000, 0x757575);
+        assert!(above_45 >= 4.5, "expected >= 4.5, got {above_45}");
+        assert_eq!(above_45_level, ContrastLevel::Pass);
+    }
+}

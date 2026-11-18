@@ -2,23 +2,24 @@ use loganalysis_core::buffer::merged_buffer::{MergedLogBuffer, ONE_YEAR_MICROS};
 use loganalysis_core::buffer::LogSource;
 use loganalysis_core::filter::engine::ResolvedStyle;
 use loganalysis_core::filter::timeline::EpsTimelineData;
-use std::path::PathBuf;
+use std::io::Write;
+use tempfile::NamedTempFile;
 
-fn create_temp_logfile(prefix: &str, content: &[u8]) -> PathBuf {
-    let mut path = std::env::temp_dir();
-    path.push(format!("{}_{}.log", prefix, uuid::Uuid::new_v4()));
-    std::fs::write(&path, content).expect("Failed to write temp log file");
-    path
+fn create_temp_logfile(content: &[u8]) -> NamedTempFile {
+    let mut file = NamedTempFile::new().expect("Failed to create temp log file");
+    file.write_all(content).expect("Failed to write temp log file");
+    file.flush().expect("Failed to flush temp log file");
+    file
 }
 
 #[test]
 fn test_integration_intra_file_year_rollover_sub_second() {
     let content = b"12-31 23:59:59.999 System shutting down services\n\
                     01-01 00:00:00.001 System boot completed\n";
-    let path = create_temp_logfile("intra_rollover", content);
+    let file = create_temp_logfile(content);
 
-    let merged =
-        MergedLogBuffer::open_multiple(std::slice::from_ref(&path)).expect("open_multiple failed");
+    let merged = MergedLogBuffer::open_multiple(&[file.path().to_path_buf()])
+        .expect("open_multiple failed");
     assert_eq!(merged.line_count(), 2);
 
     let line0 = merged.get_line(0).expect("line 0 missing");
@@ -32,8 +33,6 @@ fn test_integration_intra_file_year_rollover_sub_second() {
     // 2 milliseconds elapsed across midnight
     assert_eq!(ts1 - ts0, 2_000);
     assert!(ts1 > ts0, "Jan 01 must be strictly greater than Dec 31");
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[test]
@@ -44,11 +43,12 @@ fn test_integration_cross_file_merge_dec31_and_jan01() {
     let file2_jan = b"01-01 00:00:01.000 S2 Service B starting\n\
                      01-01 00:00:05.000 S2 Service B started\n";
 
-    let path1 = create_temp_logfile("cross_dec", file1_dec);
-    let path2 = create_temp_logfile("cross_jan", file2_jan);
+    let f1 = create_temp_logfile(file1_dec);
+    let f2 = create_temp_logfile(file2_jan);
 
     let merged =
-        MergedLogBuffer::open_multiple(&[path1.clone(), path2.clone()]).expect("merge failed");
+        MergedLogBuffer::open_multiple(&[f1.path().to_path_buf(), f2.path().to_path_buf()])
+            .expect("merge failed");
     assert_eq!(merged.line_count(), 4);
 
     // Assert strictly chronological ordering
@@ -79,9 +79,6 @@ fn test_integration_cross_file_merge_dec31_and_jan01() {
 
     // Delta between 23:59:59 and 00:00:01 is exactly 2 seconds
     assert_eq!(ts2 - ts1, 2_000_000);
-
-    let _ = std::fs::remove_file(path1);
-    let _ = std::fs::remove_file(path2);
 }
 
 #[test]
@@ -95,11 +92,12 @@ fn test_integration_multiline_traces_on_jan01_inherit_adjusted_year() {
                      \tat android.app.Activity.performCreate(Activity.java:8000)\n\
                      01-01 00:00:03.000 [ActivityManager] Process com.example.app has died\n";
 
-    let path1 = create_temp_logfile("multi_dec", file1_dec);
-    let path2 = create_temp_logfile("multi_jan", file2_jan);
+    let f1 = create_temp_logfile(file1_dec);
+    let f2 = create_temp_logfile(file2_jan);
 
     let merged =
-        MergedLogBuffer::open_multiple(&[path1.clone(), path2.clone()]).expect("merge failed");
+        MergedLogBuffer::open_multiple(&[f1.path().to_path_buf(), f2.path().to_path_buf()])
+            .expect("merge failed");
     assert_eq!(merged.line_count(), 7);
 
     // Expected lines in chronological order:
@@ -140,9 +138,6 @@ fn test_integration_multiline_traces_on_jan01_inherit_adjusted_year() {
     assert_eq!(ts3, ts4);
     assert_eq!(ts4, ts5);
     assert!(ts5 < ts6);
-
-    let _ = std::fs::remove_file(path1);
-    let _ = std::fs::remove_file(path2);
 }
 
 #[test]
@@ -153,11 +148,12 @@ fn test_integration_eps_timeline_compute_with_merged_buffer_across_rollover() {
     let file2_jan = b"01-01 00:00:05.000 100 100 E SystemServer: Post-midnight error\n\
                      01-01 00:00:10.000 100 100 I SystemServer: Post-midnight steady state\n";
 
-    let path1 = create_temp_logfile("timeline_dec", file1_dec);
-    let path2 = create_temp_logfile("timeline_jan", file2_jan);
+    let f1 = create_temp_logfile(file1_dec);
+    let f2 = create_temp_logfile(file2_jan);
 
     let merged =
-        MergedLogBuffer::open_multiple(&[path1.clone(), path2.clone()]).expect("merge failed");
+        MergedLogBuffer::open_multiple(&[f1.path().to_path_buf(), f2.path().to_path_buf()])
+            .expect("merge failed");
     let count = merged.line_count();
     assert_eq!(count, 4);
 
@@ -190,9 +186,6 @@ fn test_integration_eps_timeline_compute_with_merged_buffer_across_rollover() {
     // Average EPS must be positive (~0.2 EPS)
     assert!(timeline.avg_eps > 0.0);
     assert!((timeline.avg_eps - 0.2).abs() < 0.05);
-
-    let _ = std::fs::remove_file(path1);
-    let _ = std::fs::remove_file(path2);
 }
 
 #[test]
@@ -218,11 +211,12 @@ fn test_integration_eps_timeline_anomaly_across_midnight() {
         file2_data.extend_from_slice(line.as_bytes());
     }
 
-    let path1 = create_temp_logfile("anomaly_dec", &file1_data);
-    let path2 = create_temp_logfile("anomaly_jan", &file2_data);
+    let f1 = create_temp_logfile(&file1_data);
+    let f2 = create_temp_logfile(&file2_data);
 
     let merged =
-        MergedLogBuffer::open_multiple(&[path1.clone(), path2.clone()]).expect("merge failed");
+        MergedLogBuffer::open_multiple(&[f1.path().to_path_buf(), f2.path().to_path_buf()])
+            .expect("merge failed");
     let count = merged.line_count();
     let visible_indices: Vec<usize> = (0..count).collect();
     let styles = vec![ResolvedStyle::default(); count];
@@ -239,7 +233,4 @@ fn test_integration_eps_timeline_anomaly_across_midnight() {
         anomaly_detected,
         "Burst at 00:00:05 must trigger anomaly flag across rollover"
     );
-
-    let _ = std::fs::remove_file(path1);
-    let _ = std::fs::remove_file(path2);
 }

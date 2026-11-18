@@ -156,16 +156,7 @@ impl LogAnalysisWorkspace {
             return;
         };
 
-        let mut active_filters = Vec::new();
-        for tab in &self.filter_tabs {
-            if tab.enabled {
-                for rule in &tab.filters {
-                    if rule.active {
-                        active_filters.push(rule.clone());
-                    }
-                }
-            }
-        }
+        let active_filters = self.collect_active_flat_filters();
 
         let show_only = self.show_only_filtered;
         let source_for_bg = source.clone();
@@ -211,61 +202,63 @@ impl LogAnalysisWorkspace {
 
     /// Synchronizes secondary scroll position to match the timestamp of `primary_source_idx`
     pub fn sync_scroll_to_secondary(&mut self, primary_source_idx: usize, cx: &mut Context<Self>) {
-        let (Some(primary_src), Some(secondary_src), Some(secondary_res)) = (
-            &self.log_source,
-            &self.split_view.secondary_log_source,
-            &self.split_view.secondary_filter_result,
-        ) else {
-            return;
-        };
-
-        let Some(ts_micros) = probe_parent_timestamp(primary_src, primary_source_idx) else {
-            return;
-        };
-
-        if let Some(target_vis_idx) = find_nearest_timestamp_row(
-            &**secondary_src,
-            &secondary_res.visible_indices,
-            ts_micros,
+        if sync_pane_to_timestamp(
+            self.log_source.as_ref(),
+            primary_source_idx,
+            self.split_view.secondary_log_source.as_ref(),
+            self.split_view.secondary_filter_result.as_ref(),
+            &mut self.secondary_selection,
+            &self.secondary_scroll_handle,
         ) {
-            if let Some(target_source_idx) = crate::selection::resolve_selected_source_idx(
-                &secondary_res.visible_indices,
-                Some(target_vis_idx),
-            ) {
-                self.secondary_selection.select(target_vis_idx, target_source_idx);
-                self.secondary_scroll_handle.scroll_to_item_strict(target_vis_idx, ScrollStrategy::Center);
-                cx.notify();
-            }
+            cx.notify();
         }
     }
 
     /// Synchronizes primary scroll position to match the timestamp of `secondary_source_idx`
     pub fn sync_scroll_to_primary(&mut self, secondary_source_idx: usize, cx: &mut Context<Self>) {
-        let (Some(secondary_src), Some(primary_src), Some(primary_res)) = (
-            &self.split_view.secondary_log_source,
-            &self.log_source,
-            &self.filter_result,
-        ) else {
-            return;
-        };
-
-        let Some(ts_micros) = probe_parent_timestamp(secondary_src, secondary_source_idx) else {
-            return;
-        };
-
-        if let Some(target_vis_idx) = find_nearest_timestamp_row(
-            &**primary_src,
-            &primary_res.visible_indices,
-            ts_micros,
+        if sync_pane_to_timestamp(
+            self.split_view.secondary_log_source.as_ref(),
+            secondary_source_idx,
+            self.log_source.as_ref(),
+            self.filter_result.as_ref(),
+            &mut self.selection,
+            &self.scroll_handle,
         ) {
-            if let Some(target_source_idx) = crate::selection::resolve_selected_source_idx(
-                &primary_res.visible_indices,
-                Some(target_vis_idx),
-            ) {
-                self.selection.select(target_vis_idx, target_source_idx);
-                self.scroll_handle.scroll_to_item_strict(target_vis_idx, ScrollStrategy::Center);
-                cx.notify();
-            }
+            cx.notify();
         }
     }
+}
+
+fn sync_pane_to_timestamp(
+    from_source: Option<&Arc<ActiveLogSource>>,
+    from_source_idx: usize,
+    to_source: Option<&Arc<ActiveLogSource>>,
+    to_filter_result: Option<&Arc<FilterResult>>,
+    to_selection: &mut crate::selection::SelectionModel,
+    to_scroll_handle: &UniformListScrollHandle,
+) -> bool {
+    let (Some(from_src), Some(to_src), Some(to_res)) = (from_source, to_source, to_filter_result)
+    else {
+        return false;
+    };
+
+    let Some(ts_micros) = probe_parent_timestamp(from_src, from_source_idx) else {
+        return false;
+    };
+
+    let Some(target_vis_idx) =
+        find_nearest_timestamp_row(&**to_src, &to_res.visible_indices, ts_micros)
+    else {
+        return false;
+    };
+
+    let Some(target_source_idx) =
+        crate::selection::resolve_selected_source_idx(&to_res.visible_indices, Some(target_vis_idx))
+    else {
+        return false;
+    };
+
+    to_selection.select(target_vis_idx, target_source_idx);
+    to_scroll_handle.scroll_to_item_strict(target_vis_idx, ScrollStrategy::Center);
+    true
 }

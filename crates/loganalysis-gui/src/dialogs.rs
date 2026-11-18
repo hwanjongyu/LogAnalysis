@@ -246,24 +246,6 @@ pub async fn resolve_dialog_for_display(
     }
 }
 
-/// Builds the Open Log File dialog with mandatory extensions (*.log, *.txt, and *.*) and safe parent attachment.
-#[allow(dead_code)]
-pub fn build_open_log_dialog(parent: Option<&Window>) -> rfd::AsyncFileDialog {
-    attach_dialog_parent(build_open_log_dialog_base(), parent)
-}
-
-/// Builds the Save Filter Profile dialog with mandatory extensions (*.json and *.*) and safe parent attachment.
-#[allow(dead_code)]
-pub fn build_save_filters_dialog(parent: Option<&Window>) -> rfd::AsyncFileDialog {
-    attach_dialog_parent(build_save_filters_dialog_base(), parent)
-}
-
-/// Builds the Load Filter Profile dialog with mandatory extensions (*.json and *.*) and safe parent attachment.
-#[allow(dead_code)]
-pub fn build_load_filters_dialog(parent: Option<&Window>) -> rfd::AsyncFileDialog {
-    attach_dialog_parent(build_load_filters_dialog_base(), parent)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,11 +264,18 @@ mod tests {
 
     #[test]
     fn test_build_dialogs_without_panic() {
-        // Even with parent = None, dialog builder must initialize without panic
-        let _open_dlg = build_open_log_dialog(None);
-        let _save_dlg = build_save_filters_dialog(None);
-        let _load_dlg = build_load_filters_dialog(None);
-        let _report_dlg = build_export_html_report_dialog_base("incident_report.html");
+        // Even with parent = None, dialog builders + parent attachment helpers must initialize without panic
+        let _open_dlg = prepare_dialog_with_parent(build_open_log_dialog_base(), None);
+        let _save_dlg = prepare_dialog_with_parent(build_save_filters_dialog_base(), None);
+        let _load_dlg = prepare_dialog_with_parent(build_load_filters_dialog_base(), None);
+        let _report_dlg = prepare_dialog_with_parent(
+            build_export_html_report_dialog_base("incident_report.html"),
+            None,
+        );
+
+        let _open_attached = attach_dialog_parent(build_open_log_dialog_base(), None);
+        let _save_attached = attach_dialog_parent(build_save_filters_dialog_base(), None);
+        let _load_attached = attach_dialog_parent(build_load_filters_dialog_base(), None);
 
         // Test base dialogs and X11 ID attachment without panic
         let base_open = build_open_log_dialog_base();

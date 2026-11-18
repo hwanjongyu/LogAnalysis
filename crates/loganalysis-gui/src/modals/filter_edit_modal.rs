@@ -32,6 +32,19 @@ pub const FG_PALETTE_SWATCHES: &[(&str, Option<u32>)] = &[
     ("Purple", Some(0x800080)),
 ];
 
+/// Built-in quick filter rule presets `(label, pattern, bg_color, fg_color)`.
+pub const QUICK_FILTER_PRESETS: &[(&str, &str, &str, &str)] = &[
+    ("🔴 ERROR", "error", "Red", "DarkRed"),
+    ("🟡 WARN", "warn", "Orange", "Black"),
+    ("🔵 INFO", "info", "Blue", "DarkBlue"),
+    ("🟣 DEBUG", "debug", "Purple", "Purple"),
+    ("⚪ TRACE", "trace", "Gray", "Black"),
+    ("⚡ FATAL", "fatal", "Salmon", "DarkRed"),
+    ("✓ SUCCESS", "success", "Green", "DarkGreen"),
+    ("⚙ ActivityTaskManager", "ActivityTaskManager", "Cyan", "Black"),
+    ("⚙ System", "System", "Blue", "DarkBlue"),
+];
+
 /// Returns a unique GPUI `ElementId` for the `idx`-th color swatch under `prefix`.
 pub fn swatch_element_id(prefix: &'static str, idx: usize) -> ElementId {
     ElementId::NamedInteger(prefix.into(), idx as u64)
@@ -557,20 +570,11 @@ pub fn render_filter_edit_modal(
                                     .flex_wrap()
                                     .gap_1p5()
                                     .children(
-                                        [
-                                            ("🔴 ERROR", "error", "Red", "DarkRed"),
-                                            ("🟡 WARN", "warn", "Orange", "Black"),
-                                            ("🔵 INFO", "info", "Blue", "DarkBlue"),
-                                            ("🟣 DEBUG", "debug", "Purple", "Purple"),
-                                            ("⚪ TRACE", "trace", "Gray", "Black"),
-                                            ("⚡ FATAL", "fatal", "Salmon", "DarkRed"),
-                                            ("✓ SUCCESS", "success", "Green", "DarkGreen"),
-                                            ("⚙ ActivityTaskManager", "ActivityTaskManager", "Cyan", "Black"),
-                                            ("⚙ System", "System", "Blue", "DarkBlue"),
-                                        ]
-                                        .into_iter()
-                                        .enumerate()
-                                        .map(|(p_idx, (label, pat, bg, fg))| {
+                                        QUICK_FILTER_PRESETS
+                                            .iter()
+                                            .copied()
+                                            .enumerate()
+                                            .map(|(p_idx, (label, pat, bg, fg))| {
                                             div()
                                                 .id(ElementId::NamedInteger(
                                                     "quick-preset".into(),

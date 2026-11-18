@@ -154,20 +154,27 @@ mod tests {
 
     #[test]
     fn test_correlation_find_nearest_with_merged_buffer_and_i64_min() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
         let file_dec = b"12-31 23:59:58.000 S1 Dec 58\n\
                          12-31 23:59:59.000 S1 Dec 59\n";
         let file_jan = b"01-01 00:00:01.000 S2 Jan 01\n\
                          01-01 00:00:02.000 S2 Jan 02\n";
 
-        let mut dec_dir = std::env::temp_dir();
-        dec_dir.push(format!("corr_dec_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&dec_dir, file_dec).unwrap();
+        let mut dec_file = NamedTempFile::new().unwrap();
+        dec_file.write_all(file_dec).unwrap();
+        dec_file.flush().unwrap();
 
-        let mut jan_dir = std::env::temp_dir();
-        jan_dir.push(format!("corr_jan_{}.log", uuid::Uuid::new_v4()));
-        std::fs::write(&jan_dir, file_jan).unwrap();
+        let mut jan_file = NamedTempFile::new().unwrap();
+        jan_file.write_all(file_jan).unwrap();
+        jan_file.flush().unwrap();
 
-        let merged = MergedLogBuffer::open_multiple(&[dec_dir.clone(), jan_dir.clone()]).unwrap();
+        let merged = MergedLogBuffer::open_multiple(&[
+            dec_file.path().to_path_buf(),
+            jan_file.path().to_path_buf(),
+        ])
+        .unwrap();
         let vis = vec![0, 1, 2, 3];
 
         // Extreme target_micros (i64::MIN and i64::MAX) must not panic with overflow
@@ -181,9 +188,6 @@ mod tests {
         let jan_ts = merged.get_line_timestamp_micros(2).unwrap();
         let found_jan = find_nearest_timestamp_row(&merged, &vis, jan_ts);
         assert_eq!(found_jan, Some(2));
-
-        let _ = std::fs::remove_file(dec_dir);
-        let _ = std::fs::remove_file(jan_dir);
     }
 
     #[test]

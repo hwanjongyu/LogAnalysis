@@ -9,6 +9,23 @@ pub use device::{
 };
 pub use logcat::{start_logcat_stream, stream_log_lines, LogcatStreamHandle};
 
+/// Configures Linux `PR_SET_PDEATHSIG` (`SIGKILL`) on `cmd` with a post-fork `getppid()`
+/// race guard (`[INV-12]`) so child ADB processes never survive unexpected parent exit.
+#[cfg(target_os = "linux")]
+pub(crate) fn configure_linux_pdeathsig(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        let parent_pid = libc::getpid();
+        cmd.pre_exec(move || {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            if libc::getppid() != parent_pid {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+}
+
 /// Resolves the executable path to `adb`.
 /// Inspects $ANDROID_HOME, $ANDROID_SDK_ROOT, user home standard SDK paths, standard UNIX paths, and falls back to PATH.
 pub fn resolve_adb_path() -> PathBuf {

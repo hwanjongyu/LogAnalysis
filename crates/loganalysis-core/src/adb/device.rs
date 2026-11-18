@@ -127,17 +127,7 @@ pub fn run_command_with_timeout(
     cmd.stderr(Stdio::null());
 
     #[cfg(target_os = "linux")]
-    unsafe {
-        use std::os::unix::process::CommandExt;
-        let parent_pid = libc::getpid();
-        cmd.pre_exec(move || {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-            if libc::getppid() != parent_pid {
-                libc::_exit(1);
-            }
-            Ok(())
-        });
-    }
+    super::configure_linux_pdeathsig(&mut cmd);
 
     let mut child = cmd
         .spawn()

@@ -126,10 +126,16 @@ pub(crate) fn apply_imported_filter_tabs(
     Ok(tabs)
 }
 
-fn write_filters_atomically(path: &std::path::Path, json_bytes: &[u8]) -> std::io::Result<()> {
+/// Atomically writes `bytes` to `path` via a unique adjacent temporary file,
+/// creating missing parent directories and removing temp artifacts on failure.
+pub(crate) fn write_file_atomically(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
     let tmp_path = build_unique_temp_path(path);
-    let res = std::fs::write(&tmp_path, json_bytes)
-        .and_then(|_| atomic_replace_file(&tmp_path, path));
+    let res = std::fs::write(&tmp_path, bytes).and_then(|_| atomic_replace_file(&tmp_path, path));
     if res.is_err() {
         let _ = std::fs::remove_file(&tmp_path);
     }
@@ -395,7 +401,7 @@ impl LogAnalysisWorkspace {
 
             async move {
                 let write_res = bg_executor
-                    .spawn(async move { write_filters_atomically(&path_for_bg, &json_bytes) })
+                    .spawn(async move { write_file_atomically(&path_for_bg, &json_bytes) })
                     .await;
 
                 let _ = this.update(&mut async_cx, |workspace, cx| {
@@ -461,7 +467,7 @@ impl LogAnalysisWorkspace {
                     let path_for_bg = path.clone();
                     let json_bytes = json_str.into_bytes();
                     let write_res = bg_executor
-                        .spawn(async move { write_filters_atomically(&path_for_bg, &json_bytes) })
+                        .spawn(async move { write_file_atomically(&path_for_bg, &json_bytes) })
                         .await;
 
                     let _ = this.update(&mut async_cx, |workspace, cx| {
@@ -650,25 +656,23 @@ mod tests {
 
     #[test]
     fn test_read_filter_profile_bounded() {
-        let dir = std::env::temp_dir();
-        let ok_path = build_unique_temp_path(&dir.join("ok_filter_profile.json"));
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let ok_path = dir.path().join("ok_filter_profile.json");
         std::fs::write(&ok_path, "{\"tabs\":[]}").unwrap();
         let content = read_filter_profile_bounded(&ok_path).unwrap();
         assert_eq!(content, "{\"tabs\":[]}");
-        let _ = std::fs::remove_file(&ok_path);
 
-        let oversized_path = build_unique_temp_path(&dir.join("oversized_filter_profile.json"));
+        let oversized_path = dir.path().join("oversized_filter_profile.json");
         let file = std::fs::File::create(&oversized_path).unwrap();
         file.set_len(MAX_FILTER_PROFILE_BYTES + 1).unwrap();
         let err = read_filter_profile_bounded(&oversized_path).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        let _ = std::fs::remove_file(&oversized_path);
     }
 
     #[test]
     fn test_atomic_replace_file_overwrites_existing() {
-        let dir = std::env::temp_dir();
-        let target = build_unique_temp_path(&dir.join("atomic_replace_target.json"));
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let target = dir.path().join("atomic_replace_target.json");
         let tmp1 = build_unique_temp_path(&target);
         let tmp2 = build_unique_temp_path(&target);
 
@@ -681,8 +685,6 @@ mod tests {
         atomic_replace_file(&tmp2, &target).unwrap();
         assert!(!tmp2.exists());
         assert_eq!(std::fs::read(&target).unwrap(), b"second");
-
-        let _ = std::fs::remove_file(&target);
     }
 
     #[test]

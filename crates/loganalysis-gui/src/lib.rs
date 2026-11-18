@@ -453,10 +453,58 @@ impl Render for LogAnalysisWorkspace {
     }
 }
 
+/// Builds the sanitized `.desktop` entry file content for `exec` and `icon_path`.
+/// Returns `None` when either sanitized path is empty.
+pub fn build_desktop_entry_content(
+    exec: &std::path::Path,
+    icon_path: &std::path::Path,
+) -> Option<String> {
+    let safe_exec = exec.to_string_lossy().replace(['\n', '\r', '"', '\\'], "");
+    let safe_icon = icon_path
+        .to_string_lossy()
+        .replace(['\n', '\r', '"', '\\'], "");
+    if safe_exec.is_empty() || safe_icon.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "[Desktop Entry]\n\
+        Name=LogAnalysis\n\
+        Comment=GPU-Accelerated High Performance Log Analysis Tool\n\
+        Exec=\"{}\" %F\n\
+        Icon={}\n\
+        Terminal=false\n\
+        Type=Application\n\
+        Categories=Development;Utility;System;\n\
+        MimeType=text/plain;application/json;\n\
+        StartupWMClass=loganalysis\n",
+        safe_exec, safe_icon
+    ))
+}
+
+/// Writes `bytes` to `path` only if the file is missing or its current contents differ.
+/// Returns `Ok(true)` if the file was created or updated, or `Ok(false)` when already identical.
+pub fn write_if_changed(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<bool> {
+    if let Ok(existing) = std::fs::read(path) {
+        if existing == bytes {
+            return Ok(false);
+        }
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(path, bytes)?;
+    Ok(true)
+}
+
 /// Ensures desktop entry and application icon are installed on Linux desktops.
 #[cfg(target_os = "linux")]
 pub fn ensure_desktop_integration() {
     let Ok(home) = std::env::var("HOME") else { return; };
+    if home.is_empty() {
+        return;
+    }
     let home_path = std::path::PathBuf::from(home);
     let apps_dir = home_path.join(".local/share/applications");
     let icons_dir = home_path.join(".local/share/icons/hicolor/256x256/apps");
@@ -466,45 +514,36 @@ pub fn ensure_desktop_integration() {
     let _ = std::fs::create_dir_all(&apps_dir);
     let _ = std::fs::create_dir_all(&icons_dir);
 
-    // 1. Write icon if missing
+    // 1. Write icon only when missing or content changed
     const ICON_BYTES: &[u8] = include_bytes!("../../../assets/loganalysis.png");
-    if !icon_file.exists() {
-        let _ = std::fs::write(&icon_file, ICON_BYTES);
-    }
+    let icon_changed = write_if_changed(&icon_file, ICON_BYTES).unwrap_or(false);
 
-    // 2. Resolve executable path (AppImage or binary)
+    // 2. Resolve executable path (AppImage or binary) and write desktop file only when changed
     let exec_path = std::env::var("APPIMAGE")
         .ok()
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_exe().ok());
 
-    if let Some(exec) = exec_path {
-        let safe_exec = exec.to_string_lossy().replace(['\n', '\r', '"', '\\'], "");
-        if !safe_exec.is_empty() {
-            let content = format!(
-                "[Desktop Entry]\n\
-                Name=LogAnalysis\n\
-                Comment=GPU-Accelerated High Performance Log Analysis Tool\n\
-                Exec=\"{}\" %F\n\
-                Icon={}\n\
-                Terminal=false\n\
-                Type=Application\n\
-                Categories=Development;Utility;System;\n\
-                MimeType=text/plain;application/json;\n\
-                StartupWMClass=loganalysis\n",
-                safe_exec,
-                icon_file.display()
-            );
-            let _ = std::fs::write(&desktop_file, content);
-        }
+    let desktop_changed = exec_path
+        .as_deref()
+        .and_then(|exec| build_desktop_entry_content(exec, &icon_file))
+        .and_then(|content| write_if_changed(&desktop_file, content.as_bytes()).ok())
+        .unwrap_or(false);
 
-        let _ = std::process::Command::new("update-desktop-database")
-            .arg(&apps_dir)
-            .status();
-        let _ = std::process::Command::new("gtk-update-icon-cache")
-            .args(["-f", "-t"])
-            .arg(home_path.join(".local/share/icons/hicolor"))
-            .status();
+    // 3. Refresh desktop caches off the startup thread only when files actually changed
+    if icon_changed || desktop_changed {
+        let hicolor_dir = home_path.join(".local/share/icons/hicolor");
+        let _ = std::thread::Builder::new()
+            .name("desktop-integration-refresh".to_string())
+            .spawn(move || {
+                let _ = std::process::Command::new("update-desktop-database")
+                    .arg(&apps_dir)
+                    .status();
+                let _ = std::process::Command::new("gtk-update-icon-cache")
+                    .args(["-f", "-t"])
+                    .arg(&hicolor_dir)
+                    .status();
+            });
     }
 }
 
@@ -633,4 +672,47 @@ pub fn run_app() {
         }
     });
     logging::flush_logs();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_desktop_entry_content, write_if_changed};
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_build_desktop_entry_content_sanitizes_and_validates() {
+        let content = build_desktop_entry_content(
+            Path::new("/usr/local/bin/loganalysis"),
+            Path::new("/home/user/.local/share/icons/loganalysis.png"),
+        )
+        .expect("valid paths should produce desktop entry");
+        assert!(content.contains("Exec=\"/usr/local/bin/loganalysis\" %F\n"));
+        assert!(content.contains("Icon=/home/user/.local/share/icons/loganalysis.png\n"));
+        assert!(content.contains("StartupWMClass=loganalysis\n"));
+
+        let sanitized = build_desktop_entry_content(
+            Path::new("/opt/\"evil\"\\\napp\r"),
+            Path::new("/home/\"user\"/icon\\\n.png"),
+        )
+        .expect("sanitized paths should still produce desktop entry");
+        assert!(sanitized.contains("Exec=\"/opt/evilapp\" %F\n"));
+        assert!(sanitized.contains("Icon=/home/user/icon.png\n"));
+
+        assert!(build_desktop_entry_content(Path::new("\"\n\r\\"), Path::new("/icon.png")).is_none());
+        assert!(build_desktop_entry_content(Path::new("/bin/app"), Path::new("\"\n\r\\")).is_none());
+    }
+
+    #[test]
+    fn test_write_if_changed_skips_identical_and_writes_diffs() {
+        let dir = TempDir::new().expect("create temp dir");
+        let target = dir.path().join("nested/loganalysis.desktop");
+
+        assert!(write_if_changed(&target, b"v1").unwrap());
+        assert_eq!(std::fs::read(&target).unwrap(), b"v1");
+
+        assert!(!write_if_changed(&target, b"v1").unwrap());
+        assert!(write_if_changed(&target, b"v2").unwrap());
+        assert_eq!(std::fs::read(&target).unwrap(), b"v2");
+    }
 }

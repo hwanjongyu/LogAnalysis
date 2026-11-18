@@ -8,7 +8,6 @@ use crate::theme::Theme;
 use crate::types::FilterPanelPosition;
 use crate::workspace::LogAnalysisWorkspace;
 
-#[allow(dead_code)]
 pub fn render_kbd_badge(shortcut: &'static str, theme: Theme) -> impl IntoElement {
     div()
         .px(px(4.0))
@@ -24,7 +23,6 @@ pub fn render_kbd_badge(shortcut: &'static str, theme: Theme) -> impl IntoElemen
         .child(shortcut)
 }
 
-#[allow(dead_code)]
 pub fn render_kbd_badge_on_accent(shortcut: &'static str) -> impl IntoElement {
     div()
         .px(px(4.0))
@@ -627,20 +625,6 @@ pub fn render_unified_header(
                 // CSD Window Controls (Min, Max, Close) when should_render_csd is true
                 .children(crate::components::titlebar::render_window_controls(window, theme, cx)),
         )
-}
-
-/// Backwards compatibility wrapper for render_toolbar
-#[allow(dead_code)]
-pub fn render_toolbar(
-    workspace: &LogAnalysisWorkspace,
-    _cx: &mut Context<LogAnalysisWorkspace>,
-) -> impl IntoElement {
-    let theme = workspace.theme;
-    div()
-        .id("toolbar-deprecated")
-        .h(px(0.0))
-        .w_full()
-        .bg(theme.bg_header)
 }
 
 /// Renders the floating Overflow Menu popover for consolidated secondary toolbar actions.

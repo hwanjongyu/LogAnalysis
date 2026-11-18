@@ -1,10 +1,53 @@
 use std::io::{self, BufReader, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use crossbeam_channel::{bounded, unbounded};
 use loganalysis_core::{start_logcat_stream, stream_log_lines};
+
+/// Deterministic signaling reader that notifies a Condvar when `notify_at_index` read begins.
+struct SignalingReader {
+    chunks: Vec<Vec<u8>>,
+    index: usize,
+    notify_at_index: usize,
+    signal: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl Read for SignalingReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.index == self.notify_at_index {
+            let (lock, cvar) = &*self.signal;
+            let mut ready = lock.lock().unwrap();
+            *ready = true;
+            cvar.notify_all();
+        }
+        if self.index >= self.chunks.len() {
+            return Ok(0);
+        }
+        let chunk = &self.chunks[self.index];
+        let to_copy = chunk.len().min(buf.len());
+        buf[..to_copy].copy_from_slice(&chunk[..to_copy]);
+        if to_copy == chunk.len() {
+            self.index += 1;
+        } else {
+            self.chunks[self.index] = chunk[to_copy..].to_vec();
+        }
+        Ok(to_copy)
+    }
+}
+
+fn wait_until_ready(signal: &(Mutex<bool>, Condvar)) {
+    let (lock, cvar) = signal;
+    let guard = lock.lock().unwrap();
+    let (guard, timeout) = cvar
+        .wait_timeout_while(guard, Duration::from_secs(2), |ready| !*ready)
+        .unwrap();
+    assert!(
+        *guard && !timeout.timed_out(),
+        "Timed out waiting for signaling reader"
+    );
+}
 
 /// Custom mock reader to simulate granular I/O error scenarios
 struct MockFaultyReader {
@@ -196,20 +239,25 @@ fn test_stress_channel_disconnect_immediate() {
 #[test]
 fn test_stress_channel_disconnect_while_blocked_on_saturated_channel() {
     let (tx, rx) = bounded(1);
-    tx.send(vec!["saturate".to_string()]).unwrap();
-
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_flag_clone = stop_flag.clone();
-    let data = "Line\n".repeat(200);
+    let signal = Arc::new((Mutex::new(false), Condvar::new()));
+    let signal_clone = Arc::clone(&signal);
     let worker_tx = tx.clone();
 
     let worker = thread::spawn(move || {
-        let reader = BufReader::new(data.as_bytes());
+        let reader = BufReader::new(SignalingReader {
+            chunks: vec![b"saturate\n".to_vec(), b"Line\n".repeat(200)],
+            index: 0,
+            notify_at_index: 1,
+            signal: signal_clone,
+        });
         stream_log_lines(reader, worker_tx, stop_flag_clone);
     });
 
-    // Wait until worker is blocked on saturated channel
-    thread::sleep(Duration::from_millis(30));
+    // Wait deterministically until worker has saturated bounded(1) and started reading batch #2
+    wait_until_ready(&signal);
+    assert!(rx.is_full(), "Channel must be saturated before disconnecting");
 
     // Drop the receiver
     let start = Instant::now();
@@ -269,20 +317,25 @@ fn test_stress_tail_flush_delivers_residual_when_stop_flag_false() {
 
 #[test]
 fn test_stress_stop_flag_unblock_latency() {
-    let (tx, _rx) = bounded(1);
-    tx.send(vec!["saturate".to_string()]).unwrap();
-
+    let (tx, rx) = bounded(1);
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_flag_clone = stop_flag.clone();
-    let data = "Line\n".repeat(500);
+    let signal = Arc::new((Mutex::new(false), Condvar::new()));
+    let signal_clone = Arc::clone(&signal);
     let worker_tx = tx.clone();
 
     let worker = thread::spawn(move || {
-        let reader = BufReader::new(data.as_bytes());
+        let reader = BufReader::new(SignalingReader {
+            chunks: vec![b"saturate\n".to_vec(), b"Line\n".repeat(500)],
+            index: 0,
+            notify_at_index: 1,
+            signal: signal_clone,
+        });
         stream_log_lines(reader, worker_tx, stop_flag_clone);
     });
 
-    thread::sleep(Duration::from_millis(40));
+    wait_until_ready(&signal);
+    assert!(rx.is_full(), "Channel must be saturated");
 
     let start = Instant::now();
     stop_flag.store(true, Ordering::SeqCst);
@@ -337,18 +390,33 @@ fn test_stress_handle_stop_idempotency() {
 // 7. Concurrency, Race Condition, and Rendezvous Stress
 #[test]
 fn test_stress_zero_capacity_rendezvous_channel() {
-    let (tx, _rx) = bounded(0); // Zero capacity (rendezvous)
+    let (tx, rx) = bounded(0); // Zero capacity (rendezvous)
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_flag_clone = stop_flag.clone();
-    let data = "Rendezvous log line\n".repeat(10);
+    let signal = Arc::new((Mutex::new(false), Condvar::new()));
+    let signal_clone = Arc::clone(&signal);
     let worker_tx = tx.clone();
 
     let worker = thread::spawn(move || {
-        let reader = BufReader::new(data.as_bytes());
+        let reader = BufReader::new(SignalingReader {
+            chunks: vec![
+                b"Rendezvous warmup\n".to_vec(),
+                b"Rendezvous log line\n".repeat(10),
+            ],
+            index: 0,
+            notify_at_index: 1,
+            signal: signal_clone,
+        });
         stream_log_lines(reader, worker_tx, stop_flag_clone);
     });
 
-    thread::sleep(Duration::from_millis(30));
+    // Rendezvous with batch 1 proves worker entered send_timeout; then wait for read 2
+    let first = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("Rendezvous warmup batch must arrive");
+    assert_eq!(first, vec!["Rendezvous warmup"]);
+    wait_until_ready(&signal);
+
     let start = Instant::now();
     stop_flag.store(true, Ordering::SeqCst);
     let res = worker.join();
@@ -365,24 +433,47 @@ fn test_stress_zero_capacity_rendezvous_channel() {
 #[test]
 fn test_stress_rapid_racing_stop_and_drop_cycles() {
     for cycle in 0..50 {
-        let (tx, _rx) = bounded(1);
-        tx.send(vec!["saturated".to_string()]).unwrap();
+        let cap = (cycle % 3) + 1;
+        let (tx, rx) = bounded(cap);
+        for i in 0..(cap - 1) {
+            tx.send(vec![format!("prefill-{i}")]).unwrap();
+        }
 
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_clone = stop_flag.clone();
-        let data = "Race line\n".repeat(200);
+        let signal = Arc::new((Mutex::new(false), Condvar::new()));
+        let signal_clone = Arc::clone(&signal);
+        let notify_at_index = match cycle % 3 {
+            0 => usize::MAX, // Immediate stop race before/at first read
+            1 => 0,          // Stop during/right after first read
+            _ => 1,          // Stop after channel saturation on second read
+        };
+        let second_batch_lines = match cycle % 3 {
+            0 => 10,
+            1 => 100,
+            _ => 250,
+        };
         let worker_tx = tx.clone();
 
         let worker = thread::spawn(move || {
-            let reader = BufReader::new(data.as_bytes());
+            let reader = BufReader::new(SignalingReader {
+                chunks: vec![
+                    b"Fill slot\n".to_vec(),
+                    b"Race line\n".repeat(second_batch_lines),
+                ],
+                index: 0,
+                notify_at_index,
+                signal: signal_clone,
+            });
             stream_log_lines(reader, worker_tx, stop_flag_clone);
         });
 
-        // Vary sleep to hit different execution windows inside stream_log_lines
-        if cycle % 3 == 1 {
-            thread::sleep(Duration::from_millis(5));
-        } else if cycle % 3 == 2 {
-            thread::sleep(Duration::from_millis(25));
+        // Synchronize deterministically on distinct execution windows without sleeping
+        if notify_at_index != usize::MAX {
+            wait_until_ready(&signal);
+        }
+        if cycle % 3 == 2 {
+            assert!(rx.is_full(), "Cycle {cycle}: channel must be saturated");
         }
 
         let start = Instant::now();
