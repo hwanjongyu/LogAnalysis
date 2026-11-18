@@ -21,8 +21,9 @@ pub use stream_buffer::{
     SharedStreamBuffer, StreamBufferInner, StreamLogBuffer, STREAM_PAGE_SIZE,
 };
 pub use timestamp::{
-    compute_delta_micros, extract_timestamp, format_delta_micros, format_epoch_utc, LatencyLevel,
-    LogTimestamp,
+    compute_delta_micros, compute_delta_micros_typed, extract_timestamp,
+    extract_timestamp_with_kind, format_delta_micros, format_epoch_utc, LatencyLevel, LogTimestamp,
+    ParsedTimestamp, TimestampKind,
 };
 
 /// Unified log source enum representing either a file-backed mmap buffer, streaming buffer, or merged multi-file buffer.
@@ -154,22 +155,27 @@ pub trait LogSource: Send + Sync {
     /// Retrieve the measured character display column width of the line (excluding trailing whitespace/newlines).
     /// Uses East Asian Unicode width so CJK full-width characters reserve 2 monospace columns.
     fn get_measured_length(&self, idx: usize) -> usize {
-        match self.get_raw_line(idx) {
-            Some(bytes) => {
-                let trimmed = trim_line_end(bytes);
-                if let Ok(s) = std::str::from_utf8(trimmed) {
-                    unicode_width::UnicodeWidthStr::width(s)
-                } else {
-                    trimmed.len()
-                }
-            }
-            None => 0,
-        }
+        self.get_raw_line(idx)
+            .map(measure_display_width)
+            .unwrap_or(0)
     }
 
     /// Retrieve the microsecond timestamp for line idx (normalized across year rollovers).
     fn get_timestamp_micros(&self, idx: usize) -> Option<i64> {
         self.get_raw_line(idx).and_then(extract_timestamp).map(|t| t.total_micros)
+    }
+}
+
+/// Measures the monospace display column width of raw line bytes (excluding trailing ASCII whitespace/newlines).
+/// Uses a zero-allocation fast path for printable ASCII lines and falls back to Unicode width for UTF-8/CJK text.
+#[inline]
+pub fn measure_display_width(bytes: &[u8]) -> usize {
+    let trimmed = trim_trailing_whitespace(bytes);
+    if trimmed.iter().all(|&b| (0x20..=0x7e).contains(&b)) {
+        trimmed.len()
+    } else {
+        let s = String::from_utf8_lossy(trimmed);
+        unicode_width::UnicodeWidthStr::width(s.as_ref())
     }
 }
 

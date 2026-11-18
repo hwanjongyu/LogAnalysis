@@ -4,6 +4,49 @@ use loganalysis_core::{evaluate_contrast, parse_color_spec, ContrastLevel};
 use crate::types::InputFocusTarget;
 use crate::workspace::LogAnalysisWorkspace;
 
+/// Curated background color swatches for the Filter Rule Editor modal.
+pub const BG_PALETTE_SWATCHES: &[(&str, Option<u32>)] = &[
+    ("None", None),
+    ("Red", Some(0xFFB6B6)),
+    ("Yellow", Some(0xFFFF00)),
+    ("Green", Some(0x90EE90)),
+    ("Cyan", Some(0x00FFFF)),
+    ("Blue", Some(0xB6D0FF)),
+    ("Orange", Some(0xFFD580)),
+    ("Purple", Some(0xE6E6FA)),
+    ("Gray", Some(0xD3D3D3)),
+    ("White", Some(0xFFFFFF)),
+];
+
+/// Curated text foreground color swatches for the Filter Rule Editor modal.
+pub const FG_PALETTE_SWATCHES: &[(&str, Option<u32>)] = &[
+    ("Default", None),
+    ("Black", Some(0x000000)),
+    ("White", Some(0xFFFFFF)),
+    ("Red", Some(0xFF0000)),
+    ("DarkRed", Some(0x8B0000)),
+    ("Blue", Some(0x0000FF)),
+    ("Green", Some(0x008000)),
+    ("Gray", Some(0x808080)),
+    ("Orange", Some(0xFFA500)),
+    ("Purple", Some(0x800080)),
+];
+
+/// Returns a unique GPUI `ElementId` for the `idx`-th color swatch under `prefix`.
+pub fn swatch_element_id(prefix: &'static str, idx: usize) -> ElementId {
+    ElementId::NamedInteger(prefix.into(), idx as u64)
+}
+
+/// Formats the background color section heading for the Filter Rule Editor modal.
+pub fn bg_color_section_label(bg_name: &str) -> String {
+    format!("Background Color: {bg_name}")
+}
+
+/// Formats the foreground text color section heading for the Filter Rule Editor modal.
+pub fn fg_color_section_label(fg_name: &str) -> String {
+    format!("Text Color: {fg_name}")
+}
+
 pub fn render_filter_edit_modal(
     workspace: &LogAnalysisWorkspace,
     cx: &mut Context<LogAnalysisWorkspace>,
@@ -372,7 +415,7 @@ pub fn render_filter_edit_modal(
                                     .text_size(px(11.0))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme.text_muted)
-                                    .child(format!("Background Color (배경색): {}", bg_name)),
+                                    .child(bg_color_section_label(&bg_name)),
                             )
                             .child(
                                 div()
@@ -380,60 +423,48 @@ pub fn render_filter_edit_modal(
                                     .items_center()
                                     .gap_2()
                                     .children(
-                                        [
-                                            ("None", None),
-                                            ("Red", Some(0xFFB6B6)),
-                                            ("Yellow", Some(0xFFFF00)),
-                                            ("Green", Some(0x90EE90)),
-                                            ("Cyan", Some(0x00FFFF)),
-                                            ("Blue", Some(0xB6D0FF)),
-                                            ("Orange", Some(0xFFD580)),
-                                            ("Purple", Some(0xE6E6FA)),
-                                            ("Gray", Some(0xD3D3D3)),
-                                            ("White", Some(0xFFFFFF)),
-                                        ]
-                                        .into_iter()
-                                        .map(|(name, bg_val)| {
-                                            let is_curr = bg_name.eq_ignore_ascii_case(name);
-                                            let bg_color = bg_val.map(rgb).unwrap_or(theme.bg_card);
-                                            div()
-                                                .id(ElementId::NamedInteger(
-                                                    "bg-palette-color".into(),
-                                                    bg_val.unwrap_or(0) as u64,
-                                                ))
-                                                .w(px(24.0))
-                                                .h(px(24.0))
-                                                .rounded_full()
-                                                .bg(bg_color)
-                                                .border_2()
-                                                .border_color(if is_curr {
-                                                    theme.accent
-                                                } else {
-                                                    theme.border
-                                                })
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .cursor_pointer()
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.filter_edit_modal.bg_color_name =
-                                                            name.to_string();
-                                                        this.input_focus = InputFocusTarget::ModalPattern;
-                                                        window.focus(&this.modal_pattern_input.read(cx).focus_handle);
-                                                        cx.stop_propagation();
-                                                        cx.notify();
-                                                    },
-                                                ))
-                                                .child(if bg_val.is_none() {
-                                                    div().text_size(px(10.0)).text_color(theme.text_muted).child("⊘")
-                                                } else if is_curr {
-                                                    div().text_size(px(10.0)).text_color(rgb(0x000000)).child("✓")
-                                                } else {
-                                                    div().child("")
-                                                })
-                                        })
-                                        .collect::<Vec<_>>(),
+                                        BG_PALETTE_SWATCHES
+                                            .iter()
+                                            .copied()
+                                            .enumerate()
+                                            .map(|(idx, (name, bg_val))| {
+                                                let is_curr = bg_name.eq_ignore_ascii_case(name);
+                                                let bg_color = bg_val.map(rgb).unwrap_or(theme.bg_card);
+                                                div()
+                                                    .id(swatch_element_id("bg-palette-color", idx))
+                                                    .w(px(24.0))
+                                                    .h(px(24.0))
+                                                    .rounded_full()
+                                                    .bg(bg_color)
+                                                    .border_2()
+                                                    .border_color(if is_curr {
+                                                        theme.accent
+                                                    } else {
+                                                        theme.border
+                                                    })
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.filter_edit_modal.bg_color_name =
+                                                                name.to_string();
+                                                            this.input_focus = InputFocusTarget::ModalPattern;
+                                                            window.focus(&this.modal_pattern_input.read(cx).focus_handle);
+                                                            cx.stop_propagation();
+                                                            cx.notify();
+                                                        },
+                                                    ))
+                                                    .child(if bg_val.is_none() {
+                                                        div().text_size(px(10.0)).text_color(theme.text_muted).child("⊘")
+                                                    } else if is_curr {
+                                                        div().text_size(px(10.0)).text_color(rgb(0x000000)).child("✓")
+                                                    } else {
+                                                        div().child("")
+                                                    })
+                                            })
+                                            .collect::<Vec<_>>(),
                                     ),
                             ),
                     )
@@ -448,7 +479,7 @@ pub fn render_filter_edit_modal(
                                     .text_size(px(11.0))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme.text_muted)
-                                    .child(format!("Text Color (글자색): {}", fg_name)),
+                                    .child(fg_color_section_label(&fg_name)),
                             )
                             .child(
                                 div()
@@ -456,66 +487,54 @@ pub fn render_filter_edit_modal(
                                     .items_center()
                                     .gap_2()
                                     .children(
-                                        [
-                                            ("Default", None),
-                                            ("Black", Some(0x000000)),
-                                            ("White", Some(0xFFFFFF)),
-                                            ("Red", Some(0xFF0000)),
-                                            ("DarkRed", Some(0x8B0000)),
-                                            ("Blue", Some(0x0000FF)),
-                                            ("Green", Some(0x008000)),
-                                            ("Gray", Some(0x808080)),
-                                            ("Orange", Some(0xFFA500)),
-                                            ("Purple", Some(0x800080)),
-                                        ]
-                                        .into_iter()
-                                        .map(|(name, fg_val)| {
-                                            let is_curr = fg_name.eq_ignore_ascii_case(name)
-                                                || (name == "Default" && (fg_name.eq_ignore_ascii_case("none") || fg_name.is_empty()));
-                                            div()
-                                                .id(ElementId::NamedInteger(
-                                                    "fg-palette-color".into(),
-                                                    fg_val.unwrap_or(0) as u64,
-                                                ))
-                                                .w(px(24.0))
-                                                .h(px(24.0))
-                                                .rounded_full()
-                                                .bg(theme.bg_card)
-                                                .border_2()
-                                                .border_color(if is_curr {
-                                                    theme.accent
-                                                } else {
-                                                    theme.border
-                                                })
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .cursor_pointer()
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.filter_edit_modal.fg_color_name =
-                                                            name.to_string();
-                                                        this.input_focus = InputFocusTarget::ModalPattern;
-                                                        window.focus(&this.modal_pattern_input.read(cx).focus_handle);
-                                                        cx.stop_propagation();
-                                                        cx.notify();
-                                                    },
-                                                ))
-                                                .child(if let Some(val) = fg_val {
-                                                    div()
-                                                        .text_size(px(12.0))
-                                                        .font_weight(FontWeight::BOLD)
-                                                        .text_color(rgb(val))
-                                                        .child("A")
-                                                } else {
-                                                    div()
-                                                        .text_size(px(9.0))
-                                                        .font_weight(FontWeight::BOLD)
-                                                        .text_color(theme.text_muted)
-                                                        .child("Def")
-                                                })
-                                        })
-                                        .collect::<Vec<_>>(),
+                                        FG_PALETTE_SWATCHES
+                                            .iter()
+                                            .copied()
+                                            .enumerate()
+                                            .map(|(idx, (name, fg_val))| {
+                                                let is_curr = fg_name.eq_ignore_ascii_case(name)
+                                                    || (name == "Default" && (fg_name.eq_ignore_ascii_case("none") || fg_name.is_empty()));
+                                                div()
+                                                    .id(swatch_element_id("fg-palette-color", idx))
+                                                    .w(px(24.0))
+                                                    .h(px(24.0))
+                                                    .rounded_full()
+                                                    .bg(theme.bg_card)
+                                                    .border_2()
+                                                    .border_color(if is_curr {
+                                                        theme.accent
+                                                    } else {
+                                                        theme.border
+                                                    })
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.filter_edit_modal.fg_color_name =
+                                                                name.to_string();
+                                                            this.input_focus = InputFocusTarget::ModalPattern;
+                                                            window.focus(&this.modal_pattern_input.read(cx).focus_handle);
+                                                            cx.stop_propagation();
+                                                            cx.notify();
+                                                        },
+                                                    ))
+                                                    .child(if let Some(val) = fg_val {
+                                                        div()
+                                                            .text_size(px(12.0))
+                                                            .font_weight(FontWeight::BOLD)
+                                                            .text_color(rgb(val))
+                                                            .child("A")
+                                                    } else {
+                                                        div()
+                                                            .text_size(px(9.0))
+                                                            .font_weight(FontWeight::BOLD)
+                                                            .text_color(theme.text_muted)
+                                                            .child("Def")
+                                                    })
+                                            })
+                                            .collect::<Vec<_>>(),
                                     ),
                             ),
                     )
@@ -640,4 +659,46 @@ pub fn render_filter_edit_modal(
                     ),
             ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        bg_color_section_label, fg_color_section_label, swatch_element_id, BG_PALETTE_SWATCHES,
+        FG_PALETTE_SWATCHES,
+    };
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_palette_swatch_element_ids_are_distinct() {
+        let bg_ids: HashSet<_> = (0..BG_PALETTE_SWATCHES.len())
+            .map(|idx| swatch_element_id("bg-palette-color", idx))
+            .collect();
+        assert_eq!(bg_ids.len(), BG_PALETTE_SWATCHES.len());
+
+        let fg_ids: HashSet<_> = (0..FG_PALETTE_SWATCHES.len())
+            .map(|idx| swatch_element_id("fg-palette-color", idx))
+            .collect();
+        assert_eq!(fg_ids.len(), FG_PALETTE_SWATCHES.len());
+
+        let default_idx = FG_PALETTE_SWATCHES
+            .iter()
+            .position(|(name, _)| *name == "Default")
+            .expect("Default FG swatch must exist");
+        let black_idx = FG_PALETTE_SWATCHES
+            .iter()
+            .position(|(name, _)| *name == "Black")
+            .expect("Black FG swatch must exist");
+        assert_ne!(
+            swatch_element_id("fg-palette-color", default_idx),
+            swatch_element_id("fg-palette-color", black_idx)
+        );
+
+        let bg_label = bg_color_section_label("Yellow");
+        let fg_label = fg_color_section_label("Black");
+        assert_eq!(bg_label, "Background Color: Yellow");
+        assert_eq!(fg_label, "Text Color: Black");
+        assert!(!bg_label.contains("배경색"));
+        assert!(!fg_label.contains("글자색"));
+    }
 }

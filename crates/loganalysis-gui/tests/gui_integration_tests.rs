@@ -968,7 +968,9 @@ fn test_csd_env_resolution_hierarchy() {
 fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
     use gpui::Action;
     use loganalysis_core::fuzzy_match;
-    use loganalysis_gui::actions::{all_action_names, ToggleZenMode, REGISTERED_ACTION_COUNT};
+    use loganalysis_gui::actions::{
+        all_action_names, CloseFind, ResetZoom, ToggleZenMode, REGISTERED_ACTION_COUNT,
+    };
     use loganalysis_gui::components::timeline_sparkline::should_render_timeline_ribbon;
     use loganalysis_gui::modals::command_palette::{
         get_palette_commands, palette_command_action_name, PaletteCommandId,
@@ -979,15 +981,17 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
         workspace_shows_status_bar, LogAnalysisWorkspace,
     };
 
-    // 1. Verification of compiled registered action contracts (45 actions including ToggleZenMode)
+    // 1. Verification of compiled registered action contracts (46 actions including ToggleZenMode, ResetZoom & CloseFind)
     let action_names = all_action_names();
-    assert_eq!(REGISTERED_ACTION_COUNT, 45);
+    assert_eq!(REGISTERED_ACTION_COUNT, 46);
     assert_eq!(action_names.len(), REGISTERED_ACTION_COUNT);
     let unique_actions: HashSet<&str> = action_names.iter().copied().collect();
     assert_eq!(unique_actions.len(), REGISTERED_ACTION_COUNT);
     assert!(action_names.contains(&Action::name(&ToggleZenMode)));
+    assert!(action_names.contains(&Action::name(&ResetZoom)));
+    assert!(action_names.contains(&Action::name(&CloseFind)));
 
-    // 2. Verification of workspace default state contracts & toggle method existence
+    // 2. Verification of workspace default state contracts & toggle/reset method existence
     let defaults = std::hint::black_box(WORKSPACE_DEFAULTS);
     assert!(!defaults.is_timeline_visible);
     assert!(!defaults.is_zen_mode);
@@ -995,8 +999,12 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
         LogAnalysisWorkspace::toggle_zen_mode;
     let _: fn(&mut LogAnalysisWorkspace, &mut gpui::Context<LogAnalysisWorkspace>) =
         LogAnalysisWorkspace::toggle_timeline;
+    let _: fn(&mut LogAnalysisWorkspace, &mut gpui::Context<LogAnalysisWorkspace>) =
+        LogAnalysisWorkspace::reset_zoom;
+    let _: fn(&mut LogAnalysisWorkspace, &mut gpui::Context<LogAnalysisWorkspace>) =
+        LogAnalysisWorkspace::close_search_bar;
 
-    // 3. Verification of Command Palette catalog integration and action wiring for ToggleZenMode
+    // 3. Verification of Command Palette catalog integration and action wiring ([LOW-5])
     let commands = get_palette_commands();
     let zen_cmd = commands
         .iter()
@@ -1008,6 +1016,31 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
     assert_eq!(
         palette_command_action_name(PaletteCommandId::ToggleZenMode),
         Action::name(&ToggleZenMode)
+    );
+
+    let dock_pos_cmd = commands
+        .iter()
+        .find(|c| c.id == PaletteCommandId::ToggleFilterPanelPosition)
+        .expect("ToggleFilterPanelPosition must exist");
+    assert_eq!(
+        dock_pos_cmd.title,
+        "View: Toggle Filter Dock Position (Bottom / Left)"
+    );
+
+    let next_bm_cmd = commands
+        .iter()
+        .find(|c| c.id == PaletteCommandId::NextBookmark)
+        .expect("NextBookmark must exist");
+    assert_eq!(next_bm_cmd.shortcut, Some("Alt+F2"));
+
+    let reset_zoom_cmd = commands
+        .iter()
+        .find(|c| c.id == PaletteCommandId::ResetZoom)
+        .expect("ResetZoom must exist");
+    assert_eq!(reset_zoom_cmd.shortcut, Some("Ctrl+0"));
+    assert_eq!(
+        palette_command_action_name(PaletteCommandId::ResetZoom),
+        Action::name(&ResetZoom)
     );
 
     // Fuzzy search capability
@@ -1032,12 +1065,15 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
     assert!(!workspace_shows_filter_dock(true, true));
     assert!(!workspace_shows_filter_dock(true, false));
 
-    // 6. Verification of compiled keybinding contracts for Zen Mode
+    // 6. Verification of compiled keybinding contracts for Zen Mode & ResetZoom ([LOW-5])
     let specs = default_keybinding_specs();
     let zen_action_name = Action::name(&ToggleZenMode);
     assert!(specs.contains(&("f11", zen_action_name)));
     assert!(specs.contains(&("ctrl-shift-z", zen_action_name)));
     assert!(specs.contains(&("cmd-shift-z", zen_action_name)));
+    let reset_zoom_action_name = Action::name(&ResetZoom);
+    assert!(specs.contains(&("ctrl-0", reset_zoom_action_name)));
+    assert!(specs.contains(&("cmd-0", reset_zoom_action_name)));
 
     // 7. Verification of Escape key dismissal fallback (None permits Zen mode exit in workspace::handle_escape)
     assert_eq!(

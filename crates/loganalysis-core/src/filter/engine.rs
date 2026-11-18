@@ -11,6 +11,7 @@ use super::model::FilterRule;
 pub struct ResolvedStyle {
     pub bg_hex: Option<u32>,
     pub fg_hex: Option<u32>,
+    pub is_matched: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -27,6 +28,8 @@ pub struct FilterResult {
     pub total_matched_lines: usize,
     pub widest_visible_text: String,
     pub widest_visible_length: usize,
+    #[doc(hidden)]
+    pub widest_visible_source_idx: Option<usize>,
 }
 
 #[inline]
@@ -60,6 +63,7 @@ pub fn resolve_style_from_matches(
             ResolvedStyle {
                 bg_hex: None,
                 fg_hex: Some(0x808080),
+                is_matched: false,
             },
             false,
         );
@@ -96,7 +100,15 @@ pub fn resolve_style_from_matches(
         }
     }
 
-    (true, ResolvedStyle { bg_hex, fg_hex }, true)
+    (
+        true,
+        ResolvedStyle {
+            bg_hex,
+            fg_hex,
+            is_matched: true,
+        },
+        true,
+    )
 }
 
 /// Evaluates a single line using a single-pass `MultiFilterMatcher` (Aho-Corasick SIMD).
@@ -115,6 +127,7 @@ pub fn evaluate_and_style_line_with_matcher_full(
             ResolvedStyle {
                 bg_hex: None,
                 fg_hex: Some(0x808080),
+                is_matched: false,
             },
             false,
             SmallVec::new(),
@@ -179,6 +192,7 @@ pub fn evaluate_and_style_line(
             ResolvedStyle {
                 bg_hex: None,
                 fg_hex: Some(0x808080),
+                is_matched: false,
             },
             false,
         );
@@ -236,6 +250,7 @@ pub fn execute_filtering(
             total_matched_lines: 0,
             widest_visible_text: String::new(),
             widest_visible_length: 0,
+            widest_visible_source_idx: None,
         });
     }
 
@@ -279,7 +294,7 @@ pub fn execute_filtering(
                     visible_styles.push(style);
                     visible_filter_matches.push(flat_matches);
 
-                    let len = raw_line.len();
+                    let len = crate::buffer::measure_display_width(raw_line);
                     if len > local_max_len {
                         local_max_len = len;
                         local_longest_idx = Some(line_idx);
@@ -351,8 +366,7 @@ pub fn execute_filtering(
             .get_line(idx)
             .map(|s| s.into_owned())
             .unwrap_or_default();
-        let len = source.get_measured_length(idx);
-        (text, len)
+        (text, max_len)
     } else {
         (String::new(), 0)
     };
@@ -372,6 +386,7 @@ pub fn execute_filtering(
         total_matched_lines,
         widest_visible_text,
         widest_visible_length,
+        widest_visible_source_idx: longest_idx,
     })
 }
 
@@ -468,6 +483,41 @@ pub fn append_streaming_batch_with_matcher(
             }
         }
 
+        if result.visible_indices.is_empty() {
+            result.widest_visible_length = 0;
+            result.widest_visible_text.clear();
+            result.widest_visible_source_idx = None;
+        } else {
+            let widest_was_dropped = match result.widest_visible_source_idx {
+                Some(w_idx) if w_idx < trimmed_count => {
+                    result.widest_visible_source_idx = None;
+                    true
+                }
+                Some(w_idx) => {
+                    result.widest_visible_source_idx = Some(w_idx - trimmed_count);
+                    false
+                }
+                None => result.widest_visible_length > 0,
+            };
+
+            if widest_was_dropped {
+                let mut max_w = 0usize;
+                let mut max_idx = None;
+                for &vis_src_idx in &result.visible_indices {
+                    let w = source.get_measured_length(vis_src_idx);
+                    if w > max_w {
+                        max_w = w;
+                        max_idx = Some(vis_src_idx);
+                    }
+                }
+                result.widest_visible_length = max_w;
+                result.widest_visible_source_idx = max_idx;
+                result.widest_visible_text = max_idx
+                    .and_then(|idx| source.get_line(idx).map(|s| s.into_owned()))
+                    .unwrap_or_default();
+            }
+        }
+
         // Exact per-rule counter decrement for excluded trimmed lines [INV-09]
         // Runs unconditionally even when `visible_indices` is empty.
         if !result.excluded_filter_matches.is_empty() {
@@ -510,6 +560,7 @@ pub fn append_streaming_batch_with_matcher(
             let line_len = source.get_measured_length(line_idx);
             if line_len > result.widest_visible_length {
                 result.widest_visible_length = line_len;
+                result.widest_visible_source_idx = Some(line_idx);
                 if let Some(cow) = source.get_line(line_idx) {
                     result.widest_visible_text = cow.into_owned();
                 }

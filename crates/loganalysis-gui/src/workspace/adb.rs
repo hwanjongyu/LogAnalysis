@@ -195,8 +195,11 @@ impl LogAnalysisWorkspace {
 
         match start_logcat_stream(serial, tx, stop_flag.clone()) {
             Ok(handle) => {
+                let stream_gen = self.advance_primary_source_gen();
                 self.adb.stream_handle = Some(handle);
                 self.adb.is_streaming = true;
+                self.adb.is_paused = false;
+                self.adb.clear_paused_buffer();
 
                 self.reset_derived_log_state();
                 let stream_buf = StreamLogBuffer::default();
@@ -249,6 +252,11 @@ impl LogAnalysisWorkspace {
 
                                 let (should_continue, tr, analytics_job) = this
                                     .update(&mut async_cx, |workspace, cx| {
+                                        if workspace.primary_source_gen != stream_gen
+                                            || !workspace.adb.is_streaming
+                                        {
+                                            return (false, 0, None);
+                                        }
                                         let mut trimmed_count = 0;
                                         let mut analytics_job = None;
 
@@ -341,7 +349,12 @@ impl LogAnalysisWorkspace {
                                                 workspace.reapply_filters(cx);
                                             }
 
-                                            if workspace.facet_tags.is_empty() && new_total_len >= 100 {
+                                            if super::should_auto_sample_facets(
+                                                workspace.has_auto_sampled_facets,
+                                                workspace.facet_tags.is_empty(),
+                                                new_total_len,
+                                            ) {
+                                                workspace.has_auto_sampled_facets = true;
                                                 workspace.refresh_facet_tags_async(cx);
                                             }
 
@@ -361,6 +374,8 @@ impl LogAnalysisWorkspace {
 
                                         if is_disconnected {
                                             workspace.adb.is_streaming = false;
+                                            workspace.adb.is_paused = false;
+                                            workspace.adb.clear_paused_buffer();
                                             workspace.status_text = "ADB stream disconnected".into();
                                         }
 
@@ -397,7 +412,14 @@ impl LogAnalysisWorkspace {
                             } else if is_disconnected {
                                 // Subprocess closed pipe: cleanly exit streaming state and terminate async loop
                                 let analytics_job = this.update(&mut async_cx, |workspace, cx| {
+                                    if workspace.primary_source_gen != stream_gen
+                                        || !workspace.adb.is_streaming
+                                    {
+                                        return None;
+                                    }
                                     workspace.adb.is_streaming = false;
+                                    workspace.adb.is_paused = false;
+                                    workspace.adb.clear_paused_buffer();
                                     workspace.status_text = "ADB stream disconnected".into();
                                     cx.notify();
 
@@ -422,7 +444,10 @@ impl LogAnalysisWorkspace {
                                 // Flush any pending throttled filter reapply when channel is empty
                                 if pending_filter_reapply && last_reapply.elapsed() >= Duration::from_millis(60) {
                                     let _ = this.update(&mut async_cx, |workspace, cx| {
-                                        if !workspace.adb.is_paused {
+                                        if workspace.primary_source_gen == stream_gen
+                                            && workspace.adb.is_streaming
+                                            && !workspace.adb.is_paused
+                                        {
                                             workspace.reapply_filters(cx);
                                         }
                                     });
@@ -433,7 +458,13 @@ impl LogAnalysisWorkspace {
                                 } else if pending_analytics_compute {
                                     // Flush pending throttled heatmap/timeline compute asynchronously when channel is idle or paused
                                     let analytics_job = this.update(&mut async_cx, |workspace, _cx| {
-                                        workspace.prepare_stream_analytics_job()
+                                        if workspace.primary_source_gen == stream_gen
+                                            && workspace.adb.is_streaming
+                                        {
+                                            workspace.prepare_stream_analytics_job()
+                                        } else {
+                                            None
+                                        }
                                     }).unwrap_or(None);
 
                                     if let Some(job) = analytics_job {
@@ -453,7 +484,10 @@ impl LogAnalysisWorkspace {
                                 // Yield execution cooperatively to GPUI async executor
                                 timer_executor.timer(Duration::from_millis(16)).await;
                                 let still_streaming = this
-                                    .update(&mut async_cx, |workspace, _| workspace.adb.is_streaming)
+                                    .update(&mut async_cx, |workspace, _| {
+                                        workspace.primary_source_gen == stream_gen
+                                            && workspace.adb.is_streaming
+                                    })
                                     .unwrap_or(false);
                                 if !still_streaming {
                                     break;
@@ -504,10 +538,7 @@ impl LogAnalysisWorkspace {
 
     /// Stops ADB streaming cleanly via RAII handle
     pub fn stop_adb_stream(&mut self, cx: &mut Context<Self>) {
-        if let Some(handle) = self.adb.stream_handle.take() {
-            handle.stop();
-        }
-        self.adb.is_streaming = false;
+        self.adb.stop_stream();
         self.spawn_and_apply_stream_analytics(cx);
         self.status_text = "ADB stream stopped".into();
         cx.notify();

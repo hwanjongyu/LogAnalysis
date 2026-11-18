@@ -4,6 +4,15 @@ use loganalysis_core::LineSeverity;
 
 use crate::workspace::LogAnalysisWorkspace;
 
+/// Clamps the bookmark drawer selection index after a deletion.
+pub fn clamp_drawer_selected_index(current: usize, len: usize) -> usize {
+    if len == 0 {
+        0
+    } else {
+        current.min(len - 1)
+    }
+}
+
 /// Renders the slide-over Bookmark Drawer on the right of the screen.
 pub fn render_bookmark_drawer(
     workspace: &LogAnalysisWorkspace,
@@ -132,6 +141,9 @@ pub fn render_bookmark_drawer(
                                     .flex()
                                     .items_center()
                                     .gap_1()
+                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                        cx.stop_propagation();
+                                    })
                                     .child(
                                         div()
                                             .id(("btn-drawer-note", idx))
@@ -142,8 +154,10 @@ pub fn render_bookmark_drawer(
                                             .text_size(px(11.0))
                                             .text_color(theme.accent)
                                             .hover(|s| s.bg(theme.accent_muted))
-                                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                cx.stop_propagation();
                                                 this.open_note_modal_for_source_idx(b_source_idx, cx);
+                                                window.focus(&this.note_input.read(cx).focus_handle);
                                             }))
                                             .child("📝 Note"),
                                     )
@@ -158,7 +172,13 @@ pub fn render_bookmark_drawer(
                                             .text_color(rgb(0xef4444))
                                             .hover(|s| s.bg(rgba(0xef444415)))
                                             .on_click(cx.listener(move |this, _, _window, cx| {
+                                                cx.stop_propagation();
                                                 this.bookmarks.remove(b_source_idx);
+                                                this.bookmarks.drawer_selected_index =
+                                                    clamp_drawer_selected_index(
+                                                        this.bookmarks.drawer_selected_index,
+                                                        this.bookmarks.len(),
+                                                    );
                                                 this.status_text =
                                                     format!("Removed bookmark on line {b_line_num}").into();
                                                 cx.notify();
@@ -332,4 +352,17 @@ pub fn render_bookmark_drawer(
                     ),
             ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_drawer_selected_index;
+
+    #[test]
+    fn test_clamp_drawer_selected_index() {
+        assert_eq!(clamp_drawer_selected_index(3, 0), 0);
+        assert_eq!(clamp_drawer_selected_index(0, 0), 0);
+        assert_eq!(clamp_drawer_selected_index(3, 2), 1);
+        assert_eq!(clamp_drawer_selected_index(1, 3), 1);
+    }
 }

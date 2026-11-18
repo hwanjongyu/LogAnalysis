@@ -147,12 +147,13 @@ impl LogFormatParser for ThreadtimeColumnParser {
 
                     // Tag is usually before ':'
                     let (tag, message) = if let Some(colon_pos) = after_level.find(':') {
-                        let tag = after_level[..colon_pos].trim();
+                        let raw_tag = after_level[..colon_pos].trim();
+                        let tag = (!raw_tag.is_empty()).then_some(raw_tag);
                         let msg = after_level[colon_pos + 1..].trim_start();
-                        (Some(tag), msg)
+                        (tag, msg)
                     } else {
                         let mut parts = after_level.splitn(2, ' ');
-                        let tag = parts.next().map(|s| s.trim());
+                        let tag = parts.next().map(str::trim).filter(|s| !s.is_empty());
                         let msg = parts.next().unwrap_or("").trim_start();
                         (tag, msg)
                     };
@@ -632,5 +633,18 @@ mod tests {
         assert_eq!(p_un.level_char, None);
         assert_eq!(p_un.tag, None);
         assert_eq!(p_un.message, unstructured);
+    }
+
+    #[test]
+    fn test_threadtime_empty_tag_produces_none() {
+        let with_empty_colon_tag = "11-06 18:00:00.123  1000  1000 I : msg";
+        let p1 = parse_logcat_column_line(with_empty_colon_tag);
+        assert_eq!(p1.tag, None);
+        assert_eq!(p1.message, "msg");
+
+        let level_only = "11-06 18:00:00.123  1000  1000 I";
+        let p2 = parse_logcat_column_line(level_only);
+        assert_eq!(p2.tag, None);
+        assert_eq!(p2.message, "");
     }
 }

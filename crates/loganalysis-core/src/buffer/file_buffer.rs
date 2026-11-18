@@ -1,11 +1,13 @@
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use memmap2::Mmap;
 
-use super::timestamp::extract_timestamp;
-use super::{trim_line_end, trim_trailing_whitespace, LogSource};
+use super::timestamp::{
+    extract_timestamp_with_kind, normalize_month_day_rollover, TimestampKind,
+};
+use super::{measure_display_width, trim_line_end, LogSource};
 
 const LINE_CACHE_SIZE: usize = 1024;
 type LineCache = RwLock<Box<[Option<(usize, Arc<str>)>; LINE_CACHE_SIZE]>>;
@@ -34,6 +36,7 @@ pub struct FileLogBuffer {
     max_line_len: usize,
     longest_line_idx: Option<usize>,
     line_cache: LineCache,
+    first_month_day_ts: OnceLock<Option<i64>>,
 }
 
 impl FileLogBuffer {
@@ -52,13 +55,14 @@ impl FileLogBuffer {
                 max_line_len: 0,
                 longest_line_idx: None,
                 line_cache: RwLock::new(empty_cache),
+                first_month_day_ts: OnceLock::new(),
             };
         }
 
         let mut line_offsets = Vec::with_capacity((bytes.len() / 40).max(1024));
         line_offsets.push(0);
 
-        let mut max_raw_len = 0;
+        let mut max_line_len = 0usize;
         let mut longest_line_idx = None;
 
         let mut current_line_idx = 0;
@@ -66,9 +70,9 @@ impl FileLogBuffer {
 
         for newline_pos in memchr::memchr_iter(b'\n', bytes) {
             let next_offset = newline_pos + 1;
-            let raw_len = newline_pos.saturating_sub(prev_offset);
-            if raw_len > max_raw_len {
-                max_raw_len = raw_len;
+            let width = measure_display_width(&bytes[prev_offset..newline_pos]);
+            if width > max_line_len {
+                max_line_len = width;
                 longest_line_idx = Some(current_line_idx);
             }
 
@@ -79,26 +83,13 @@ impl FileLogBuffer {
 
         // Handle possible trailing line without trailing newline
         if prev_offset < bytes.len() {
-            let raw_len = bytes.len() - prev_offset;
-            if raw_len > max_raw_len {
+            let width = measure_display_width(&bytes[prev_offset..]);
+            if width > max_line_len {
+                max_line_len = width;
                 longest_line_idx = Some(current_line_idx);
             }
             line_offsets.push(bytes.len());
         }
-
-        let max_line_len = if let Some(idx) = longest_line_idx {
-            let start = line_offsets[idx];
-            let end = if idx + 1 < line_offsets.len() {
-                line_offsets[idx + 1]
-            } else {
-                bytes.len()
-            };
-            let slice = trim_trailing_whitespace(&bytes[start..end]);
-            let s = String::from_utf8_lossy(slice);
-            unicode_width::UnicodeWidthStr::width(s.as_ref())
-        } else {
-            0
-        };
 
         Self {
             path: path_buf,
@@ -107,7 +98,23 @@ impl FileLogBuffer {
             max_line_len,
             longest_line_idx,
             line_cache: RwLock::new(empty_cache),
+            first_month_day_ts: OnceLock::new(),
         }
+    }
+
+    fn first_month_day_anchor(&self) -> Option<i64> {
+        *self.first_month_day_ts.get_or_init(|| {
+            for idx in 0..self.line_count() {
+                if let Some(raw) = self.get_raw_line(idx) {
+                    if let Some(parsed) = extract_timestamp_with_kind(raw) {
+                        if parsed.kind == TimestampKind::MonthDayTime {
+                            return Some(parsed.timestamp.total_micros);
+                        }
+                    }
+                }
+            }
+            None
+        })
     }
 
     /// Loads a file from path, mapping it into memory and computing line offsets.
@@ -237,7 +244,14 @@ impl LogSource for FileLogBuffer {
 
     #[inline]
     fn get_timestamp_micros(&self, idx: usize) -> Option<i64> {
-        self.get_raw_line(idx).and_then(extract_timestamp).map(|t| t.total_micros)
+        let parsed = self.get_raw_line(idx).and_then(extract_timestamp_with_kind)?;
+        let ts = parsed.timestamp.total_micros;
+        if parsed.kind == TimestampKind::MonthDayTime {
+            if let Some(anchor) = self.first_month_day_anchor() {
+                return Some(normalize_month_day_rollover(ts, anchor));
+            }
+        }
+        Some(ts)
     }
 }
 
@@ -332,5 +346,24 @@ mod tests {
         assert_eq!(buf_heap.byte_size(), 0);
         assert!(!buf_heap.is_truncated_on_disk());
         assert_eq!(buf_heap.get_raw_line(0), None);
+    }
+
+    #[test]
+    fn test_file_log_buffer_widest_line_uses_display_width() {
+        let mut tmp = NamedTempFile::new().expect("create temp file");
+        // Line 0: 10 Hangul chars = 30 UTF-8 bytes, display width 20
+        // Line 1: 25 ASCII chars = 25 UTF-8 bytes, display width 25 (visually wider!)
+        // Line 2: 5 ASCII chars + 50 trailing spaces = 55 bytes, display width 5
+        let cjk_line = "한".repeat(10);
+        let ascii_line = "a".repeat(25);
+        let padded_line = format!("short{}", " ".repeat(50));
+        writeln!(tmp, "{cjk_line}").unwrap();
+        writeln!(tmp, "{ascii_line}").unwrap();
+        writeln!(tmp, "{padded_line}").unwrap();
+        tmp.flush().unwrap();
+
+        let buf = FileLogBuffer::open(tmp.path()).expect("open file");
+        assert_eq!(buf.max_line_len(), 25);
+        assert_eq!(buf.longest_line_text().as_deref(), Some(ascii_line.as_str()));
     }
 }

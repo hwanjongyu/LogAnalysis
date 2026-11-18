@@ -10,38 +10,81 @@ pub const FANCY_REGEX_BACKTRACK_LIMIT: usize = 250;
 /// Maximum compilation size limit for standard regex DFA tables (2MB) to prevent memory exhaustion.
 pub const REGEX_DFA_SIZE_LIMIT: usize = 2 * 1024 * 1024;
 
-/// Inspects a `fancy_regex::Expr` AST to statically identify nested unbounded repetitions
-/// (e.g., `(a+)+`, `((a+)*)+`, `([0-9]+)+`, `(?=(a+)+)`) that cause $O(2^n)$ catastrophic
-/// backtracking on non-matching inputs.
-pub fn has_nested_repetition(expr: &fancy_regex::Expr, in_repeat: bool) -> bool {
+#[derive(Clone, Copy)]
+enum RepeatState {
+    None,
+    /// Inside a small fixed-count outer repetition (`lo == hi && hi <= 16`) with cumulative
+    /// bounded multiplier `mult <= 64`.
+    FixedOuter { mult: usize },
+    /// Inside a variable, unbounded, large, or variable-inner repetition; any further repeat (`hi > 1`) is rejected.
+    Strict,
+}
+
+fn has_nested_repetition_with_state(expr: &fancy_regex::Expr, state: RepeatState) -> bool {
     match expr {
-        fancy_regex::Expr::Repeat { child, hi, .. } => {
-            let is_repeat = *hi > 1;
-            if in_repeat && is_repeat {
-                return true;
+        fancy_regex::Expr::Repeat { child, lo, hi, .. } => {
+            if *hi <= 1 {
+                return has_nested_repetition_with_state(child, state);
             }
-            has_nested_repetition(child, in_repeat || is_repeat)
+            match state {
+                RepeatState::Strict => true,
+                RepeatState::None => {
+                    let next_state = if *lo == *hi && *hi <= 16 {
+                        RepeatState::FixedOuter { mult: *hi }
+                    } else {
+                        RepeatState::Strict
+                    };
+                    has_nested_repetition_with_state(child, next_state)
+                }
+                RepeatState::FixedOuter { mult } => {
+                    if *hi == usize::MAX || *hi > 16 {
+                        return true;
+                    }
+                    let Some(next_mult) = mult.checked_mul(*hi) else {
+                        return true;
+                    };
+                    if next_mult > 64 {
+                        return true;
+                    }
+                    let next_state = if *lo == *hi {
+                        RepeatState::FixedOuter { mult: next_mult }
+                    } else {
+                        RepeatState::Strict
+                    };
+                    has_nested_repetition_with_state(child, next_state)
+                }
+            }
         }
-        fancy_regex::Expr::Group(child) => has_nested_repetition(child, in_repeat),
-        fancy_regex::Expr::LookAround(child, _) => has_nested_repetition(child, in_repeat),
-        fancy_regex::Expr::AtomicGroup(child) => has_nested_repetition(child, in_repeat),
-        fancy_regex::Expr::Concat(children) => {
-            children.iter().any(|c| has_nested_repetition(c, in_repeat))
-        }
-        fancy_regex::Expr::Alt(children) => {
-            children.iter().any(|c| has_nested_repetition(c, in_repeat))
-        }
+        fancy_regex::Expr::Group(child)
+        | fancy_regex::Expr::LookAround(child, _)
+        | fancy_regex::Expr::AtomicGroup(child) => has_nested_repetition_with_state(child, state),
+        fancy_regex::Expr::Concat(children) | fancy_regex::Expr::Alt(children) => children
+            .iter()
+            .any(|c| has_nested_repetition_with_state(c, state)),
         fancy_regex::Expr::Conditional {
             condition,
             true_branch,
             false_branch,
         } => {
-            has_nested_repetition(condition, in_repeat)
-                || has_nested_repetition(true_branch, in_repeat)
-                || has_nested_repetition(false_branch, in_repeat)
+            has_nested_repetition_with_state(condition, state)
+                || has_nested_repetition_with_state(true_branch, state)
+                || has_nested_repetition_with_state(false_branch, state)
         }
         _ => false,
     }
+}
+
+/// Inspects a `fancy_regex::Expr` AST to statically identify nested repetitions
+/// (e.g., `(a+)+`, `((a+)*)+`, `([0-9]+)+`, `(?=(a+)+)`) that cause $O(2^n)$ catastrophic
+/// backtracking on non-matching inputs, while allowing small fixed-count bounded structures
+/// such as `(?=(?:\d{1,3}\.){3}\d{1,3})`.
+pub fn has_nested_repetition(expr: &fancy_regex::Expr, in_repeat: bool) -> bool {
+    let initial = if in_repeat {
+        RepeatState::Strict
+    } else {
+        RepeatState::None
+    };
+    has_nested_repetition_with_state(expr, initial)
 }
 
 /// Extracts non-empty case-sensitive literals that MUST appear in any matching line
@@ -84,6 +127,8 @@ pub enum CompiledMatcher {
     },
     /// Case-insensitive ASCII substring search fallback
     LiteralAsciiInsensitive(Vec<u8>),
+    /// Case-insensitive Unicode substring search fallback
+    LiteralUnicodeInsensitive(String),
     /// Standard regex matching raw bytes directly (SIMD Teddy / Aho-Corasick)
     StandardRegex(regex::bytes::Regex),
     /// Fancy regex fallback for lookaround / backreferences
@@ -91,6 +136,25 @@ pub enum CompiledMatcher {
         re: fancy_regex::Regex,
         required_literals: Vec<memchr::memmem::Finder<'static>>,
     },
+}
+
+fn find_unicode_ci_match_end(haystack: &str, needle_lower: &str) -> Option<usize> {
+    let mut needle_chars = needle_lower.chars().peekable();
+    needle_chars.peek()?;
+    let mut byte_pos = 0usize;
+    for ch in haystack.chars() {
+        for lc in ch.to_lowercase() {
+            match needle_chars.next() {
+                Some(nc) if nc == lc => {}
+                _ => return None,
+            }
+        }
+        byte_pos += ch.len_utf8();
+        if needle_chars.peek().is_none() {
+            return Some(byte_pos);
+        }
+    }
+    None
 }
 
 impl CompiledMatcher {
@@ -151,14 +215,19 @@ impl CompiledMatcher {
             let escaped = regex::escape(text);
             let mut builder = regex::bytes::RegexBuilder::new(&escaped);
             builder.case_insensitive(true);
+            builder.unicode(!text.is_ascii());
             builder.size_limit(REGEX_DFA_SIZE_LIMIT);
             builder.dfa_size_limit(REGEX_DFA_SIZE_LIMIT);
             match builder.build() {
                 Ok(re) => Ok(Self::StandardRegex(re)),
                 Err(_) => {
-                    let lower_bytes: Vec<u8> =
-                        text.bytes().map(|b| b.to_ascii_lowercase()).collect();
-                    Ok(Self::LiteralAsciiInsensitive(lower_bytes))
+                    if text.is_ascii() {
+                        let lower_bytes: Vec<u8> =
+                            text.bytes().map(|b| b.to_ascii_lowercase()).collect();
+                        Ok(Self::LiteralAsciiInsensitive(lower_bytes))
+                    } else {
+                        Ok(Self::LiteralUnicodeInsensitive(text.to_lowercase()))
+                    }
                 }
             }
         }
@@ -181,6 +250,15 @@ impl CompiledMatcher {
                         .zip(needle.iter())
                         .all(|(&a, &b)| a.to_ascii_lowercase() == b)
                 })
+            }
+            Self::LiteralUnicodeInsensitive(needle_lower) => {
+                if needle_lower.is_empty() {
+                    return true;
+                }
+                let line_str = String::from_utf8_lossy(raw_line);
+                line_str
+                    .char_indices()
+                    .any(|(start, _)| find_unicode_ci_match_end(&line_str[start..], needle_lower).is_some())
             }
             Self::StandardRegex(re) => re.is_match(raw_line),
             Self::FancyRegex {
@@ -269,6 +347,26 @@ impl CompiledMatcher {
                         }
                     }
                     i += 1;
+                }
+            }
+            Self::LiteralUnicodeInsensitive(needle_lower) => {
+                if needle_lower.is_empty() {
+                    return ranges;
+                }
+                for (start, _) in text.char_indices() {
+                    if ranges.len() >= max_matches {
+                        break;
+                    }
+                    if start < last_end {
+                        continue;
+                    }
+                    if let Some(rel_end) = find_unicode_ci_match_end(&text[start..], needle_lower) {
+                        let end = start + rel_end;
+                        if start < end && text.is_char_boundary(end) {
+                            ranges.push(start..end);
+                            last_end = end;
+                        }
+                    }
                 }
             }
             Self::StandardRegex(re) => {
@@ -404,29 +502,42 @@ impl MultiFilterMatcher {
             } else if pf.rule.case_sensitive {
                 cs_patterns.push(pf.rule.text.as_bytes());
                 cs_indices.push(idx);
-            } else {
+            } else if pf.rule.text.is_ascii() {
                 ci_patterns.push(pf.rule.text.as_bytes());
                 ci_indices.push(idx);
+            } else {
+                // Non-ASCII case-insensitive literals require Unicode case-folding via PreparedFilter
+                individual_filters.push(idx);
             }
         }
 
         let cs_automaton = if !cs_patterns.is_empty() {
-            AhoCorasick::builder()
+            match AhoCorasick::builder()
                 .match_kind(MatchKind::Standard)
                 .build(&cs_patterns)
-                .ok()
-                .map(|ac| (ac, cs_indices))
+            {
+                Ok(ac) => Some((ac, cs_indices)),
+                Err(_) => {
+                    individual_filters.extend(cs_indices);
+                    None
+                }
+            }
         } else {
             None
         };
 
         let ci_automaton = if !ci_patterns.is_empty() {
-            AhoCorasick::builder()
+            match AhoCorasick::builder()
                 .ascii_case_insensitive(true)
                 .match_kind(MatchKind::Standard)
                 .build(&ci_patterns)
-                .ok()
-                .map(|ac| (ac, ci_indices))
+            {
+                Ok(ac) => Some((ac, ci_indices)),
+                Err(_) => {
+                    individual_filters.extend(ci_indices);
+                    None
+                }
+            }
         } else {
             None
         };
@@ -738,5 +849,65 @@ mod tests {
     #[test]
     fn test_regex_builder_dfa_size_limit_configured() {
         assert_eq!(REGEX_DFA_SIZE_LIMIT, 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_small_fixed_bounded_lookaround_ipv4_allowed_while_nested_rejected() {
+        let ipv4_lookahead = r"(?=(?:\d{1,3}\.){3}\d{1,3})192";
+        let tree = fancy_regex::Expr::parse_tree(ipv4_lookahead).unwrap();
+        assert!(!has_nested_repetition(&tree.expr, false));
+
+        let matcher = CompiledMatcher::new(ipv4_lookahead, true, true)
+            .expect("small fixed-count lookahead IPv4 should compile");
+        assert!(matcher.matches(b"src=192.168.1.1"));
+        assert!(!matcher.matches(b"src=192.168"));
+
+        for bad in [r"(a{2,3}){2,3}", r"((?:\d{1,3}){3})+", r"(?:a+){3}"] {
+            let t = fancy_regex::Expr::parse_tree(bad).unwrap();
+            assert!(
+                has_nested_repetition(&t.expr, false),
+                "Pattern '{bad}' must still be flagged"
+            );
+        }
+    }
+
+    #[test]
+    fn test_non_ascii_case_insensitive_literal_parity() {
+        use crate::filter::engine::{evaluate_and_style_line, evaluate_and_style_line_with_matcher};
+
+        for (needle, line) in [
+            ("café", b"ERROR: CAF\xc3\x89 timeout".as_slice()),
+            ("über", b"INFO: \xc3\x9cBER connected".as_slice()),
+            (
+                "пример",
+                "WARN: ПРИМЕР test".as_bytes(),
+            ),
+        ] {
+            let rule = FilterRule {
+                text: needle.to_string(),
+                case_sensitive: false,
+                regex: false,
+                active: true,
+                ..Default::default()
+            };
+            let pf = PreparedFilter::new(rule, 0).unwrap();
+            let compiled = CompiledMatcher::new(needle, false, false).unwrap();
+            assert!(compiled.matches(line), "CompiledMatcher missed {needle}");
+            assert!(pf.matches(line), "PreparedFilter missed {needle}");
+
+            let prepared = vec![pf];
+            let multi = MultiFilterMatcher::new(&prepared);
+            let single = evaluate_and_style_line(line, &prepared, false, None);
+            let multi_res = evaluate_and_style_line_with_matcher(line, &prepared, &multi, false, None);
+            assert!(single.2, "evaluate_and_style_line missed {needle}");
+            assert_eq!(single, multi_res, "parity mismatch for {needle}");
+        }
+
+        // LiteralUnicodeInsensitive fallback parity
+        let unicode_fallback = CompiledMatcher::LiteralUnicodeInsensitive("café".to_string());
+        assert!(unicode_fallback.matches(b"at CAF\xc3\x89 bar"));
+        let ranges = unicode_fallback.find_match_ranges("at CAFÉ bar", 10);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(&"at CAFÉ bar"[ranges[0].clone()], "CAFÉ");
     }
 }

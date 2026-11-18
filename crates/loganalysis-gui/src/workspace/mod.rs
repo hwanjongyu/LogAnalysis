@@ -11,8 +11,6 @@ mod split_view;
 
 #[allow(unused_imports)]
 pub use split_view::probe_parent_timestamp;
-#[allow(unused_imports)]
-pub(crate) use recent_files::{get_recent_files_path, load_recent_files, save_recent_files};
 
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -47,6 +45,7 @@ pub const WORKSPACE_DEFAULTS: WorkspaceDefaults = WorkspaceDefaults {
 pub struct LogAnalysisWorkspace {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) log_source: Option<Arc<ActiveLogSource>>,
+    pub(crate) primary_source_gen: u64,
     pub(crate) filter_result: Option<Arc<FilterResult>>,
     pub(crate) heatmap_data: Option<Arc<HeatmapData>>,
     pub(crate) timeline_data: Option<Arc<EpsTimelineData>>,
@@ -60,6 +59,7 @@ pub struct LogAnalysisWorkspace {
     // Filter state
     pub(crate) filter_tabs: Vec<FilterTabData>,
     pub(crate) active_tab_index: usize,
+    pub(crate) active_filter_profile_path: Option<std::path::PathBuf>,
     pub(crate) show_only_filtered: bool,
     pub(crate) filter_cancel_gen: Arc<AtomicU64>,
     pub(crate) cached_stream_filters: Option<Arc<CompiledStreamFilters>>,
@@ -70,7 +70,6 @@ pub struct LogAnalysisWorkspace {
 
     // Search state
     pub(crate) search_ctrl: SearchController,
-    pub(crate) search_cancel_gen: Arc<AtomicU64>,
     pub(crate) find_input: Entity<TextInput>,
 
     // ADB state
@@ -81,6 +80,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) status_text: SharedString,
     pub(crate) active_file_name: Option<SharedString>,
     pub(crate) recent_files: Vec<std::path::PathBuf>,
+    pub(crate) recent_files_gen: u64,
     pub(crate) is_dark_theme: bool,
     pub(crate) full_line_display: bool,
     pub(crate) filter_panel_position: FilterPanelPosition,
@@ -111,6 +111,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) is_filter_dock_visible: bool,
     pub(crate) is_facets_visible: bool,
     pub(crate) facet_tags: Vec<(String, usize)>,
+    pub(crate) has_auto_sampled_facets: bool,
 
     // Resizable Filter Dock state
     pub(crate) filter_dock_width: f32,
@@ -217,10 +218,7 @@ impl LogAnalysisWorkspace {
                     this.search(true, cx);
                 }
                 TextInputEvent::Cancel => {
-                    this.search_ctrl.is_visible = false;
-                    this.input_focus = InputFocusTarget::None;
-                    this.update_cached_search_matcher();
-                    cx.notify();
+                    this.close_search_bar(cx);
                 }
                 TextInputEvent::Change => {
                     this.search_ctrl.query = input.read(cx).text().to_string();
@@ -295,9 +293,10 @@ impl LogAnalysisWorkspace {
         let mut split_view = SplitViewController::new();
         split_view.is_split_vertical = true;
 
-        Self {
+        let mut workspace = Self {
             focus_handle: cx.focus_handle(),
             log_source: None,
+            primary_source_gen: 0,
             filter_result: None,
             heatmap_data: None,
             timeline_data: None,
@@ -310,6 +309,7 @@ impl LogAnalysisWorkspace {
 
             filter_tabs: vec![default_tab],
             active_tab_index: 0,
+            active_filter_profile_path: None,
             show_only_filtered: false,
             filter_cancel_gen: Arc::new(AtomicU64::new(0)),
             cached_stream_filters: None,
@@ -319,7 +319,6 @@ impl LogAnalysisWorkspace {
             filter_rule_input,
 
             search_ctrl: SearchController::new(),
-            search_cancel_gen: Arc::new(AtomicU64::new(0)),
             find_input,
 
             adb: AdbController::new(),
@@ -327,7 +326,8 @@ impl LogAnalysisWorkspace {
             font_size: px(12.0),
             status_text: "Ready | Open a file or start ADB streaming".into(),
             active_file_name: None,
-            recent_files: load_recent_files(),
+            recent_files: Vec::new(),
+            recent_files_gen: 0,
             is_dark_theme: false,
             full_line_display: false,
             filter_panel_position: FilterPanelPosition::Bottom,
@@ -350,12 +350,15 @@ impl LogAnalysisWorkspace {
             is_filter_dock_visible: true,
             is_facets_visible: true,
             facet_tags: Vec::new(),
+            has_auto_sampled_facets: false,
             filter_dock_width: 310.0,
             filter_dock_height: 220.0,
             is_resizing_filter_dock: false,
             filter_dock_drag_start_pos: None,
             filter_dock_drag_start_size: 0.0,
-        }
+        };
+        workspace.load_recent_files_async(cx);
+        workspace
     }
 
     /// Returns a snapshot of ADB controller state.
@@ -433,11 +436,27 @@ impl LogAnalysisWorkspace {
         .detach();
     }
 
-    /// Loads a log file using FileLogBuffer asynchronously on the background executor and executes filtering
-    pub fn open_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+    /// Advances and returns the monotonic primary source generation token.
+    pub(crate) fn advance_primary_source_gen(&mut self) -> u64 {
+        next_source_generation(&mut self.primary_source_gen)
+    }
+
+    /// Stops any live ADB stream (`[INV-06]`), advances `primary_source_gen`, clears primary source
+    /// metadata, and synchronously resets derived analytics/search state before spawning an async open.
+    pub(crate) fn begin_primary_source_transition(&mut self, cx: &mut Context<Self>) -> u64 {
         if self.adb.is_streaming {
             self.stop_adb_stream(cx);
         }
+        let gen_id = self.advance_primary_source_gen();
+        self.log_source = None;
+        self.active_file_name = None;
+        self.reset_derived_log_state();
+        gen_id
+    }
+
+    /// Loads a log file using FileLogBuffer asynchronously on the background executor and executes filtering
+    pub fn open_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        let open_gen = self.begin_primary_source_transition(cx);
         let path_buf = path.to_path_buf();
         let file_name: SharedString = path
             .file_name()
@@ -447,7 +466,6 @@ impl LogAnalysisWorkspace {
             .into();
 
         self.status_text = format!("Opening log file {:?}...", file_name).into();
-        self.selection.clear();
         cx.notify();
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -461,9 +479,11 @@ impl LogAnalysisWorkspace {
                     .await;
 
                 let _ = this.update(&mut async_cx, |workspace, cx| {
+                    if !is_source_generation_current(workspace.primary_source_gen, open_gen) {
+                        return;
+                    }
                     match open_result {
                         Ok(buf) => {
-                            workspace.reset_derived_log_state();
                             let arc_buf = Arc::new(ActiveLogSource::File(buf));
                             workspace.log_source = Some(arc_buf.clone());
                             workspace.active_file_name = Some(file_name);
@@ -714,6 +734,11 @@ impl LogAnalysisWorkspace {
                     let src_idx = b.source_idx;
                     let line_num = b.line_number;
                     self.bookmarks.remove(src_idx);
+                    self.bookmarks.drawer_selected_index =
+                        crate::modals::bookmark_drawer::clamp_drawer_selected_index(
+                            self.bookmarks.drawer_selected_index,
+                            self.bookmarks.len(),
+                        );
                     self.status_text = format!("Removed bookmark on line {line_num}").into();
                     cx.notify();
                 }
@@ -781,40 +806,21 @@ impl LogAnalysisWorkspace {
         }
     }
 
-    /// Adds a new filter rule to the active tab
     /// Refreshes the status line text based on current selection or system state
     pub fn refresh_status_line(&mut self, cx: &mut Context<Self>) {
         if let Some(source_idx) = self.selection.anchor_source_idx {
-            if let (Some(src), Some(tab)) = (&self.log_source, self.filter_tabs.get(self.active_tab_index)) {
-                if let Some(line) = src.get_line(source_idx) {
-                    let mut matched_info = None;
-                    for rule in &tab.filters {
-                        if !rule.active {
-                            continue;
-                        }
-                        if let Ok(matcher) = loganalysis_core::CompiledMatcher::new(&rule.text, rule.case_sensitive, rule.regex) {
-                            if matcher.matches(line.as_bytes()) {
-                                let count = self.filter_result.as_ref()
-                                    .map(|r| r.count_for_rule(&rule.id))
-                                    .unwrap_or(0);
-                                matched_info = Some((rule.text.clone(), rule.bg_color.clone(), count));
-                                break;
-                            }
-                        }
-                    }
-                    if let Some((rule_text, color, count)) = matched_info {
-                        self.status_text = format!(
-                            "Line {} | Matched Rule: '{}' ({}) | {} matches in tab",
-                            source_idx + 1,
-                            rule_text,
-                            color,
-                            count
+            if self.log_source.is_some() {
+                let compiled = self.ensure_cached_stream_filters();
+                if let Some(src) = &self.log_source {
+                    if src.get_raw_line(source_idx).is_some() {
+                        self.status_text = resolve_status_line_for_selection(
+                            source_idx,
+                            self.selection.selected_row,
+                            src,
+                            self.filter_result.as_deref(),
+                            &compiled,
                         )
                         .into();
-                        cx.notify();
-                        return;
-                    } else {
-                        self.status_text = format!("Line {} | No filter rule match", source_idx + 1).into();
                         cx.notify();
                         return;
                     }
@@ -838,12 +844,7 @@ impl LogAnalysisWorkspace {
 
     /// Clears currently loaded logs (Ctrl+K)
     pub fn clear_logs(&mut self, cx: &mut Context<Self>) {
-        if self.adb.is_streaming {
-            self.stop_adb_stream(cx);
-        }
-        self.log_source = None;
-        self.active_file_name = None;
-        self.reset_derived_log_state();
+        self.begin_primary_source_transition(cx);
         self.status_text = "Logs cleared".into();
         cx.notify();
     }
@@ -854,6 +855,13 @@ impl LogAnalysisWorkspace {
         let new_size = (current + delta).clamp(8.0, 28.0);
         self.font_size = px(new_size);
         self.status_text = format!("Font size: {:.0}px", new_size).into();
+        cx.notify();
+    }
+
+    /// Resets font size back to default 12px (Ctrl+0 / Cmd+0)
+    pub fn reset_zoom(&mut self, cx: &mut Context<Self>) {
+        self.font_size = px(12.0);
+        self.status_text = "Font size reset to default (12px)".into();
         cx.notify();
     }
 
@@ -1028,20 +1036,19 @@ impl LogAnalysisWorkspace {
     }
     /// Clears derived analytics, selection, bookmarks, facets, and cancels in-flight background work when switching primary log sources.
     pub(crate) fn reset_derived_log_state(&mut self) {
-        self.filter_cancel_gen.fetch_add(1, Ordering::Relaxed);
-        self.search_cancel_gen.fetch_add(1, Ordering::Relaxed);
-        self.analytics_cancel_gen.fetch_add(1, Ordering::SeqCst);
+        reset_derived_controllers_and_tokens(
+            &self.filter_cancel_gen,
+            &self.analytics_cancel_gen,
+            &mut self.search_ctrl,
+            &mut self.selection,
+            &mut self.bookmarks,
+            &mut self.adb,
+            &mut self.has_auto_sampled_facets,
+        );
         self.filter_result = None;
         self.heatmap_data = None;
         self.timeline_data = None;
-        self.selection.clear();
-        self.search_ctrl.match_status = None;
-        self.bookmarks.clear();
         self.facet_tags.clear();
-        self.bookmarks.close_drawer();
-        self.bookmarks.close_note_modal();
-        self.adb.paused_buffer.clear();
-        self.adb.paused_line_count = 0;
     }
 
     /// Recomputes heatmap density and EPS timeline data for the active filter result.
@@ -1174,6 +1181,106 @@ impl LogAnalysisWorkspace {
 
 }
 
+/// Advances and returns a monotonic async load generation token.
+#[inline]
+pub(crate) fn next_source_generation(slot: &mut u64) -> u64 {
+    *slot = slot.wrapping_add(1);
+    *slot
+}
+
+/// Returns `true` iff an async load completion's generation still matches the active slot.
+#[inline]
+pub(crate) fn is_source_generation_current(current: u64, expected: u64) -> bool {
+    current == expected
+}
+
+/// Returns `true` when an ADB stream should perform its one-shot initial facet tag scan.
+#[inline]
+pub(crate) fn should_auto_sample_facets(
+    has_auto_sampled_facets: bool,
+    facet_tags_empty: bool,
+    line_count: usize,
+) -> bool {
+    !has_auto_sampled_facets && facet_tags_empty && line_count >= 100
+}
+
+/// Resets derived controllers, selection, bookmarks, facet scan flag, and cancellation tokens
+/// when switching primary log sources.
+pub(crate) fn reset_derived_controllers_and_tokens(
+    filter_cancel_gen: &AtomicU64,
+    analytics_cancel_gen: &AtomicU64,
+    search_ctrl: &mut SearchController,
+    selection: &mut SelectionModel,
+    bookmarks: &mut BookmarkController,
+    adb: &mut AdbController,
+    has_auto_sampled_facets: &mut bool,
+) {
+    filter_cancel_gen.fetch_add(1, Ordering::Relaxed);
+    search_ctrl.abort_ongoing_searches();
+    analytics_cancel_gen.fetch_add(1, Ordering::SeqCst);
+    selection.clear();
+    search_ctrl.match_status = None;
+    bookmarks.clear();
+    bookmarks.close_drawer();
+    bookmarks.close_note_modal();
+    *has_auto_sampled_facets = false;
+    adb.is_paused = false;
+    adb.clear_paused_buffer();
+}
+
+/// Resolves the status bar description for the currently selected line using precompiled filters
+/// and last-match rule precedence without compiling matchers on the UI thread.
+pub(crate) fn resolve_status_line_for_selection(
+    source_idx: usize,
+    selected_row: Option<usize>,
+    source: &ActiveLogSource,
+    filter_result: Option<&FilterResult>,
+    compiled: &CompiledStreamFilters,
+) -> String {
+    let last_flat_idx = if let (Some(sel_row), Some(filter_res)) = (selected_row, filter_result) {
+        if filter_res.visible_indices.get(sel_row) == Some(&source_idx) {
+            filter_res
+                .visible_filter_matches
+                .get(sel_row)
+                .and_then(|matches| matches.last().copied())
+        } else {
+            resolve_last_flat_match(source, source_idx, compiled)
+        }
+    } else {
+        resolve_last_flat_match(source, source_idx, compiled)
+    };
+
+    if let Some(rule) = last_flat_idx.and_then(|idx| compiled.rules().get(idx)) {
+        let count = filter_result
+            .map(|r| r.count_for_rule(&rule.id))
+            .unwrap_or(0);
+        format!(
+            "Line {} | Matched Rule: '{}' ({}) | {} matches in tab",
+            source_idx + 1,
+            rule.text,
+            rule.bg_color,
+            count
+        )
+    } else {
+        format!("Line {} | No filter rule match", source_idx + 1)
+    }
+}
+
+fn resolve_last_flat_match(
+    source: &ActiveLogSource,
+    source_idx: usize,
+    compiled: &CompiledStreamFilters,
+) -> Option<usize> {
+    let raw_line = source.get_raw_line(source_idx)?;
+    let mut matched_indices = smallvec::SmallVec::<[usize; 8]>::new();
+    compiled
+        .matcher()
+        .find_matches(raw_line, compiled.prepared(), &mut matched_indices);
+    matched_indices
+        .last()
+        .map(|&p_idx| compiled.prepared()[p_idx].flat_index)
+}
+
 /// Reconciles a background-filtered snapshot result against the live `ActiveLogSource`
 /// so lines appended or ring-buffer-trimmed while background filtering ran are reflected accurately.
 fn reconcile_snapshot_filter_result(
@@ -1262,5 +1369,192 @@ mod tests {
         // [0] snap_2 (matched), [1] snap_3, [2] live_4 (matched), [3] live_5, [4] live_6 (matched)
         assert_eq!(snapshot_res.visible_indices, vec![0, 2, 4]);
         assert_eq!(snapshot_res.total_matched_lines, 3);
+    }
+
+    #[test]
+    fn test_resolve_status_line_uses_last_match_and_skips_empty_inactive() {
+        use super::resolve_status_line_for_selection;
+        use loganalysis_core::FilterTabData;
+
+        let mut stream = StreamLogBuffer::new(100, 10);
+        stream.append_chunk(vec![
+            "01-01 00:00:00.000 1 1 E Tag: Fatal failure".to_string(),
+            "01-01 00:00:01.000 1 1 I Tag: Normal startup".to_string(),
+        ]);
+        let src = ActiveLogSource::Stream(stream);
+
+        let mut tabs = vec![
+            FilterTabData {
+                name: "Tab1".into(),
+                enabled: true,
+                filters: vec![
+                    FilterRule {
+                        text: "".into(), // empty rule must never match
+                        bg_color: "White".into(),
+                        active: true,
+                        ..Default::default()
+                    },
+                    FilterRule {
+                        text: "Fatal".into(),
+                        bg_color: "Red".into(),
+                        active: true,
+                        ..Default::default()
+                    },
+                    FilterRule {
+                        text: "failure".into(),
+                        bg_color: "Orange".into(),
+                        active: true,
+                        ..Default::default()
+                    },
+                    FilterRule {
+                        text: "failure".into(),
+                        bg_color: "Purple".into(),
+                        active: false, // inactive must be skipped
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            FilterTabData {
+                name: "DisabledTab".into(),
+                enabled: false,
+                filters: vec![FilterRule {
+                    text: "Fatal".into(),
+                    bg_color: "Blue".into(),
+                    active: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            FilterTabData {
+                name: "Tab2".into(),
+                enabled: true,
+                filters: vec![FilterRule {
+                    text: "Tag:".into(),
+                    bg_color: "Green".into(),
+                    active: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ];
+
+        let mut active_rules = Vec::new();
+        for tab in &tabs {
+            if tab.enabled {
+                for r in &tab.filters {
+                    if r.active {
+                        active_rules.push(r.clone());
+                    }
+                }
+            }
+        }
+        let compiled = CompiledStreamFilters::new(&active_rules);
+        let filter_res = execute_filtering(&src, &active_rules, false, None, 0).unwrap();
+
+        // Fast path with FilterResult: last matching active rule across enabled tabs is 'Tag:' (Green)
+        let status_fast =
+            resolve_status_line_for_selection(0, Some(0), &src, Some(&filter_res), &compiled);
+        assert_eq!(
+            status_fast,
+            "Line 1 | Matched Rule: 'Tag:' (Green) | 2 matches in tab"
+        );
+
+        // Without Tab2, last matching active rule in Tab1 is 'failure' (Orange)
+        tabs.pop();
+        let tab1_rules: Vec<FilterRule> = tabs
+            .iter()
+            .filter(|t| t.enabled)
+            .flat_map(|t| t.filters.iter().filter(|r| r.active).cloned())
+            .collect();
+        let compiled_tab1 = CompiledStreamFilters::new(&tab1_rules);
+        let filter_res_tab1 = execute_filtering(&src, &tab1_rules, false, None, 0).unwrap();
+
+        // Fallback path without FilterResult: still uses last-match precedence and ignores empty/inactive/disabled
+        let status_fallback =
+            resolve_status_line_for_selection(0, None, &src, None, &compiled_tab1);
+        assert_eq!(
+            status_fallback,
+            "Line 1 | Matched Rule: 'failure' (Orange) | 0 matches in tab"
+        );
+
+        // Unmatched line (never matched by empty rule)
+        let status_none =
+            resolve_status_line_for_selection(1, Some(1), &src, Some(&filter_res_tab1), &compiled_tab1);
+        assert_eq!(status_none, "Line 2 | No filter rule match");
+    }
+
+    #[test]
+    fn test_derived_state_reset_source_gen_and_facet_auto_sampling() {
+        use super::{
+            is_source_generation_current, next_source_generation,
+            reset_derived_controllers_and_tokens, should_auto_sample_facets,
+        };
+        use crate::controllers::{AdbController, BookmarkController, SearchController};
+        use crate::selection::SelectionModel;
+        use loganalysis_core::LineSeverity;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let filter_gen = AtomicU64::new(4);
+        let analytics_gen = AtomicU64::new(2);
+        let mut search_ctrl = SearchController::new();
+        search_ctrl.match_status = Some("Line 9".to_string());
+        let search_token = search_ctrl.cancel_gen.clone();
+        let initial_search_gen = search_token.load(Ordering::SeqCst);
+
+        // [INV-02-A] / [HIGH-1]: aborting searches increments search_ctrl.cancel_gen without touching filter_cancel_gen
+        search_ctrl.abort_ongoing_searches();
+        assert_eq!(search_token.load(Ordering::SeqCst), initial_search_gen + 1);
+        assert_eq!(filter_gen.load(Ordering::Relaxed), 4);
+
+        let mut selection = SelectionModel::new();
+        selection.select(3, 12);
+
+        let mut bookmarks = BookmarkController::new();
+        bookmarks.toggle_bookmark(12, "err".into(), LineSeverity::Error);
+        bookmarks.toggle_drawer();
+        bookmarks.open_note_modal(12);
+
+        let mut adb = AdbController::new();
+        adb.is_paused = true;
+        adb.paused_line_count = 5;
+        adb.paused_buffer.push_back(vec!["buffered".into()]);
+
+        let mut has_auto_sampled_facets = true;
+
+        reset_derived_controllers_and_tokens(
+            &filter_gen,
+            &analytics_gen,
+            &mut search_ctrl,
+            &mut selection,
+            &mut bookmarks,
+            &mut adb,
+            &mut has_auto_sampled_facets,
+        );
+
+        // [HIGH-1]: reset invalidates search_ctrl.cancel_gen and clears match_status
+        assert_eq!(search_token.load(Ordering::SeqCst), initial_search_gen + 2);
+        assert_eq!(search_ctrl.match_status, None);
+        assert_eq!(filter_gen.load(Ordering::Relaxed), 5);
+        assert_eq!(analytics_gen.load(Ordering::SeqCst), 3);
+
+        // [HIGH-4]: ADB pause and buffer cleared on reset
+        assert!(!adb.is_paused);
+        assert_eq!(adb.paused_line_count, 0);
+        assert!(adb.paused_buffer.is_empty());
+
+        // [LOW-8f]: auto-sampled facets flag cleared on reset and gated until reset
+        assert!(!has_auto_sampled_facets);
+        assert!(!should_auto_sample_facets(has_auto_sampled_facets, true, 99));
+        assert!(should_auto_sample_facets(has_auto_sampled_facets, true, 100));
+        has_auto_sampled_facets = true;
+        assert!(!should_auto_sample_facets(has_auto_sampled_facets, true, 25_000));
+
+        // [HIGH-3]: monotonic source generation rejects stale completions
+        let mut primary_gen = 0u64;
+        let open_a = next_source_generation(&mut primary_gen);
+        let open_b = next_source_generation(&mut primary_gen);
+        assert!(!is_source_generation_current(primary_gen, open_a));
+        assert!(is_source_generation_current(primary_gen, open_b));
     }
 }

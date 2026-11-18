@@ -121,18 +121,6 @@ impl LogAnalysisWorkspace {
         cx.notify();
     }
 
-    /// Fast-samples the active buffer (up to 25,000 lines) to extract top 7 tags
-    /// Fast-samples the active buffer (up to 25,000 lines) to extract top 7 tags synchronously.
-    #[allow(dead_code)]
-    pub fn refresh_facet_tags(&mut self) {
-        let Some(source) = &self.log_source else {
-            self.facet_tags.clear();
-            return;
-        };
-
-        self.facet_tags = compute_facet_tags(source);
-    }
-
     /// Asynchronously samples the active buffer on a background thread to extract top 7 tags without blocking the UI.
     pub fn refresh_facet_tags_async(&mut self, cx: &mut Context<Self>) {
         let Some(source) = self.log_source.clone() else {

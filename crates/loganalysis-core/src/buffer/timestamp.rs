@@ -9,6 +9,21 @@ pub const NON_LEAP_DAYS_BEFORE_MONTH: [u32; 13] = [
 ];
 
 pub const ONE_YEAR_MICROS: i64 = 366 * 86_400 * 1_000_000;
+pub const YEAR_ROLLOVER_THRESHOLD_MICROS: i64 = 300 * 86_400 * 1_000_000;
+
+/// Normalizes a yearless [`TimestampKind::MonthDayTime`] microsecond value against an anchor
+/// timestamp from the same source, adding [`ONE_YEAR_MICROS`] on Dec 31 -> Jan 01 rollover.
+#[inline]
+pub fn normalize_month_day_rollover(ts_micros: i64, anchor_micros: i64) -> i64 {
+    if anchor_micros >= YEAR_ROLLOVER_THRESHOLD_MICROS
+        && ts_micros >= 0
+        && ts_micros < anchor_micros - YEAR_ROLLOVER_THRESHOLD_MICROS
+    {
+        ts_micros.saturating_add(ONE_YEAR_MICROS)
+    } else {
+        ts_micros
+    }
+}
 
 #[inline]
 pub fn is_leap_year(year: i32) -> bool {
@@ -63,6 +78,24 @@ pub struct LogTimestamp {
     pub total_micros: i64,
 }
 
+/// Identifies the source timestamp format extracted from a log line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimestampKind {
+    /// Yearless `MM-DD HH:MM:SS.mmm` format (subject to Dec 31 -> Jan 01 year rollover).
+    MonthDayTime,
+    /// Explicit-year `YYYY-MM-DD[T ]HH:MM:SS[.mmm]` ISO-8601 format.
+    Iso8601,
+    /// Date-less `HH:MM:SS.mmm` time-of-day format.
+    TimeOnly,
+}
+
+/// Timestamp value paired with its detected [`TimestampKind`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParsedTimestamp {
+    pub timestamp: LogTimestamp,
+    pub kind: TimestampKind,
+}
+
 /// Latency severity classification for elapsed delta time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LatencyLevel {
@@ -97,6 +130,23 @@ pub fn compute_delta_micros(t_prev: LogTimestamp, t_curr: LogTimestamp) -> i64 {
     diff
 }
 
+/// Computes the signed delta in microseconds (`t_curr - t_prev`), applying year-boundary
+/// wrap-around only when both timestamps have [`TimestampKind::MonthDayTime`].
+#[inline]
+pub fn compute_delta_micros_typed(t_prev: ParsedTimestamp, t_curr: ParsedTimestamp) -> i64 {
+    let mut diff = t_curr
+        .timestamp
+        .total_micros
+        .saturating_sub(t_prev.timestamp.total_micros);
+    if t_prev.kind == TimestampKind::MonthDayTime
+        && t_curr.kind == TimestampKind::MonthDayTime
+        && diff < -300 * 86_400 * 1_000_000
+    {
+        diff = diff.saturating_add(ONE_YEAR_MICROS);
+    }
+    diff
+}
+
 /// Formats a signed microsecond delta into a compact human-readable representation.
 pub fn format_delta_micros(micros: i64) -> String {
     if micros == 0 {
@@ -107,17 +157,26 @@ pub fn format_delta_micros(micros: i64) -> String {
 
     if abs_us < 1_000 {
         format!("{sign}{abs_us}µs")
-    } else if abs_us < 1_000_000 {
+    } else if abs_us < 999_950 {
         let ms = (abs_us as f64) / 1000.0;
         format!("{sign}{ms:.1}ms")
-    } else if abs_us < 60_000_000 {
+    } else if abs_us < 59_995_000 {
         let sec = (abs_us as f64) / 1_000_000.0;
         format!("{sign}{sec:.2}s")
     } else if abs_us < 3_600_000_000 {
-        let total_sec = abs_us / 1_000_000;
-        let mins = total_sec / 60;
-        let rem_sec = (abs_us % 60_000_000) as f64 / 1_000_000.0;
-        format!("{sign}{mins}m {rem_sec:.1}s")
+        let total_tenths_sec = ((abs_us as f64) / 100_000.0).round() as u64;
+        if total_tenths_sec < 36_000 {
+            let mins = total_tenths_sec / 600;
+            let rem_tenths = total_tenths_sec % 600;
+            format!("{sign}{mins}m {:.1}s", (rem_tenths as f64) / 10.0)
+        } else {
+            let total_sec = total_tenths_sec / 10;
+            let hours = total_sec / 3600;
+            let rem_sec = total_sec % 3600;
+            let mins = rem_sec / 60;
+            let secs = rem_sec % 60;
+            format!("{sign}{hours}h {mins}m {secs}s")
+        }
     } else {
         let total_sec = abs_us / 1_000_000;
         let hours = total_sec / 3600;
@@ -128,8 +187,8 @@ pub fn format_delta_micros(micros: i64) -> String {
     }
 }
 
-/// Zero-allocation fast extraction of a normalized timestamp from raw line bytes.
-pub fn extract_timestamp(line: &[u8]) -> Option<LogTimestamp> {
+/// Zero-allocation fast extraction of a normalized timestamp along with its [`TimestampKind`].
+pub fn extract_timestamp_with_kind(line: &[u8]) -> Option<ParsedTimestamp> {
     if line.len() < 12 {
         return None;
     }
@@ -168,7 +227,10 @@ pub fn extract_timestamp(line: &[u8]) -> Option<LogTimestamp> {
 
         let days = day_of_year(month, day);
         let total_micros = calc_micros(days as i64, hour as i64, min as i64, sec as i64, millis as i64 * 1000);
-        return Some(LogTimestamp { total_micros });
+        return Some(ParsedTimestamp {
+            timestamp: LogTimestamp { total_micros },
+            kind: TimestampKind::MonthDayTime,
+        });
     }
 
     // Case 2: ISO-8601 format: "YYYY-MM-DD[T ]HH:MM:SS[.mmm]"
@@ -208,7 +270,10 @@ pub fn extract_timestamp(line: &[u8]) -> Option<LogTimestamp> {
 
         let days = days_since_epoch(year_i32, month, day);
         let total_micros = calc_micros(days, hour as i64, min as i64, sec as i64, micros);
-        return Some(LogTimestamp { total_micros });
+        return Some(ParsedTimestamp {
+            timestamp: LogTimestamp { total_micros },
+            kind: TimestampKind::Iso8601,
+        });
     }
 
     // Case 3: Simple time format: "HH:MM:SS.mmm"
@@ -228,10 +293,19 @@ pub fn extract_timestamp(line: &[u8]) -> Option<LogTimestamp> {
         }
 
         let total_micros = calc_micros(0, hour as i64, min as i64, sec as i64, millis as i64 * 1000);
-        return Some(LogTimestamp { total_micros });
+        return Some(ParsedTimestamp {
+            timestamp: LogTimestamp { total_micros },
+            kind: TimestampKind::TimeOnly,
+        });
     }
 
     None
+}
+
+/// Zero-allocation fast extraction of a normalized timestamp from raw line bytes.
+#[inline]
+pub fn extract_timestamp(line: &[u8]) -> Option<LogTimestamp> {
+    extract_timestamp_with_kind(line).map(|p| p.timestamp)
 }
 
 #[inline(always)]
@@ -560,5 +634,33 @@ mod tests {
 
         let nov_2026 = (days_since_epoch(2026, 11, 6) as u64) * 86_400 + 3661;
         assert_eq!(format_epoch_utc(nov_2026), "2026-11-06 01:01:01 UTC");
+    }
+
+    #[test]
+    fn test_compute_delta_micros_typed_skips_rollover_on_iso8601() {
+        let later = extract_timestamp_with_kind(b"2026-12-31 23:59:59.000 later").unwrap();
+        let earlier = extract_timestamp_with_kind(b"2026-01-01 00:00:01.000 earlier").unwrap();
+        assert_eq!(later.kind, TimestampKind::Iso8601);
+        assert_eq!(earlier.kind, TimestampKind::Iso8601);
+
+        let delta = compute_delta_micros_typed(later, earlier);
+        assert!(
+            delta < 0,
+            "Explicit-year ISO-8601 backward jump must remain negative, got {delta}"
+        );
+    }
+
+    #[test]
+    fn test_format_delta_micros_rounding_promotions() {
+        assert_eq!(format_delta_micros(999_949), "+999.9ms");
+        assert_eq!(format_delta_micros(999_950), "+1.00s");
+        assert_eq!(format_delta_micros(999_999), "+1.00s");
+        assert_eq!(format_delta_micros(59_994_999), "+59.99s");
+        assert_eq!(format_delta_micros(59_995_000), "+1m 0.0s");
+        assert_eq!(format_delta_micros(59_999_999), "+1m 0.0s");
+        assert_eq!(format_delta_micros(3_599_949_999), "+59m 59.9s");
+        assert_eq!(format_delta_micros(3_599_950_000), "+1h 0m 0s");
+        assert_eq!(format_delta_micros(-999_999), "-1.00s");
+        assert_eq!(format_delta_micros(-59_999_999), "-1m 0.0s");
     }
 }

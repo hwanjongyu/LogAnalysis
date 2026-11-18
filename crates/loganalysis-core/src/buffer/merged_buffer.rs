@@ -3,15 +3,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::file_buffer::FileLogBuffer;
-use super::timestamp::extract_timestamp;
+use super::timestamp::{extract_timestamp_with_kind, TimestampKind};
 use super::LogSource;
 
-pub use super::timestamp::ONE_YEAR_MICROS;
-
-/// Threshold for year rollover detection (300 days).
-/// When timestamps jump backwards by more than 300 days (e.g., Dec 31 -> Jan 01),
-/// it indicates an un-year-stamped timestamp rollover rather than clock drift.
-pub const YEAR_ROLLOVER_THRESHOLD_MICROS: i64 = 300 * 86_400 * 1_000_000;
+pub use super::timestamp::{ONE_YEAR_MICROS, YEAR_ROLLOVER_THRESHOLD_MICROS};
 
 /// Threshold for detecting early-year logs (< 60 days, e.g. January/February).
 pub const EARLY_YEAR_THRESHOLD_MICROS: i64 = 60 * 86_400 * 1_000_000;
@@ -71,6 +66,16 @@ impl MergedLogBuffer {
         sources: Vec<Arc<FileLogBuffer>>,
         source_names: Vec<String>,
     ) -> std::io::Result<Self> {
+        if sources.len() != source_names.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Merged source count ({}) does not match source_names count ({})",
+                    sources.len(),
+                    source_names.len()
+                ),
+            ));
+        }
         if sources.len() > 255 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -83,45 +88,66 @@ impl MergedLogBuffer {
         }
 
         struct SourceTimeInfo {
-            first_ts: Option<i64>,
-            last_ts: Option<i64>,
+            first_month_day_ts: Option<i64>,
+            last_month_day_ts: Option<i64>,
+            first_any_ts: Option<(usize, i64, TimestampKind)>,
         }
 
-        // Pass 1: Scan temporal boundaries for each source to detect ensemble rollover
+        // Pass 1: Scan temporal boundaries for each source using MonthDayTime-only rollover detection
         let mut source_infos = Vec::with_capacity(sources.len());
         for src in &sources {
             let line_count = src.line_count();
-            let mut first_ts = None;
+            let mut first_any_ts = None;
+            let mut first_month_day_ts = None;
             for l_idx in 0..line_count {
                 if let Some(raw) = src.get_raw_line(l_idx) {
-                    if let Some(t) = extract_timestamp(raw) {
-                        first_ts = Some(t.total_micros);
-                        break;
+                    if let Some(p) = extract_timestamp_with_kind(raw) {
+                        if first_any_ts.is_none() {
+                            first_any_ts = Some((l_idx, p.timestamp.total_micros, p.kind));
+                        }
+                        if p.kind == TimestampKind::MonthDayTime {
+                            first_month_day_ts = Some(p.timestamp.total_micros);
+                            break;
+                        }
                     }
                 }
             }
 
-            let mut last_ts = None;
-            for l_idx in (0..line_count).rev() {
-                if let Some(raw) = src.get_raw_line(l_idx) {
-                    if let Some(t) = extract_timestamp(raw) {
-                        last_ts = Some(t.total_micros);
-                        break;
+            let mut last_month_day_ts = None;
+            if first_month_day_ts.is_some() {
+                for l_idx in (0..line_count).rev() {
+                    if let Some(raw) = src.get_raw_line(l_idx) {
+                        if let Some(p) = extract_timestamp_with_kind(raw) {
+                            if p.kind == TimestampKind::MonthDayTime {
+                                last_month_day_ts = Some(p.timestamp.total_micros);
+                                break;
+                            }
+                        }
                     }
                 }
             }
 
-            source_infos.push(SourceTimeInfo { first_ts, last_ts });
+            source_infos.push(SourceTimeInfo {
+                first_month_day_ts,
+                last_month_day_ts,
+                first_any_ts,
+            });
         }
 
         let has_late_year = source_infos.iter().any(|info| {
-            info.first_ts.is_some_and(|ts| ts >= YEAR_ROLLOVER_THRESHOLD_MICROS)
-                || info.last_ts.is_some_and(|ts| ts >= YEAR_ROLLOVER_THRESHOLD_MICROS)
+            info.first_month_day_ts
+                .is_some_and(|ts| ts >= YEAR_ROLLOVER_THRESHOLD_MICROS)
+                || info
+                    .last_month_day_ts
+                    .is_some_and(|ts| ts >= YEAR_ROLLOVER_THRESHOLD_MICROS)
         });
 
         let has_early_year = source_infos.iter().any(|info| {
-            info.first_ts.is_some_and(|ts| ts <= EARLY_YEAR_THRESHOLD_MICROS)
-                || info.last_ts.is_some_and(|ts| ts <= EARLY_YEAR_THRESHOLD_MICROS)
+            info.first_month_day_ts
+                .is_some_and(|ts| ts <= EARLY_YEAR_THRESHOLD_MICROS)
+                || info
+                    .last_month_day_ts
+                    .is_some_and(|ts| ts <= EARLY_YEAR_THRESHOLD_MICROS)
         });
 
         let ensemble_rollover = has_late_year && has_early_year;
@@ -129,7 +155,7 @@ impl MergedLogBuffer {
         let mut base_offsets = vec![0i64; sources.len()];
         if ensemble_rollover {
             for (s_id, info) in source_infos.iter().enumerate() {
-                if let Some(first) = info.first_ts {
+                if let Some(first) = info.first_month_day_ts {
                     if first <= EARLY_YEAR_THRESHOLD_MICROS {
                         base_offsets[s_id] = ONE_YEAR_MICROS;
                     }
@@ -137,61 +163,71 @@ impl MergedLogBuffer {
             }
         }
 
-        // Pass 2: Populate merged_index with adjusted timestamps
-        let mut merged_index = Vec::with_capacity(total_lines);
+        // Pass 2: Populate entries with adjusted timestamps and sort keys
+        let mut entries: Vec<(MergedLineRef, Option<i64>)> = Vec::with_capacity(total_lines);
         let mut max_line_len = 0usize;
 
         for (s_id, src) in sources.iter().enumerate() {
             max_line_len = max_line_len.max(src.max_line_len());
             let line_count = src.line_count();
             let mut file_year_offset = base_offsets[s_id];
-            let mut prev_raw_ts: Option<i64> = None;
-            let mut last_ts = None;
+            let mut prev_month_day_raw_ts: Option<i64> = None;
+            let mut last_ts: Option<i64> = None;
+
+            let first_adjusted_ts = source_infos[s_id].first_any_ts.map(|(_, raw_ts, kind)| {
+                if kind == TimestampKind::MonthDayTime {
+                    raw_ts + base_offsets[s_id]
+                } else {
+                    raw_ts
+                }
+            });
 
             for l_idx in 0..line_count {
-                let ts = if let Some(raw) = src.get_raw_line(l_idx) {
-                    if let Some(t) = extract_timestamp(raw) {
-                        let raw_micros = t.total_micros;
-                        if let Some(prev) = prev_raw_ts {
+                let parsed = src
+                    .get_raw_line(l_idx)
+                    .and_then(extract_timestamp_with_kind);
+
+                let (timestamp_micros, sort_ts) = if let Some(p) = parsed {
+                    let adjusted = if p.kind == TimestampKind::MonthDayTime {
+                        let raw_micros = p.timestamp.total_micros;
+                        if let Some(prev) = prev_month_day_raw_ts {
                             // Intra-file year rollover: e.g. 12-31 23:59:59 -> 01-01 00:00:00
                             if raw_micros < prev - YEAR_ROLLOVER_THRESHOLD_MICROS {
                                 file_year_offset += ONE_YEAR_MICROS;
                             }
                         }
-                        prev_raw_ts = Some(raw_micros);
-                        let adjusted = raw_micros + file_year_offset;
-                        last_ts = Some(adjusted);
-                        Some(adjusted)
+                        prev_month_day_raw_ts = Some(raw_micros);
+                        raw_micros + file_year_offset
                     } else {
-                        // Inherit last known timestamp from this file so multiline exceptions stay grouped
-                        last_ts
-                    }
+                        p.timestamp.total_micros
+                    };
+                    last_ts = Some(adjusted);
+                    (Some(adjusted), Some(adjusted))
+                } else if last_ts.is_some() {
+                    // Inherit last known timestamp from this file so multiline exceptions stay grouped
+                    (last_ts, last_ts)
                 } else {
-                    last_ts
+                    // Leading header before first timestamp (keeps timestamp_micros = None,
+                    // while sorting directly in front of this file's first event)
+                    (None, first_adjusted_ts)
                 };
 
-                merged_index.push(MergedLineRef {
-                    source_id: s_id as u8,
-                    source_line_idx: l_idx,
-                    timestamp_micros: ts,
-                });
+                entries.push((
+                    MergedLineRef {
+                        source_id: s_id as u8,
+                        source_line_idx: l_idx,
+                        timestamp_micros,
+                    },
+                    sort_ts,
+                ));
             }
         }
 
-        // Chronological stable sort:
-        // Prioritize timestamps; if equal or missing, preserve original file sequence
-        merged_index.sort_by(|a, b| match (a.timestamp_micros, b.timestamp_micros) {
-            (Some(ta), Some(tb)) => {
-                if ta != tb {
-                    ta.cmp(&tb)
-                } else {
-                    (a.source_id, a.source_line_idx).cmp(&(b.source_id, b.source_line_idx))
-                }
-            }
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => (a.source_id, a.source_line_idx).cmp(&(b.source_id, b.source_line_idx)),
-        });
+        // Chronological stable sort with strict total order:
+        // None (100%-unstamped sources) sort first, followed by chronological events with
+        // leading headers placed directly before their source's first timestamped event.
+        entries.sort_by_key(|(r, sort_ts)| (*sort_ts, r.source_id, r.source_line_idx));
+        let merged_index = entries.into_iter().map(|(r, _)| r).collect();
 
         Ok(Self {
             sources,
@@ -655,5 +691,67 @@ mod tests {
 
         let _ = std::fs::remove_file(dec_dir);
         let _ = std::fs::remove_file(jan_dir);
+    }
+
+    #[test]
+    fn test_merge_iso8601_and_time_only_no_spurious_year_rollover() {
+        let mut iso_file = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut iso_file, b"2026-01-01 00:00:05.000 ISO event\n").unwrap();
+        let mut time_file = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut time_file, b"00:00:01.000 TimeOnly event\n").unwrap();
+
+        let merged = MergedLogBuffer::open_multiple(&[
+            iso_file.path().to_path_buf(),
+            time_file.path().to_path_buf(),
+        ])
+        .unwrap();
+
+        // TimeOnly (1970-01-01 00:00:01) must NOT receive +ONE_YEAR_MICROS
+        let time_only_ts = merged.get_line_timestamp_micros(0).unwrap();
+        assert_eq!(time_only_ts, 1_000_000);
+        assert!(merged.get_line(0).unwrap().contains("TimeOnly"));
+        assert!(merged.get_line(1).unwrap().contains("ISO event"));
+    }
+
+    #[test]
+    fn test_merge_leading_headers_stay_before_first_event() {
+        let mut file_a = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(
+            &mut file_a,
+            b"--------- beginning of main\n\
+              11-06 10:00:02.000 A second\n",
+        )
+        .unwrap();
+
+        let mut file_b = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut file_b, b"11-06 10:00:01.000 B first\n").unwrap();
+
+        let mut file_unstamped = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut file_unstamped, b"pure metadata line\n").unwrap();
+
+        let merged = MergedLogBuffer::open_multiple(&[
+            file_a.path().to_path_buf(),
+            file_b.path().to_path_buf(),
+            file_unstamped.path().to_path_buf(),
+        ])
+        .unwrap();
+
+        assert_eq!(merged.line_count(), 4);
+        assert!(merged.get_line(0).unwrap().contains("pure metadata line"));
+        assert_eq!(merged.get_line_timestamp_micros(0), None);
+        assert!(merged.get_line(1).unwrap().contains("B first"));
+        assert!(merged.get_line(2).unwrap().contains("beginning of main"));
+        assert_eq!(merged.get_line_timestamp_micros(2), None);
+        assert!(merged.get_line(3).unwrap().contains("A second"));
+    }
+
+    #[test]
+    fn test_from_sources_rejects_mismatched_source_names() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut tmp, b"hello\n").unwrap();
+        let buf = Arc::new(FileLogBuffer::open(tmp.path()).unwrap());
+
+        let err = MergedLogBuffer::from_sources(vec![buf], vec![]).err().unwrap();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 }

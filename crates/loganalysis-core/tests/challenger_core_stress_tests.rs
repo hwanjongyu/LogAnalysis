@@ -605,27 +605,44 @@ fn test_challenge_4_timeline_extreme_and_negative_timestamps() {
 
 #[test]
 fn test_challenge_4_timeline_i64_min_behavior() {
-    // Specifically test what happens when a source emits i64::MIN or values near i64::MIN
+    // 1. Extreme negative span [i64::MIN, i64::MIN + 100] executes directly without panic or overflow
     let extreme_source = ExtremeTimestampMockSource {
-        timestamps: vec![
-            Some(i64::MIN),
-            Some(i64::MIN + 100),
-        ],
+        timestamps: vec![Some(i64::MIN), Some(i64::MIN + 100)],
     };
     let vis_indices: Vec<usize> = (0..extreme_source.line_count()).collect();
     let vis_styles = vec![loganalysis_core::filter::ResolvedStyle::default(); vis_indices.len()];
 
-    // We catch unwind or check if compute handles or panics
-    let res = std::panic::catch_unwind(|| {
-        EpsTimelineData::compute(&extreme_source, &vis_indices, &vis_styles, 32)
-    });
+    let timeline = EpsTimelineData::compute(&extreme_source, &vis_indices, &vis_styles, 32);
+    assert!(timeline.has_timestamps);
+    assert_eq!(timeline.min_timestamp, i64::MIN);
+    assert_eq!(timeline.max_timestamp, i64::MIN + 100);
+    assert!(!timeline.buckets.is_empty());
+    assert!(
+        timeline
+            .buckets
+            .iter()
+            .all(|b| b.start_micros <= b.end_micros),
+        "All bucket intervals must satisfy start_micros <= end_micros"
+    );
+    let binned_total: u32 = timeline.buckets.iter().map(|b| b.total_count).sum();
+    assert_eq!(binned_total, 2);
 
-    match res {
-        Ok(timeline) => {
-            println!("EpsTimelineData::compute survived i64::MIN: has_timestamps={}", timeline.has_timestamps);
-        }
-        Err(err) => {
-            println!("EMPIRICAL FINDING: EpsTimelineData::compute panicked on i64::MIN: {:?}", err);
-        }
-    }
+    // 2. Full signed range [i64::MIN + 1, i64::MAX - 1] partitions overflow-free
+    let full_span_source = ExtremeTimestampMockSource {
+        timestamps: vec![Some(i64::MIN + 1), Some(0), Some(i64::MAX - 1)],
+    };
+    let span_vis: Vec<usize> = (0..full_span_source.line_count()).collect();
+    let span_styles = vec![loganalysis_core::filter::ResolvedStyle::default(); span_vis.len()];
+
+    let span_timeline = EpsTimelineData::compute(&full_span_source, &span_vis, &span_styles, 32);
+    assert!(span_timeline.has_timestamps);
+    assert_eq!(span_timeline.min_timestamp, i64::MIN + 1);
+    assert_eq!(span_timeline.max_timestamp, i64::MAX - 1);
+    assert!(!span_timeline.buckets.is_empty());
+    assert!(span_timeline
+        .buckets
+        .iter()
+        .all(|b| b.start_micros <= b.end_micros));
+    let span_binned_total: u32 = span_timeline.buckets.iter().map(|b| b.total_count).sum();
+    assert_eq!(span_binned_total, 3);
 }

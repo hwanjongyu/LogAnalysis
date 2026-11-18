@@ -188,8 +188,7 @@ pub fn render_facets_bar(
                             .text_size(px(10.0))
                             .text_color(theme.text_muted)
                             .on_click(cx.listener(|this, _, _window, cx| {
-                                this.refresh_facet_tags();
-                                cx.notify();
+                                this.refresh_facet_tags_async(cx);
                             }))
                             .child("↻ Rescan"),
                     )

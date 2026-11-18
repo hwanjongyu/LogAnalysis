@@ -21,10 +21,11 @@ pub use buffer::{
     merged_buffer::{MergedLineRef, MergedLogBuffer},
     stream_buffer::{SharedStreamBuffer, StreamBufferInner, StreamLogBuffer, STREAM_PAGE_SIZE},
     timestamp::{
-        compute_delta_micros, extract_timestamp, format_delta_micros, format_epoch_utc,
-        LatencyLevel, LogTimestamp,
+        compute_delta_micros, compute_delta_micros_typed, extract_timestamp,
+        extract_timestamp_with_kind, format_delta_micros, format_epoch_utc, LatencyLevel,
+        LogTimestamp, ParsedTimestamp, TimestampKind,
     },
-    ActiveLogSource, LogSource,
+    measure_display_width, ActiveLogSource, LogSource,
 };
 pub use constants::{
     parse_color_spec, ASYNC_SEARCH_THRESHOLD, COLOR_MAP, MAX_MONITOR_LINES, MONITOR_TRIM_BATCH,

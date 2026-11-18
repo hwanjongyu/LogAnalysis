@@ -244,10 +244,26 @@ pub fn run_command_with_timeout(
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                 pipe_disconnected = true;
-                let status = child
-                    .wait()
-                    .map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
-                break status;
+                break loop {
+                    match child
+                        .try_wait()
+                        .map_err(|e| AdbError::ExecutionFailed(e.to_string()))
+                    {
+                        Ok(Some(status)) => break status,
+                        Ok(None) => {
+                            let remaining = timeout.saturating_sub(start_time.elapsed());
+                            if remaining.is_zero() {
+                                cleanup_aborted_command(child, rx, reader_handle);
+                                return Err(AdbError::Timeout(timeout));
+                            }
+                            std::thread::sleep(remaining.min(Duration::from_millis(5)));
+                        }
+                        Err(err) => {
+                            cleanup_aborted_command(child, rx, reader_handle);
+                            return Err(err);
+                        }
+                    }
+                };
             }
         }
     };
@@ -421,5 +437,37 @@ mod tests {
             matches!(res, Err(AdbError::ExecutionFailed(_))),
             "Expected ExecutionFailed for missing binary, got: {res:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_command_with_timeout_stdout_closed_hang_enforces_timeout() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "exec 1>&-; sleep 30"]);
+        let timeout = Duration::from_millis(50);
+        let start = Instant::now();
+        let res = run_command_with_timeout(cmd, timeout);
+        let elapsed = start.elapsed();
+
+        assert_eq!(res, Err(AdbError::Timeout(timeout)));
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "Timeout took too long ({elapsed:?}) when child closed stdout before hanging"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_command_with_timeout_stdout_closed_before_clean_exit() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "printf 'ok'; exec 1>&-; exit 0"]);
+        let out = run_command_with_timeout(cmd, Duration::from_secs(5))
+            .expect("command closing stdout before exit 0 should succeed");
+        assert_eq!(out, b"ok");
+
+        let mut fail_cmd = Command::new("sh");
+        fail_cmd.args(["-c", "exec 1>&-; exit 7"]);
+        let res = run_command_with_timeout(fail_cmd, Duration::from_secs(5));
+        assert_eq!(res, Err(AdbError::NonZeroExit(Some(7))));
     }
 }

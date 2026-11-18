@@ -133,44 +133,46 @@ impl LogAnalysisWorkspace {
         let source = self.log_source.as_ref()?;
 
         let curr_src_idx = *filter_res.visible_indices.get(selected_row)?;
-        let t_curr_us = source.get_timestamp_micros(curr_src_idx).or_else(|| {
-            source
+        let is_merged = matches!(&**source, loganalysis_core::ActiveLogSource::Merged(_));
+
+        let diff = if is_merged {
+            let t_curr_us = source.get_timestamp_micros(curr_src_idx)?;
+            let mut found_diff = None;
+            for back_step in 1..=10 {
+                if selected_row < back_step {
+                    break;
+                }
+                let prev_src_idx = *filter_res.visible_indices.get(selected_row - back_step)?;
+                if let Some(t_prev_us) = source.get_timestamp_micros(prev_src_idx) {
+                    found_diff = Some(t_curr_us.saturating_sub(t_prev_us));
+                    break;
+                }
+            }
+            found_diff?
+        } else {
+            let t_curr = source
                 .get_raw_line(curr_src_idx)
-                .and_then(loganalysis_core::extract_timestamp)
-                .map(|t| t.total_micros)
-        })?;
-
-        for back_step in 1..=10 {
-            if selected_row < back_step {
-                break;
-            }
-            let prev_src_idx = *filter_res.visible_indices.get(selected_row - back_step)?;
-            let prev_us = source.get_timestamp_micros(prev_src_idx).or_else(|| {
-                source
+                .and_then(loganalysis_core::extract_timestamp_with_kind)?;
+            let mut found_diff = None;
+            for back_step in 1..=10 {
+                if selected_row < back_step {
+                    break;
+                }
+                let prev_src_idx = *filter_res.visible_indices.get(selected_row - back_step)?;
+                if let Some(t_prev) = source
                     .get_raw_line(prev_src_idx)
-                    .and_then(loganalysis_core::extract_timestamp)
-                    .map(|t| t.total_micros)
-            });
-            if let Some(t_prev_us) = prev_us {
-                let diff = if matches!(&**source, loganalysis_core::ActiveLogSource::Merged(_)) {
-                    t_curr_us.saturating_sub(t_prev_us)
-                } else {
-                    loganalysis_core::compute_delta_micros(
-                        loganalysis_core::LogTimestamp {
-                            total_micros: t_prev_us,
-                        },
-                        loganalysis_core::LogTimestamp {
-                            total_micros: t_curr_us,
-                        },
-                    )
-                };
-                let formatted = loganalysis_core::format_delta_micros(diff);
-                let latency = loganalysis_core::LatencyLevel::from_micros(diff);
-                return Some((formatted, latency, diff));
+                    .and_then(loganalysis_core::extract_timestamp_with_kind)
+                {
+                    found_diff = Some(loganalysis_core::compute_delta_micros_typed(t_prev, t_curr));
+                    break;
+                }
             }
-        }
+            found_diff?
+        };
 
-        None
+        let formatted = loganalysis_core::format_delta_micros(diff);
+        let latency = loganalysis_core::LatencyLevel::from_micros(diff);
+        Some((formatted, latency, diff))
     }
 
     /// Clears the active log row selection and refreshes status line

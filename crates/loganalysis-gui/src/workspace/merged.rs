@@ -35,12 +35,10 @@ impl LogAnalysisWorkspace {
 
     /// Loads multiple log files and merges them chronologically using MergedLogBuffer
     pub fn open_merged_files(&mut self, paths: &[std::path::PathBuf], cx: &mut Context<Self>) {
-        if self.adb.is_streaming {
-            self.stop_adb_stream(cx);
-        }
         if paths.is_empty() {
             return;
         }
+        let merge_gen = self.begin_primary_source_transition(cx);
 
         let paths_vec = paths.to_vec();
         let file_names: Vec<String> = paths
@@ -51,7 +49,6 @@ impl LogAnalysisWorkspace {
             format!("Merged ({} files: {})", paths.len(), file_names.join(", ")).into();
 
         self.status_text = format!("Merging and opening {} log files...", paths.len()).into();
-        self.selection.clear();
         cx.notify();
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -66,9 +63,11 @@ impl LogAnalysisWorkspace {
                     .await;
 
                 let _ = this.update(&mut async_cx, |workspace, cx| {
+                    if workspace.primary_source_gen != merge_gen {
+                        return;
+                    }
                     match open_result {
                         Ok(buf) => {
-                            workspace.reset_derived_log_state();
                             let arc_buf = Arc::new(ActiveLogSource::Merged(buf));
                             workspace.log_source = Some(arc_buf.clone());
                             workspace.active_file_name = Some(summary_name);

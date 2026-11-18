@@ -662,10 +662,29 @@ pub fn render_highlighted_text(
     }
 }
 
+/// Fixed height in pixels of the Column View header row and its right corner spacer.
+pub const COLUMN_HEADER_HEIGHT_PX: f32 = 24.0;
+
+/// Fixed width in pixels of the custom heatmap scrollbar track and matching column header corner spacer.
+pub const SCROLLBAR_TRACK_WIDTH_PX: f32 = 15.0;
+
+/// Computes the rendered `(list_height_px, scrollbar_track_height_px)` pair for a pane of `viewport_height`.
+/// Because the column header sits above the `[list_el | scrollbar_track]` row, both elements always share identical height.
+#[inline]
+pub fn aligned_list_and_scrollbar_height(viewport_height: f32, is_column_view: bool) -> (f32, f32) {
+    let header_offset = if is_column_view {
+        COLUMN_HEADER_HEIGHT_PX
+    } else {
+        0.0
+    };
+    let h = (viewport_height - header_offset).max(0.0);
+    (h, h)
+}
+
 /// Column Header Bar for Structured Column Grid View
 fn render_column_header(theme: crate::theme::Theme) -> impl IntoElement {
     div()
-        .h(px(24.0))
+        .h(px(COLUMN_HEADER_HEIGHT_PX))
         .w_full()
         .bg(theme.bg_header)
         .border_b_1()
@@ -852,30 +871,36 @@ fn render_log_list(
                     false
                 };
 
-                let (has_custom_bg, bg_color, fg_color) = if let Some(res) = filter_res {
+                let (bg_color, style_opt) = if let Some(res) = filter_res {
                     if let Some(style) = res.visible_styles.get(idx) {
                         (
-                            style.bg_hex.is_some(),
                             style.bg_hex.map(rgb).unwrap_or(row_theme.bg_dark),
-                            style.fg_hex.map(rgb).unwrap_or(row_theme.text_primary),
+                            Some(*style),
                         )
                     } else {
-                        (false, row_theme.bg_dark, row_theme.text_primary)
+                        (row_theme.bg_dark, None)
                     }
                 } else {
-                    (false, row_theme.bg_dark, row_theme.text_primary)
+                    (row_theme.bg_dark, None)
                 };
 
                 let is_selected = selected == Some(idx);
+                let has_custom_bg = style_opt.is_some_and(|s| s.bg_hex.is_some());
                 let final_bg = if is_selected {
                     row_theme.selection_bg
                 } else {
                     bg_color
                 };
-                let final_fg = if is_selected && !has_custom_bg {
-                    rgb(0xffffff)
-                } else {
-                    fg_color
+                let final_fg = match style_opt {
+                    Some(style) => crate::theme::resolve_selected_row_fg(
+                        is_selected,
+                        style.is_matched,
+                        style.fg_hex,
+                        row_theme,
+                    ),
+                    None => {
+                        crate::theme::resolve_selected_row_fg(is_selected, false, None, row_theme)
+                    }
                 };
                 let entity_handle = weak_handle.clone();
                 let row_id = if is_primary { "log-row" } else { "secondary-log-row" };
@@ -1162,7 +1187,7 @@ fn render_log_list(
         workspace.secondary_scroll_handle.clone()
     };
 
-    let list_el = list.track_scroll(scroll_handle.clone()).flex_1();
+    let list_el = list.track_scroll(scroll_handle.clone()).flex_1().h_full();
 
     // Compute scrollbar thumb position
     let (thumb_top, thumb_height, track_height) = {
@@ -1283,7 +1308,7 @@ fn render_log_list(
     let mut scrollbar_track = div()
         .id(track_id)
         .relative()
-        .w(px(15.0))
+        .w(px(SCROLLBAR_TRACK_WIDTH_PX))
         .h_full()
         .bg(theme.bg_gutter)
         .border_l_1()
@@ -1349,23 +1374,48 @@ fn render_log_list(
                 .hover(move |s| s.bg(theme.accent)),
         );
 
-    let main_viewport = div()
+    let list_and_scrollbar = div()
         .flex_1()
-        .h_full()
+        .w_full()
+        .min_h(px(0.0))
         .flex()
-        .flex_col()
+        .flex_row()
         .overflow_hidden()
-        .when(is_column_view, |s| s.child(render_column_header(theme)))
-        .child(list_el);
+        .child(list_el)
+        .child(scrollbar_track);
 
     div()
         .flex_1()
         .h_full()
         .flex()
-        .flex_row()
+        .flex_col()
         .overflow_hidden()
-        .child(main_viewport)
-        .child(scrollbar_track)
+        .when(is_column_view, |s| {
+            s.child(
+                div()
+                    .w_full()
+                    .h(px(COLUMN_HEADER_HEIGHT_PX))
+                    .flex()
+                    .flex_row()
+                    .child(
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .overflow_hidden()
+                            .child(render_column_header(theme)),
+                    )
+                    .child(
+                        div()
+                            .w(px(SCROLLBAR_TRACK_WIDTH_PX))
+                            .h_full()
+                            .bg(theme.bg_header)
+                            .border_b_1()
+                            .border_l_1()
+                            .border_color(theme.border_subtle),
+                    ),
+            )
+        })
+        .child(list_and_scrollbar)
 }
 
 /// Secondary pane empty state when no file is loaded in Pane B
@@ -1989,8 +2039,7 @@ fn render_onboarding_empty_state(
                                                     .text_color(theme.text_muted)
                                                     .hover(|s| s.text_color(theme.error_red))
                                                     .on_click(cx.listener(|this, _, _window, cx| {
-                                                        this.clear_recent_files();
-                                                        cx.notify();
+                                                        this.clear_recent_files_async(cx);
                                                     }))
                                                     .child("Clear history"),
                                             ),
@@ -2084,4 +2133,19 @@ fn render_onboarding_empty_state(
                         .child(render_kbd_chip("Ctrl+Shift+R", "Live ADB", theme)),
                 ),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        aligned_list_and_scrollbar_height, COLUMN_HEADER_HEIGHT_PX, SCROLLBAR_TRACK_WIDTH_PX,
+    };
+
+    #[test]
+    fn test_column_view_scrollbar_alignment_constants_and_heights() {
+        assert_eq!(COLUMN_HEADER_HEIGHT_PX, 24.0);
+        assert_eq!(SCROLLBAR_TRACK_WIDTH_PX, 15.0);
+        assert_eq!(aligned_list_and_scrollbar_height(600.0, false), (600.0, 600.0));
+        assert_eq!(aligned_list_and_scrollbar_height(600.0, true), (576.0, 576.0));
+    }
 }

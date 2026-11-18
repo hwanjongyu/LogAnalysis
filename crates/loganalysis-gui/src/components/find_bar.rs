@@ -205,7 +205,7 @@ pub fn render_find_bar(
                     .text_size(px(11.0))
                     .text_color(theme.text_muted)
                     .on_click(cx.listener(|this, _, _window, cx| {
-                        this.toggle_search_bar(cx);
+                        this.close_search_bar(cx);
                     }))
                     .child("✕"),
             ),

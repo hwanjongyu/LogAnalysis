@@ -92,6 +92,15 @@ impl LogAnalysisWorkspace {
 
     /// Loads a log file for the secondary pane asynchronously and runs filtering
     pub fn open_secondary_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        let sec_gen = self.split_view.advance_source_gen();
+        self.secondary_filter_cancel_gen
+            .fetch_add(1, Ordering::SeqCst);
+        self.split_view.secondary_log_source = None;
+        self.split_view.secondary_file_name = None;
+        self.split_view.secondary_filter_result = None;
+        self.secondary_selection.clear();
+        self.split_view.is_split_view = true;
+
         let path_buf = path.to_path_buf();
         let file_name: SharedString = path
             .file_name()
@@ -101,8 +110,6 @@ impl LogAnalysisWorkspace {
             .into();
 
         self.status_text = format!("Opening secondary log {:?}...", file_name).into();
-        self.secondary_selection.clear();
-        self.split_view.is_split_view = true;
         cx.notify();
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -116,13 +123,11 @@ impl LogAnalysisWorkspace {
                     .await;
 
                 let _ = this.update(&mut async_cx, |workspace, cx| {
+                    if workspace.split_view.secondary_source_gen != sec_gen {
+                        return;
+                    }
                     match open_result {
                         Ok(buf) => {
-                            workspace
-                                .secondary_filter_cancel_gen
-                                .fetch_add(1, Ordering::SeqCst);
-                            workspace.split_view.secondary_filter_result = None;
-                            workspace.secondary_selection.clear();
                             let arc_buf = Arc::new(ActiveLogSource::File(buf));
                             workspace.split_view.secondary_log_source = Some(arc_buf.clone());
                             workspace.split_view.secondary_file_name = Some(file_name);

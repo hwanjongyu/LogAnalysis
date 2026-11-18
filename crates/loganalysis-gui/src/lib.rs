@@ -16,7 +16,6 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use actions::*;
-use cli::handle_cli_version_flag;
 use components::activity_bar::render_activity_bar;
 use components::filter_dock::{render_filter_dock, render_filter_dock_splitter};
 use components::log_view::render_log_viewport;
@@ -81,6 +80,8 @@ define_default_keybindings!(
     ("ctrl-=", ZoomIn),
     ("ctrl-+", ZoomIn),
     ("ctrl--", ZoomOut),
+    ("ctrl-0", ResetZoom),
+    ("cmd-0", ResetZoom),
     ("ctrl-space", TogglePauseStream),
     ("ctrl-t", AddFilterTab),
     ("ctrl-d", DeleteFilterTab),
@@ -273,6 +274,9 @@ impl Render for LogAnalysisWorkspace {
             .on_action(cx.listener(|this, _: &FindPrev, _window, cx| {
                 this.search(false, cx);
             }))
+            .on_action(cx.listener(|this, _: &CloseFind, _window, cx| {
+                this.close_search_bar(cx);
+            }))
             .on_action(cx.listener(|this, _: &CopySelection, _window, cx| {
                 this.copy_selection(cx);
             }))
@@ -281,7 +285,7 @@ impl Render for LogAnalysisWorkspace {
                 window.focus(&this.modal_pattern_input.read(cx).focus_handle);
             }))
             .on_action(cx.listener(|this, _: &SaveFilters, window, cx| {
-                this.prompt_save_filters(Some(window), cx);
+                this.save_filters(Some(window), cx);
             }))
             .on_action(cx.listener(|this, _: &SaveFiltersAs, window, cx| {
                 this.prompt_save_filters(Some(window), cx);
@@ -327,6 +331,9 @@ impl Render for LogAnalysisWorkspace {
             }))
             .on_action(cx.listener(|this, _: &ZoomOut, _window, cx| {
                 this.zoom(-1.0, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ResetZoom, _window, cx| {
+                this.reset_zoom(cx);
             }))
             .on_action(cx.listener(|this, _: &TogglePauseStream, _window, cx| {
                 if this.input_focus != InputFocusTarget::None {
@@ -537,10 +544,22 @@ pub fn detect_initial_window_decorations() -> Option<WindowDecorations> {
 
 /// Launches the LogAnalysis GPUI desktop application.
 pub fn run_app() {
-    // Intercept version flag early before desktop integration or GPU window creation
-    if handle_cli_version_flag(std::env::args().skip(1)) {
-        return;
-    }
+    // Evaluate CLI flags early before crash handler, desktop integration, or GPU window creation
+    let cli_paths = match cli::parse_cli_args(std::env::args().skip(1)) {
+        cli::CliAction::PrintVersion => {
+            println!("LogAnalysis {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        cli::CliAction::PrintHelp => {
+            println!("{}", cli::help_text());
+            return;
+        }
+        cli::CliAction::UnknownFlag(flag) => {
+            eprintln!("Unknown option: {flag}\n\n{}", cli::help_text());
+            std::process::exit(2);
+        }
+        cli::CliAction::OpenPaths(paths) => paths,
+    };
 
     logging::init_crash_handler();
 
@@ -562,8 +581,6 @@ pub fn run_app() {
     }
 
     logging::log_event("INFO", "LogAnalysis starting up");
-
-    let cli_path = std::env::args().nth(1).map(std::path::PathBuf::from);
 
     Application::new().run(move |cx: &mut App| {
         // Register Global Key Bindings
@@ -587,20 +604,24 @@ pub fn run_app() {
             ..Default::default()
         };
 
-        let initial_path = cli_path.clone();
+        let initial_paths = cli_paths.clone();
         if let Err(e) = cx.open_window(options, move |window, cx| {
             let entity = cx.new(LogAnalysisWorkspace::new);
             entity.update(cx, |workspace, _cx| {
                 window.focus(&workspace.focus_handle);
             });
-            if let Some(path) = initial_path {
-                entity.update(cx, |workspace, cx| {
-                    workspace.open_file(&path, cx);
-                });
-            } else {
+            if initial_paths.is_empty() {
                 // Auto-scan ADB devices on startup in background when no initial file argument is provided
                 entity.update(cx, |workspace, cx| {
                     workspace.refresh_adb_devices(cx);
+                });
+            } else if initial_paths.len() == 1 {
+                entity.update(cx, |workspace, cx| {
+                    workspace.open_file(&initial_paths[0], cx);
+                });
+            } else {
+                entity.update(cx, |workspace, cx| {
+                    workspace.open_merged_files(&initial_paths, cx);
                 });
             }
             entity

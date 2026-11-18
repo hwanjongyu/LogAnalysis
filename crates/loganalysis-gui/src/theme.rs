@@ -19,6 +19,8 @@ pub struct Theme {
     pub text_muted: Rgba,
     pub text_gutter: Rgba,
     pub selection_bg: Rgba,
+    pub selection_bg_hex: u32,
+    pub selection_fg: Rgba,
     pub highlight_search: Rgba,
     pub btn_hover: Rgba,
     pub accent: Rgba,
@@ -121,6 +123,8 @@ impl Theme {
             text_muted: rgb(0x8b8e9f),      // Secondary labels & telemetry hints
             text_gutter: rgb(0x56596e),     // Muted line numbers
             selection_bg: rgb(0x233354),    // Rich navy row selection
+            selection_bg_hex: 0x233354,
+            selection_fg: rgb(0xffffff),
             highlight_search: rgb(0x4a3818),// Warm amber search highlight
             btn_hover: rgb(0x252737),       // Interactive button hover surface
             accent: rgb(0x3b82f6),          // Electric blue accent
@@ -153,6 +157,8 @@ impl Theme {
             text_muted: rgb(0x64748b),
             text_gutter: rgb(0x94a3b8),
             selection_bg: rgb(0xdbeafe),
+            selection_bg_hex: 0xdbeafe,
+            selection_fg: rgb(0x0f172a),
             highlight_search: rgb(0xfef08a),
             btn_hover: rgb(0xe2e8f0),
             accent: rgb(0x2563eb),
@@ -165,6 +171,27 @@ impl Theme {
             kbd_border: rgb(0xcbd5e1),
         }
     }
+}
+
+/// Resolves the foreground color for a log row, preserving WCAG AA contrast (>= 4.5:1)
+/// against `theme.selection_bg_hex` when selected.
+pub fn resolve_selected_row_fg(
+    is_selected: bool,
+    is_rule_matched: bool,
+    fg_hex: Option<u32>,
+    theme: Theme,
+) -> Rgba {
+    if !is_selected {
+        return fg_hex.map(rgb).unwrap_or(theme.text_primary);
+    }
+    if is_rule_matched {
+        if let Some(custom_fg) = fg_hex {
+            if loganalysis_core::contrast_ratio(theme.selection_bg_hex, custom_fg) >= 4.5 {
+                return rgb(custom_fg);
+            }
+        }
+    }
+    theme.selection_fg
 }
 
 #[cfg(test)]
@@ -249,5 +276,40 @@ mod tests {
         let light = Theme::light();
         assert_ne!(light.bg_panel.r, light.accent.r);
         assert!(light.kbd_fg.a > 0.0);
+    }
+
+    #[test]
+    fn test_resolve_selected_row_fg_wcag_aa_contrast() {
+        for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+            // 1. Unstyled / gray default selected row uses theme.selection_fg
+            let unstyled = resolve_selected_row_fg(true, false, Some(0x808080), theme);
+            assert_eq!(unstyled, theme.selection_fg, "{name} unstyled");
+            assert!(
+                loganalysis_core::contrast_ratio(
+                    theme.selection_bg_hex,
+                    if name == "dark" { 0xffffff } else { 0x0f172a }
+                ) >= 4.5
+            );
+
+            // 2. Matched rule with low-contrast custom foreground falls back to theme.selection_fg
+            let low_contrast_fg = if name == "dark" { 0x000000 } else { 0xffffff };
+            let fallback = resolve_selected_row_fg(true, true, Some(low_contrast_fg), theme);
+            assert_eq!(fallback, theme.selection_fg, "{name} low contrast fallback");
+
+            // 3. Matched rule with high-contrast custom foreground preserves custom color
+            let high_contrast_fg = if name == "dark" { 0xffff00 } else { 0x8b0000 };
+            let preserved = resolve_selected_row_fg(true, true, Some(high_contrast_fg), theme);
+            assert_eq!(preserved, rgb(high_contrast_fg), "{name} high contrast");
+
+            // 4. Unselected row keeps fg_hex or theme.text_primary
+            assert_eq!(
+                resolve_selected_row_fg(false, true, Some(0x123456), theme),
+                rgb(0x123456)
+            );
+            assert_eq!(
+                resolve_selected_row_fg(false, false, None, theme),
+                theme.text_primary
+            );
+        }
     }
 }

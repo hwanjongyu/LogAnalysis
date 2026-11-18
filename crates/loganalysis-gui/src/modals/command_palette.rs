@@ -75,7 +75,7 @@ pub fn palette_command_action_name(id: PaletteCommandId) -> &'static str {
         PaletteCommandId::ToggleTheme => gpui::Action::name(&ToggleTheme),
         PaletteCommandId::ZoomIn => gpui::Action::name(&ZoomIn),
         PaletteCommandId::ZoomOut => gpui::Action::name(&ZoomOut),
-        PaletteCommandId::ResetZoom => "loganalysis::ResetZoom",
+        PaletteCommandId::ResetZoom => gpui::Action::name(&ResetZoom),
         PaletteCommandId::ToggleBookmark => gpui::Action::name(&ToggleBookmark),
         PaletteCommandId::NextBookmark => gpui::Action::name(&NextBookmark),
         PaletteCommandId::PrevBookmark => gpui::Action::name(&PrevBookmark),
@@ -202,7 +202,7 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
         },
         PaletteCommand {
             id: PaletteCommandId::ToggleFilterPanelPosition,
-            title: "View: Toggle Filter Dock Position (Bottom / Right)",
+            title: "View: Toggle Filter Dock Position (Bottom / Left)",
             category: "VIEW",
             shortcut: Some("Ctrl+Shift+L"),
         },
@@ -294,7 +294,7 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             id: PaletteCommandId::ResetZoom,
             title: "View: Reset Zoom (Default 12px)",
             category: "VIEW",
-            shortcut: None,
+            shortcut: Some("Ctrl+0"),
         },
         PaletteCommand {
             id: PaletteCommandId::ToggleBookmark,
@@ -306,7 +306,7 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             id: PaletteCommandId::NextBookmark,
             title: "Bookmark: Jump to Next Bookmark",
             category: "BOOKMARK",
-            shortcut: Some("F2"),
+            shortcut: Some("Alt+F2"),
         },
         PaletteCommand {
             id: PaletteCommandId::PrevBookmark,

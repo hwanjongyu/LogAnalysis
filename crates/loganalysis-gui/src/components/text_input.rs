@@ -1,9 +1,9 @@
-use std::ops::Range;
+use std::ops::{Deref, DerefMut, Range};
 use gpui::{
-    actions, div, fill, hsla, point, prelude::*, px, relative, rgba, size,
+    actions, div, fill, point, prelude::*, px, relative, rgba, size,
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId,
     ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
-    GlobalElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
+    GlobalElementId, Hsla, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
     SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
 };
@@ -113,34 +113,223 @@ pub fn strip_marked_range_from_content(content: &str, marked_range: Range<usize>
     (stripped, clamped.start)
 }
 
+/// Computes theme-aware placeholder text color from the active foreground text color.
+#[inline]
+pub fn placeholder_color(foreground: Hsla) -> Hsla {
+    foreground.opacity(0.45)
+}
+
 impl EventEmitter<TextInputEvent> for TextInput {}
+
+/// Pure, GPUI-context-free editing and IME composition state backing [`TextInput`].
+#[derive(Clone, Debug)]
+pub struct TextInputState {
+    pub content: SharedString,
+    pub selected_range: Range<usize>,
+    pub selection_reversed: bool,
+    pub pivot: usize,
+    pub marked_range: Option<Range<usize>>,
+}
+
+impl Default for TextInputState {
+    fn default() -> Self {
+        Self {
+            content: "".into(),
+            selected_range: 0..0,
+            selection_reversed: false,
+            pivot: 0,
+            marked_range: None,
+        }
+    }
+}
+
+impl TextInputState {
+    pub(crate) fn cursor_offset(&self) -> usize {
+        if self.selection_reversed {
+            self.selected_range.start
+        } else {
+            self.selected_range.end
+        }
+    }
+
+    pub(crate) fn cancel_ime_preedit(&mut self) -> bool {
+        let Some(marked) = self.marked_range.take() else {
+            return false;
+        };
+        let (stripped, cursor) = strip_marked_range_from_content(&self.content, marked);
+        self.content = stripped.into();
+        self.selected_range = cursor..cursor;
+        self.pivot = cursor;
+        self.selection_reversed = false;
+        true
+    }
+
+    pub(crate) fn move_cursor_state(&mut self, offset: usize) {
+        let offset = self.content.floor_char_boundary(offset);
+        self.selected_range = offset..offset;
+        self.pivot = offset;
+        self.selection_reversed = false;
+        self.marked_range = None;
+    }
+
+    pub(crate) fn select_to_state(&mut self, offset: usize) {
+        let offset = self.content.floor_char_boundary(offset);
+        let pivot = self.content.floor_char_boundary(self.pivot);
+        if offset < pivot {
+            self.selected_range = offset..pivot;
+            self.selection_reversed = true;
+        } else {
+            self.selected_range = pivot..offset;
+            self.selection_reversed = false;
+        }
+        self.marked_range = None;
+    }
+
+    pub(crate) fn select_word_state(&mut self, offset: usize) -> bool {
+        self.marked_range = None;
+        if self.content.is_empty() {
+            return false;
+        }
+        self.selected_range = find_word_range_at(&self.content, offset);
+        self.pivot = self.selected_range.start;
+        self.selection_reversed = false;
+        true
+    }
+
+    pub(crate) fn select_all_state(&mut self) {
+        self.selected_range = 0..self.content.len();
+        self.pivot = 0;
+        self.selection_reversed = false;
+        self.marked_range = None;
+    }
+
+    pub(crate) fn offset_from_utf16(&self, offset: usize) -> usize {
+        let mut utf8_offset = 0;
+        let mut utf16_count = 0;
+
+        for ch in self.content.chars() {
+            if utf16_count >= offset {
+                break;
+            }
+            utf16_count += ch.len_utf16();
+            utf8_offset += ch.len_utf8();
+        }
+
+        utf8_offset
+    }
+
+    pub(crate) fn offset_to_utf16(&self, offset: usize) -> usize {
+        let mut utf16_offset = 0;
+        let mut utf8_count = 0;
+
+        for ch in self.content.chars() {
+            if utf8_count >= offset {
+                break;
+            }
+            utf8_count += ch.len_utf8();
+            utf16_offset += ch.len_utf16();
+        }
+
+        utf16_offset
+    }
+
+    pub(crate) fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
+        self.offset_to_utf16(range.start)..self.offset_to_utf16(range.end)
+    }
+
+    pub(crate) fn range_from_utf16(&self, range_utf16: &Range<usize>) -> Range<usize> {
+        self.offset_from_utf16(range_utf16.start)..self.offset_from_utf16(range_utf16.end)
+    }
+
+    pub(crate) fn replace_text_state(&mut self, range_utf16: Option<Range<usize>>, new_text: &str) {
+        let range = range_utf16
+            .as_ref()
+            .map(|range_utf16| self.range_from_utf16(range_utf16))
+            .or(self.marked_range.clone())
+            .unwrap_or(self.selected_range.clone());
+
+        let clamped = clamp_range_to_char_boundaries(&self.content, range);
+        let start = clamped.start;
+        let end = clamped.end;
+
+        self.content =
+            (self.content[0..start].to_owned() + new_text + &self.content[end..]).into();
+        let new_cursor = start + new_text.len();
+        self.selected_range = new_cursor..new_cursor;
+        self.pivot = new_cursor;
+        self.selection_reversed = false;
+        self.marked_range.take();
+    }
+
+    pub(crate) fn replace_and_mark_state(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        new_selected_range_utf16: Option<Range<usize>>,
+    ) {
+        let range = range_utf16
+            .as_ref()
+            .map(|range_utf16| self.range_from_utf16(range_utf16))
+            .or(self.marked_range.clone())
+            .unwrap_or(self.selected_range.clone());
+
+        let clamped = clamp_range_to_char_boundaries(&self.content, range);
+        let start = clamped.start;
+        let end = clamped.end;
+
+        self.content =
+            (self.content[0..start].to_owned() + new_text + &self.content[end..]).into();
+
+        if !new_text.is_empty() {
+            self.marked_range = Some(start..start + new_text.len());
+        } else {
+            self.marked_range = None;
+        }
+
+        self.selected_range = new_selected_range_utf16
+            .as_ref()
+            .map(|r| utf16_range_to_utf8_in_str(new_text, r))
+            .map(|new_r| (start + new_r.start)..(start + new_r.end))
+            .unwrap_or_else(|| (start + new_text.len())..(start + new_text.len()));
+        let sel_clamped = clamp_range_to_char_boundaries(&self.content, self.selected_range.clone());
+        self.selected_range = sel_clamped;
+        self.pivot = self.selected_range.end;
+        self.selection_reversed = false;
+    }
+}
 
 /// A native-grade GPUI text input component supporting full OS IME (Hangul/CJK),
 /// selection, clipboard, and horizontal scrolling.
 pub struct TextInput {
     pub focus_handle: FocusHandle,
-    pub content: SharedString,
     pub placeholder: SharedString,
-    pub selected_range: Range<usize>,
-    pub selection_reversed: bool,
-    pub pivot: usize,
-    pub marked_range: Option<Range<usize>>,
+    pub state: TextInputState,
     pub last_layout: Option<ShapedLine>,
     pub last_bounds: Option<Bounds<Pixels>>,
     pub is_selecting: bool,
     pub scroll_offset: Pixels,
 }
 
+impl Deref for TextInput {
+    type Target = TextInputState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl DerefMut for TextInput {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
 impl TextInput {
     pub fn new(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
-            content: "".into(),
             placeholder: placeholder.into(),
-            selected_range: 0..0,
-            selection_reversed: false,
-            pivot: 0,
-            marked_range: None,
+            state: TextInputState::default(),
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
@@ -155,15 +344,7 @@ impl TextInput {
     /// Cancels active IME preedit composition, stripping any uncommitted slice from `content`
     /// and repositioning the cursor to the start of the preedit range.
     pub fn cancel_ime_preedit(&mut self) -> bool {
-        let Some(marked) = self.marked_range.take() else {
-            return false;
-        };
-        let (stripped, cursor) = strip_marked_range_from_content(&self.content, marked);
-        self.content = stripped.into();
-        self.selected_range = cursor..cursor;
-        self.pivot = cursor;
-        self.selection_reversed = false;
-        true
+        self.state.cancel_ime_preedit()
     }
 
     pub fn set_text(&mut self, new_text: &str, cx: &mut Context<Self>) {
@@ -182,43 +363,20 @@ impl TextInput {
         self.set_text("", cx);
     }
 
-    fn cursor_offset(&self) -> usize {
-        if self.selection_reversed {
-            self.selected_range.start
-        } else {
-            self.selected_range.end
-        }
-    }
-
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        let offset = self.content.floor_char_boundary(offset);
-        self.selected_range = offset..offset;
-        self.pivot = offset;
-        self.selection_reversed = false;
+        self.state.move_cursor_state(offset);
         cx.notify();
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        let offset = self.content.floor_char_boundary(offset);
-        let pivot = self.content.floor_char_boundary(self.pivot);
-        if offset < pivot {
-            self.selected_range = offset..pivot;
-            self.selection_reversed = true;
-        } else {
-            self.selected_range = pivot..offset;
-            self.selection_reversed = false;
-        }
+        self.state.select_to_state(offset);
         cx.notify();
     }
 
     fn select_word_at(&mut self, offset: usize, cx: &mut Context<Self>) {
-        if self.content.is_empty() {
-            return;
+        if self.state.select_word_state(offset) {
+            cx.notify();
         }
-        self.selected_range = find_word_range_at(&self.content, offset);
-        self.pivot = self.selected_range.start;
-        self.selection_reversed = false;
-        cx.notify();
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
@@ -234,44 +392,6 @@ impl TextInput {
             .grapheme_indices(true)
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
             .unwrap_or(self.content.len())
-    }
-
-    fn offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8_offset = 0;
-        let mut utf16_count = 0;
-
-        for ch in self.content.chars() {
-            if utf16_count >= offset {
-                break;
-            }
-            utf16_count += ch.len_utf16();
-            utf8_offset += ch.len_utf8();
-        }
-
-        utf8_offset
-    }
-
-    fn offset_to_utf16(&self, offset: usize) -> usize {
-        let mut utf16_offset = 0;
-        let mut utf8_count = 0;
-
-        for ch in self.content.chars() {
-            if utf8_count >= offset {
-                break;
-            }
-            utf8_count += ch.len_utf8();
-            utf16_offset += ch.len_utf16();
-        }
-
-        utf16_offset
-    }
-
-    fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
-        self.offset_to_utf16(range.start)..self.offset_to_utf16(range.end)
-    }
-
-    fn range_from_utf16(&self, range_utf16: &Range<usize>) -> Range<usize> {
-        self.offset_from_utf16(range_utf16.start)..self.offset_from_utf16(range_utf16.end)
     }
 
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
@@ -351,9 +471,7 @@ impl TextInput {
         if event.click_count == 2 {
             self.select_word_at(index, cx);
         } else if event.click_count >= 3 {
-            self.selected_range = 0..self.content.len();
-            self.pivot = 0;
-            self.selection_reversed = false;
+            self.state.select_all_state();
             cx.notify();
         } else if event.modifiers.shift {
             self.select_to(index, cx);
@@ -463,23 +581,7 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
-
-        let clamped = clamp_range_to_char_boundaries(&self.content, range);
-        let start = clamped.start;
-        let end = clamped.end;
-
-        self.content =
-            (self.content[0..start].to_owned() + new_text + &self.content[end..]).into();
-        let new_cursor = start + new_text.len();
-        self.selected_range = new_cursor..new_cursor;
-        self.pivot = new_cursor;
-        self.selection_reversed = false;
-        self.marked_range.take();
+        self.state.replace_text_state(range_utf16, new_text);
         cx.emit(TextInputEvent::Change);
         cx.notify();
     }
@@ -492,35 +594,8 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
-
-        let clamped = clamp_range_to_char_boundaries(&self.content, range);
-        let start = clamped.start;
-        let end = clamped.end;
-
-        self.content =
-            (self.content[0..start].to_owned() + new_text + &self.content[end..]).into();
-
-        if !new_text.is_empty() {
-            self.marked_range = Some(start..start + new_text.len());
-        } else {
-            self.marked_range = None;
-        }
-
-        self.selected_range = new_selected_range_utf16
-            .as_ref()
-            .map(|r| utf16_range_to_utf8_in_str(new_text, r))
-            .map(|new_r| (start + new_r.start)..(start + new_r.end))
-            .unwrap_or_else(|| (start + new_text.len())..(start + new_text.len()));
-        let sel_clamped = clamp_range_to_char_boundaries(&self.content, self.selected_range.clone());
-        self.selected_range = sel_clamped;
-        self.pivot = self.selected_range.end;
-        self.selection_reversed = false;
-
+        self.state
+            .replace_and_mark_state(range_utf16, new_text, new_selected_range_utf16);
         cx.emit(TextInputEvent::Change);
         cx.notify();
     }
@@ -633,8 +708,9 @@ impl Element for TextElement {
         let cursor = input.cursor_offset();
         let style = window.text_style();
 
-        let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), hsla(0., 0., 0., 0.35))
+        let is_placeholder = content.is_empty();
+        let (display_text, text_color) = if is_placeholder {
+            (input.placeholder.clone(), placeholder_color(style.color))
         } else {
             (content, style.color)
         };
@@ -648,29 +724,34 @@ impl Element for TextElement {
             strikethrough: None,
         };
 
-        let runs = if let Some(marked_range) = input.marked_range.as_ref() {
-            vec![
-                TextRun {
-                    len: marked_range.start,
-                    ..run.clone()
-                },
-                TextRun {
-                    len: marked_range.end.saturating_sub(marked_range.start),
-                    underline: Some(UnderlineStyle {
-                        color: Some(run.color),
-                        thickness: px(1.5),
-                        wavy: false,
-                    }),
-                    ..run.clone()
-                },
-                TextRun {
-                    len: display_text.len().saturating_sub(marked_range.end),
-                    ..run
-                },
-            ]
-            .into_iter()
-            .filter(|r| r.len > 0)
-            .collect()
+        let runs = if !is_placeholder {
+            if let Some(marked_range) = input.marked_range.as_ref() {
+                let clamped = clamp_range_to_char_boundaries(&display_text, marked_range.clone());
+                vec![
+                    TextRun {
+                        len: clamped.start,
+                        ..run.clone()
+                    },
+                    TextRun {
+                        len: clamped.end.saturating_sub(clamped.start),
+                        underline: Some(UnderlineStyle {
+                            color: Some(run.color),
+                            thickness: px(1.5),
+                            wavy: false,
+                        }),
+                        ..run.clone()
+                    },
+                    TextRun {
+                        len: display_text.len().saturating_sub(clamped.end),
+                        ..run
+                    },
+                ]
+                .into_iter()
+                .filter(|r| r.len > 0)
+                .collect()
+            } else {
+                vec![run]
+            }
         } else {
             vec![run]
         };
@@ -1267,4 +1348,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_placeholder_color_derives_from_theme_foreground() {
+        let dark_fg: Hsla = crate::theme::Theme::dark().text_primary.into();
+        let light_fg: Hsla = crate::theme::Theme::light().text_primary.into();
+
+        let dark_ph = placeholder_color(dark_fg);
+        let light_ph = placeholder_color(light_fg);
+        assert_eq!(dark_ph.l, dark_fg.l);
+        assert!((dark_ph.a - 0.45).abs() < 1e-5);
+        assert!(dark_ph.l > 0.5, "Dark theme placeholder must remain light");
+        assert_eq!(light_ph.l, light_fg.l);
+        assert!((light_ph.a - 0.45).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_cursor_moves_and_selections_clear_stale_marked_range() {
+        // 1. move_cursor_state clears marked_range so subsequent insert goes at cursor
+        let mut st = TextInputState::default();
+        st.replace_text_state(None, "hello");
+        st.replace_and_mark_state(None, "가", None);
+        assert_eq!(st.content.as_ref(), "hello가");
+        assert_eq!(st.marked_range, Some(5..8));
+
+        st.move_cursor_state(0);
+        assert_eq!(st.marked_range, None);
+        st.replace_text_state(None, "X");
+        assert_eq!(st.content.as_ref(), "Xhello가");
+
+        // 2. select_to_state clears marked_range
+        st.replace_and_mark_state(None, "나", None);
+        assert!(st.marked_range.is_some());
+        st.select_to_state(0);
+        assert_eq!(st.marked_range, None);
+
+        // 3. select_word_state clears marked_range
+        st.replace_text_state(None, "hello world");
+        st.replace_and_mark_state(None, "!", None);
+        assert!(st.marked_range.is_some());
+        assert!(st.select_word_state(2));
+        assert_eq!(st.marked_range, None);
+        assert_eq!(st.selected_range, 0..5);
+
+        // 4. select_all_state clears marked_range
+        st.replace_and_mark_state(None, "다", None);
+        assert!(st.marked_range.is_some());
+        st.select_all_state();
+        assert_eq!(st.marked_range, None);
+        assert_eq!(st.selected_range, 0..st.content.len());
+    }
 }

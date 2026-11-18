@@ -221,6 +221,7 @@ pub fn stream_log_lines<R: std::io::Read>(
     let mut carry_buf = Vec::new();
     let mut buffer = Vec::with_capacity(100);
     let mut last_flush = Instant::now();
+    let mut skip_leading_orphan_lf = false;
 
     loop {
         if stop_flag.load(Ordering::Relaxed) {
@@ -240,25 +241,54 @@ pub fn stream_log_lines<R: std::io::Read>(
             .read_until(b'\n', &mut raw_buf)
         {
             Ok(0) => break, // Clean EOF (subprocess closed pipe or was killed)
-            Ok(_) => {
-                // Strip trailing newline / carriage return
-                while raw_buf.ends_with(b"\n") || raw_buf.ends_with(b"\r") {
-                    raw_buf.pop();
-                }
+            Ok(bytes_read) => {
+                let hit_newline = raw_buf.ends_with(b"\n");
+                let hit_read_limit = !hit_newline && bytes_read == max_to_read as usize;
 
-                let incomplete = trailing_incomplete_utf8_len(&raw_buf);
-                if incomplete > 0 {
-                    let split_pos = raw_buf.len() - incomplete;
-                    carry_buf.extend_from_slice(&raw_buf[split_pos..]);
-                    raw_buf.truncate(split_pos);
-                }
+                let is_orphan_lf = if skip_leading_orphan_lf {
+                    skip_leading_orphan_lf = false;
+                    bytes_read == 1 && raw_buf == b"\n"
+                } else {
+                    false
+                };
 
-                // Lossy UTF-8 conversion: resilient against non-UTF8/binary crash logs
-                let line = String::from_utf8_lossy(&raw_buf).to_string();
-                buffer.push(line);
+                if !is_orphan_lf {
+                    let mut stripped_limit_cr = false;
+                    if hit_newline {
+                        raw_buf.pop();
+                        while raw_buf.ends_with(b"\r") {
+                            raw_buf.pop();
+                        }
+                    } else if hit_read_limit && raw_buf.ends_with(b"\r") {
+                        while raw_buf.ends_with(b"\r") {
+                            raw_buf.pop();
+                        }
+                        skip_leading_orphan_lf = true;
+                        stripped_limit_cr = true;
+                    } else if !hit_read_limit {
+                        while raw_buf.ends_with(b"\r") {
+                            raw_buf.pop();
+                        }
+                    }
+
+                    // Only carry trailing incomplete UTF-8 across the 64KB chunk boundary;
+                    // complete `\n`-terminated lines and EOF lines must never bleed invalid bytes into the next line.
+                    if hit_read_limit && !stripped_limit_cr {
+                        let incomplete = trailing_incomplete_utf8_len(&raw_buf);
+                        if incomplete > 0 {
+                            let split_pos = raw_buf.len() - incomplete;
+                            carry_buf.extend_from_slice(&raw_buf[split_pos..]);
+                            raw_buf.truncate(split_pos);
+                        }
+                    }
+
+                    // Lossy UTF-8 conversion: resilient against non-UTF8/binary crash logs
+                    let line = String::from_utf8_lossy(&raw_buf).to_string();
+                    buffer.push(line);
+                }
 
                 let should_flush = buffer.len() >= 100
-                    || reader.buffer().is_empty()
+                    || (reader.buffer().is_empty() && !buffer.is_empty())
                     || (last_flush.elapsed() >= Duration::from_millis(16) && !buffer.is_empty());
                 if should_flush {
                     let mut to_send = std::mem::replace(&mut buffer, Vec::with_capacity(100));
@@ -519,6 +549,42 @@ mod tests {
         // Chunk 2 must start with '한' without any \u{FFFD}
         assert!(all_lines[1].starts_with('한'));
         assert!(!all_lines[1].contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn test_stream_malformed_utf8_does_not_bleed_across_newline() {
+        let (tx, rx) = bounded(10);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let input = b"bad\xed\x95\nnext\n";
+        let reader = BufReader::new(&input[..]);
+        stream_log_lines(reader, tx, stop_flag);
+
+        let mut all_lines = Vec::new();
+        while let Ok(batch) = rx.try_recv() {
+            all_lines.extend(batch);
+        }
+
+        assert_eq!(all_lines, vec!["bad\u{FFFD}", "next"]);
+    }
+
+    #[test]
+    fn test_stream_crlf_straddling_64kb_boundary_no_spurious_blank_line() {
+        let (tx, rx) = bounded(10);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let mut input = vec![b'A'; 65535];
+        input.extend_from_slice(b"\r\nnext\n");
+
+        let reader = BufReader::new(&input[..]);
+        stream_log_lines(reader, tx, stop_flag);
+
+        let mut all_lines = Vec::new();
+        while let Ok(batch) = rx.try_recv() {
+            all_lines.extend(batch);
+        }
+
+        assert_eq!(all_lines.len(), 2);
+        assert_eq!(all_lines[0], "A".repeat(65535));
+        assert_eq!(all_lines[1], "next");
     }
 
     #[cfg(unix)]

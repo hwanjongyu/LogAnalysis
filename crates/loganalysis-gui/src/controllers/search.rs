@@ -127,4 +127,22 @@ mod tests {
         let gen_after = controller.cancel_gen.load(Ordering::SeqCst);
         assert_eq!(gen_after, gen_before + 1);
     }
+
+    #[test]
+    fn test_search_controller_preserves_boundary_spaces_and_clears_whitespace() {
+        let mut controller = SearchController::new();
+        controller.is_visible = true;
+
+        controller.set_query(" E ".to_string());
+        assert_eq!(controller.query, " E ");
+        let matcher = controller
+            .cached_matcher
+            .as_ref()
+            .expect("non-whitespace query with boundary spaces must compile");
+        assert!(matcher.matches(b"11-06 18:00:00.000 1000 1000 E Tag"));
+        assert!(!matcher.matches(b"Error without surrounding spaces"));
+
+        controller.set_query("   \t ".to_string());
+        assert!(controller.cached_matcher.is_none());
+    }
 }

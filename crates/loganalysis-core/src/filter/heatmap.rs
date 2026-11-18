@@ -190,7 +190,10 @@ pub fn detect_line_severity(raw_line: Option<&[u8]>, style: &ResolvedStyle) -> L
     }
 
     // 3. User-defined rule match without red/orange color
-    if style.bg_hex.is_some() || (style.fg_hex.is_some() && style.fg_hex != Some(0x808080)) {
+    if style.is_matched
+        || style.bg_hex.is_some()
+        || (style.fg_hex.is_some() && style.fg_hex != Some(0x808080))
+    {
         return LineSeverity::RuleMatch;
     }
 
@@ -316,6 +319,7 @@ mod tests {
         let red_style = ResolvedStyle {
             bg_hex: Some(0xef4444),
             fg_hex: None,
+            ..ResolvedStyle::default()
         };
         assert_eq!(
             detect_line_severity(Some(b"regular info message"), &red_style),
@@ -326,6 +330,7 @@ mod tests {
         let warn_style = ResolvedStyle {
             bg_hex: Some(0xffaa00),
             fg_hex: None,
+            ..ResolvedStyle::default()
         };
         assert_eq!(
             detect_line_severity(Some(b"regular info message"), &warn_style),
@@ -454,5 +459,71 @@ mod tests {
                 "keyword {warn_kw} beyond byte 35 should still be Warning"
             );
         }
+    }
+
+    #[test]
+    fn test_gray_fg_rule_match_classifies_as_rule_match() {
+        let matched_gray = ResolvedStyle {
+            bg_hex: None,
+            fg_hex: Some(0x808080),
+            is_matched: true,
+        };
+        assert_eq!(
+            detect_line_severity(Some(b"11-06 12:00:00.000 1 1 I Tag: matched"), &matched_gray),
+            LineSeverity::RuleMatch
+        );
+
+        let unmatched_gray = ResolvedStyle {
+            bg_hex: None,
+            fg_hex: Some(0x808080),
+            is_matched: false,
+        };
+        assert_eq!(
+            detect_line_severity(Some(b"11-06 12:00:00.000 1 1 I Tag: normal"), &unmatched_gray),
+            LineSeverity::Normal
+        );
+
+        // Full execute_filtering -> HeatmapData pipeline check
+        use crate::buffer::StreamLogBuffer;
+        use crate::filter::engine::execute_filtering;
+        use crate::filter::model::FilterRule;
+
+        let mut stream = StreamLogBuffer::new(10, 1);
+        stream.append_chunk(vec![
+            "11-06 12:00:00.000 1 1 I Tag: gray_target".into(),
+            "11-06 12:00:01.000 1 1 I Tag: plain_line".into(),
+        ]);
+        let rules = vec![FilterRule {
+            text: "gray_target".into(),
+            bg_color: "None".into(),
+            text_color: "Gray".into(),
+            active: true,
+            ..Default::default()
+        }];
+        let res = execute_filtering(&stream, &rules, false, None, 0).unwrap();
+        assert_eq!(
+            res.visible_styles[0],
+            ResolvedStyle {
+                bg_hex: None,
+                fg_hex: Some(0x808080),
+                is_matched: true,
+            }
+        );
+        assert_eq!(
+            res.visible_styles[1],
+            ResolvedStyle {
+                bg_hex: None,
+                fg_hex: Some(0x808080),
+                is_matched: false,
+            }
+        );
+        assert_eq!(
+            detect_line_severity(stream.get_raw_line(0), &res.visible_styles[0]),
+            LineSeverity::RuleMatch
+        );
+        assert_eq!(
+            detect_line_severity(stream.get_raw_line(1), &res.visible_styles[1]),
+            LineSeverity::Normal
+        );
     }
 }

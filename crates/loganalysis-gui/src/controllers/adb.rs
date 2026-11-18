@@ -37,12 +37,14 @@ impl AdbController {
         self.device_details.iter().find(|d| &d.serial == serial)
     }
 
-    /// Stops any active ADB stream handle and clears streaming flag.
+    /// Stops any active ADB stream handle and clears streaming/pause state.
     pub fn stop_stream(&mut self) {
         if let Some(handle) = self.stream_handle.take() {
             handle.stop();
         }
         self.is_streaming = false;
+        self.is_paused = false;
+        self.clear_paused_buffer();
     }
 
     /// Resets paused streaming buffer.
@@ -79,5 +81,22 @@ mod tests {
         controller.select_device("device_123".into());
         assert_eq!(controller.selected_device.as_deref(), Some("device_123"));
         assert!(!controller.is_device_selector_open);
+    }
+
+    #[test]
+    fn test_adb_controller_stop_stream_resets_pause_and_buffer() {
+        let mut controller = AdbController::new();
+        controller.is_streaming = true;
+        controller.is_paused = true;
+        controller.paused_line_count = 10;
+        controller
+            .paused_buffer
+            .push_back(vec!["line1".to_string(), "line2".to_string()]);
+
+        controller.stop_stream();
+        assert!(!controller.is_streaming);
+        assert!(!controller.is_paused);
+        assert_eq!(controller.paused_line_count, 0);
+        assert!(controller.paused_buffer.is_empty());
     }
 }

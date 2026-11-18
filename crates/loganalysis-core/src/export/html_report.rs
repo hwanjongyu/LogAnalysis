@@ -13,17 +13,20 @@ pub struct HtmlReportOptions {
 pub fn generate_html_report(options: &HtmlReportOptions) -> String {
     let now = chrono_timestamp_approx();
     let escaped_filename = escape_html(&options.file_name);
+    let total_lines = options.total_lines;
     let total_bookmarks = options.bookmarks.len();
 
     let mut error_count = 0;
     let mut warn_count = 0;
+    let mut match_count = 0;
     let mut info_count = 0;
 
     for b in &options.bookmarks {
         match b.severity {
             LineSeverity::Error => error_count += 1,
             LineSeverity::Warning => warn_count += 1,
-            _ => info_count += 1,
+            LineSeverity::RuleMatch => match_count += 1,
+            LineSeverity::Normal => info_count += 1,
         }
     }
 
@@ -170,6 +173,7 @@ body {{
 .summary-card .value {{ font-size: 24px; font-weight: 700; margin-top: 4px; }}
 .summary-card.err .value {{ color: var(--err-text); }}
 .summary-card.warn .value {{ color: var(--warn-text); }}
+.summary-card.match .value {{ color: var(--accent); }}
 .summary-card.info .value {{ color: var(--info-text); }}
 .summary-card.total .value {{ color: var(--accent); }}
 
@@ -307,6 +311,7 @@ tr:hover td {{ background: var(--row-hover); }}
         <div class="summary-card">
             <div class="label">Log Source File</div>
             <div class="value" style="font-size: 16px; word-break: break-all;">{escaped_filename}</div>
+            <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">{total_lines} total lines</div>
         </div>
         <div class="summary-card total">
             <div class="label">Bookmarked Key Lines</div>
@@ -320,6 +325,10 @@ tr:hover td {{ background: var(--row-hover); }}
             <div class="label">Warnings</div>
             <div class="value">{warn_count}</div>
         </div>
+        <div class="summary-card match">
+            <div class="label">Rule Matches</div>
+            <div class="value">{match_count}</div>
+        </div>
         <div class="summary-card info">
             <div class="label">Info / Normal</div>
             <div class="value">{info_count}</div>
@@ -332,6 +341,7 @@ tr:hover td {{ background: var(--row-hover); }}
             <button class="pill-btn active" onclick="setSeverityFilter('all', this)">ALL</button>
             <button class="pill-btn" onclick="setSeverityFilter('error', this)">ERRORS</button>
             <button class="pill-btn" onclick="setSeverityFilter('warning', this)">WARNINGS</button>
+            <button class="pill-btn" onclick="setSeverityFilter('match', this)">MATCHES</button>
             <button class="pill-btn" onclick="setSeverityFilter('info', this)">INFO</button>
         </div>
     </div>
@@ -526,5 +536,38 @@ mod tests {
         let direct_ts = chrono_timestamp_approx();
         assert!(direct_ts.ends_with(" UTC"));
         assert_eq!(direct_ts.len(), 23);
+    }
+
+    #[test]
+    fn test_html_report_rule_match_pill_and_total_lines() {
+        let options = HtmlReportOptions {
+            file_name: "rules.log".into(),
+            total_lines: 42190,
+            bookmarks: vec![
+                Bookmark {
+                    source_idx: 0,
+                    line_number: 1,
+                    text: "custom matched line".into(),
+                    note: None,
+                    severity: LineSeverity::RuleMatch,
+                    created_at_epoch: 1_793_721_600,
+                },
+                Bookmark {
+                    source_idx: 1,
+                    line_number: 2,
+                    text: "normal info line".into(),
+                    note: None,
+                    severity: LineSeverity::Normal,
+                    created_at_epoch: 1_793_721_601,
+                },
+            ],
+        };
+
+        let html = generate_html_report(&options);
+        assert!(html.contains("42190 total lines"));
+        assert!(html.contains("Rule Matches"));
+        assert!(html.contains("setSeverityFilter('match', this)"));
+        assert!(html.contains("data-severity=\"match\""));
+        assert!(html.contains("data-severity=\"info\""));
     }
 }

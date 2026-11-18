@@ -11,39 +11,28 @@ pub fn find_nearest_timestamp_row(
         return None;
     }
 
-    let mut low = 0usize;
-    let mut high = visible_indices.len().saturating_sub(1);
-    let mut best_row = 0usize;
-    let mut best_diff = u64::MAX;
-
-    // Helper closure to extract timestamp with small local linear probe if current line lacks timestamp
     let get_ts = |vis_idx: usize| -> Option<i64> {
         let src_idx = *visible_indices.get(vis_idx)?;
-        if let Some(ts) = source.get_timestamp_micros(src_idx) {
-            return Some(ts);
+        source.get_timestamp_micros(src_idx)
+    };
+
+    let mut low = 0usize;
+    let mut high = visible_indices.len() - 1;
+    let mut best: Option<(usize, u64)> = None;
+
+    let mut update_best = |row: usize, ts: i64| {
+        let diff = ts.abs_diff(target_micros);
+        match best {
+            None => best = Some((row, diff)),
+            Some((_, best_diff)) if diff < best_diff => best = Some((row, diff)),
+            _ => {}
         }
-        // Local probe up to 4 lines forward
-        for step in 1..=4 {
-            if let Some(&next_src) = visible_indices.get(vis_idx + step) {
-                if let Some(ts) = source.get_timestamp_micros(next_src) {
-                    return Some(ts);
-                }
-            } else {
-                break;
-            }
-        }
-        None
     };
 
     while low <= high {
         let mid = low + (high - low) / 2;
         if let Some(ts) = get_ts(mid) {
-            let diff = ts.abs_diff(target_micros);
-            if diff < best_diff {
-                best_diff = diff;
-                best_row = mid;
-            }
-
+            update_best(mid, ts);
             if ts == target_micros {
                 return Some(mid);
             } else if ts < target_micros {
@@ -55,11 +44,56 @@ pub fn find_nearest_timestamp_row(
                 high = mid - 1;
             }
         } else {
-            low = mid + 1;
+            // Probe outward from `mid` within `[low..=high]` to avoid discarding half on unstamped blocks.
+            let max_dist = (mid - low).max(high - mid);
+            let mut found = None;
+            for d in 1..=max_dist {
+                if mid >= low + d {
+                    let left = mid - d;
+                    if let Some(ts) = get_ts(left) {
+                        found = Some((left, ts));
+                        break;
+                    }
+                }
+                if mid + d <= high {
+                    let right = mid + d;
+                    if let Some(ts) = get_ts(right) {
+                        found = Some((right, ts));
+                        break;
+                    }
+                }
+            }
+
+            let Some((anchor_idx, ts)) = found else {
+                break;
+            };
+
+            update_best(anchor_idx, ts);
+            if ts == target_micros {
+                return Some(anchor_idx);
+            }
+
+            if anchor_idx <= mid {
+                if ts < target_micros {
+                    low = mid + 1;
+                } else {
+                    if anchor_idx == 0 {
+                        break;
+                    }
+                    high = anchor_idx - 1;
+                }
+            } else if ts < target_micros {
+                low = anchor_idx + 1;
+            } else {
+                if mid == 0 {
+                    break;
+                }
+                high = mid - 1;
+            }
         }
     }
 
-    Some(best_row)
+    best.map(|(row, _)| row)
 }
 
 #[cfg(test)]
@@ -150,5 +184,84 @@ mod tests {
 
         let _ = std::fs::remove_file(dec_dir);
         let _ = std::fs::remove_file(jan_dir);
+    }
+
+    #[test]
+    fn test_nearest_timestamp_unstamped_and_block_boundaries() {
+        // 100% unstamped source returns None (never Some(0))
+        let unstamped = MockLogSource {
+            lines: vec!["no ts 0".into(), "no ts 1".into(), "no ts 2".into()],
+        };
+        assert_eq!(find_nearest_timestamp_row(&unstamped, &[0, 1, 2], 12345), None);
+
+        // Large leading unstructured block before timestamps in right half
+        let mut leading_block: Vec<String> = (0..10).map(|i| format!("header {i}")).collect();
+        leading_block.push("11-06 18:00:00.000 1 1 I Tag: First".into());
+        leading_block.push("11-06 18:00:10.000 1 1 I Tag: Second".into());
+        let src_lead = MockLogSource { lines: leading_block };
+        let vis_lead: Vec<usize> = (0..src_lead.line_count()).collect();
+        let t_first = extract_timestamp(src_lead.get_raw_line(10).unwrap()).unwrap();
+        assert_eq!(
+            find_nearest_timestamp_row(&src_lead, &vis_lead, t_first.total_micros - 1000),
+            Some(10)
+        );
+
+        // Large trailing unstructured block after timestamps in left half
+        let mut trailing_block = vec![
+            "11-06 18:00:00.000 1 1 I Tag: First".into(),
+            "11-06 18:00:10.000 1 1 I Tag: Second".into(),
+        ];
+        trailing_block.extend((0..12).map(|i| format!("\tstack frame {i}")));
+        let src_trail = MockLogSource { lines: trailing_block };
+        let vis_trail: Vec<usize> = (0..src_trail.line_count()).collect();
+        let t_second = extract_timestamp(src_trail.get_raw_line(1).unwrap()).unwrap();
+        assert_eq!(
+            find_nearest_timestamp_row(&src_trail, &vis_trail, t_second.total_micros + 5000),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn test_single_file_and_stream_rollover_monotonic_correlation() {
+        use crate::buffer::{FileLogBuffer, StreamLogBuffer};
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "12-31 23:59:58.000 1 1 I Tag: Dec 58").unwrap();
+        writeln!(tmp, "12-31 23:59:59.000 1 1 I Tag: Dec 59").unwrap();
+        writeln!(tmp, "01-01 00:00:01.000 1 1 I Tag: Jan 01").unwrap();
+        writeln!(tmp, "01-01 00:00:02.000 1 1 I Tag: Jan 02").unwrap();
+        tmp.flush().unwrap();
+
+        let file_buf = FileLogBuffer::open(tmp.path()).unwrap();
+        let vis = vec![0, 1, 2, 3];
+        let ts_jan01 = file_buf.get_timestamp_micros(2).unwrap();
+        assert!(ts_jan01 > file_buf.get_timestamp_micros(1).unwrap());
+        assert_eq!(find_nearest_timestamp_row(&file_buf, &vis, ts_jan01), Some(2));
+
+        let mut stream_buf = StreamLogBuffer::new(2, 2);
+        stream_buf.append_chunk(vec![
+            "12-31 23:59:58.000 1 1 I Tag: Dec 58".into(),
+            "12-31 23:59:59.000 1 1 I Tag: Dec 59".into(),
+            "01-01 00:00:01.000 1 1 I Tag: Jan 01".into(),
+            "01-01 00:00:02.000 1 1 I Tag: Jan 02".into(),
+        ]);
+        let dec59_ts = stream_buf.get_timestamp_micros(1).unwrap();
+        let pre_trim_jan01 = stream_buf.get_timestamp_micros(2).unwrap();
+        assert!(pre_trim_jan01 > dec59_ts);
+        assert_eq!(find_nearest_timestamp_row(&stream_buf, &vis, pre_trim_jan01), Some(2));
+
+        // Trim both Dec 31 lines: surviving Jan 01/02 lines keep normalized rollover anchor
+        let trimmed = stream_buf.trim_if_needed().expect("should trim 2 Dec lines");
+        assert_eq!(trimmed, 2);
+        let post_trim_jan01 = stream_buf.get_timestamp_micros(0).unwrap();
+        assert_eq!(post_trim_jan01, pre_trim_jan01);
+        assert!(post_trim_jan01 > dec59_ts);
+        assert_eq!(
+            find_nearest_timestamp_row(&stream_buf, &[0, 1], post_trim_jan01),
+            Some(0)
+        );
+        assert_eq!(find_nearest_timestamp_row(&stream_buf, &[], post_trim_jan01), None);
     }
 }

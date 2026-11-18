@@ -81,9 +81,8 @@ impl LogAnalysisWorkspace {
         match cmd_id {
             PaletteCommandId::OpenFile => self.prompt_open_file(window.as_deref(), cx),
             PaletteCommandId::LoadFilters => self.prompt_load_filters(window.as_deref(), cx),
-            PaletteCommandId::SaveFilters | PaletteCommandId::SaveFiltersAs => {
-                self.prompt_save_filters(window.as_deref(), cx);
-            }
+            PaletteCommandId::SaveFilters => self.save_filters(window.as_deref(), cx),
+            PaletteCommandId::SaveFiltersAs => self.prompt_save_filters(window.as_deref(), cx),
             PaletteCommandId::Find => {
                 self.toggle_search_bar(cx);
                 if self.search_ctrl.is_visible {
@@ -115,11 +114,7 @@ impl LogAnalysisWorkspace {
             PaletteCommandId::ToggleTheme => self.toggle_theme(cx),
             PaletteCommandId::ZoomIn => self.zoom(1.0, cx),
             PaletteCommandId::ZoomOut => self.zoom(-1.0, cx),
-            PaletteCommandId::ResetZoom => {
-                self.font_size = px(12.0);
-                self.status_text = "Font size reset to default (12px)".into();
-                cx.notify();
-            }
+            PaletteCommandId::ResetZoom => self.reset_zoom(cx),
             PaletteCommandId::ToggleBookmark => self.toggle_bookmark_on_selected(cx),
             PaletteCommandId::NextBookmark => self.jump_next_bookmark(cx),
             PaletteCommandId::PrevBookmark => self.jump_prev_bookmark(cx),

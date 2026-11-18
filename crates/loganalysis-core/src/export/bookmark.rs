@@ -39,7 +39,7 @@ impl BookmarkManager {
         } else {
             self.add(Bookmark {
                 source_idx,
-                line_number: source_idx + 1,
+                line_number: source_idx.saturating_add(1),
                 text,
                 note: None,
                 severity,
@@ -88,8 +88,15 @@ impl BookmarkManager {
         if self.index_set.is_empty() {
             return None;
         }
-        // Smallest bookmark > current
-        if let Some(&next) = self.index_set.range((current_source_idx + 1)..).next() {
+        // Smallest bookmark > current (Bound::Excluded avoids current_source_idx + 1 overflow on usize::MAX)
+        if let Some(&next) = self
+            .index_set
+            .range((
+                std::ops::Bound::Excluded(current_source_idx),
+                std::ops::Bound::Unbounded,
+            ))
+            .next()
+        {
             Some(next)
         } else {
             // Wrap to first
@@ -266,5 +273,18 @@ mod tests {
         // Zero trim is a no-op
         mgr.shift_on_trim(0);
         assert_eq!(mgr.len(), 2);
+    }
+
+    #[test]
+    fn test_next_bookmark_usize_max_wraps_cleanly() {
+        let mut mgr = BookmarkManager::new();
+        mgr.toggle(5, "Line 5".into(), LineSeverity::Normal);
+        mgr.toggle(10, "Line 10".into(), LineSeverity::Warning);
+
+        assert_eq!(mgr.next_bookmark(usize::MAX), Some(5));
+
+        mgr.toggle(usize::MAX, "Max".into(), LineSeverity::Error);
+        assert_eq!(mgr.next_bookmark(usize::MAX), Some(5));
+        assert_eq!(mgr.next_bookmark(usize::MAX - 1), Some(usize::MAX));
     }
 }

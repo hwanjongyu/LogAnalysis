@@ -224,24 +224,94 @@ fn test_three_json_formats_compatibility() {
     assert_eq!(tabs3[0].filters.len(), 2);
 }
 
+const AUTOMOTIVE_PROFILE_JSON: &str = r#"[
+  {
+    "name": "🚨 Issue Triage",
+    "enabled": true,
+    "filters": [
+      {
+        "text": " F ",
+        "regex": false,
+        "case_sensitive": true,
+        "exclude": false,
+        "bg_color": "Red",
+        "text_color": "White",
+        "active": true
+      },
+      {
+        "text": "ACCGYROCALIBRATION",
+        "regex": false,
+        "case_sensitive": true,
+        "exclude": true,
+        "bg_color": "None",
+        "text_color": "Default",
+        "active": true
+      }
+    ]
+  },
+  {
+    "name": "🚗 Vehicle & Subsystems",
+    "enabled": true,
+    "filters": [
+      {
+        "text": "VehicleHal",
+        "regex": false,
+        "case_sensitive": false,
+        "exclude": false,
+        "bg_color": "Cyan",
+        "text_color": "Black",
+        "active": true
+      }
+    ]
+  },
+  {
+    "name": "⏱️ Performance & Latency",
+    "enabled": true,
+    "filters": [
+      {
+        "text": "Choreographer",
+        "regex": false,
+        "case_sensitive": false,
+        "exclude": false,
+        "bg_color": "Yellow",
+        "text_color": "Black",
+        "active": true
+      }
+    ]
+  }
+]"#;
+
 #[test]
 fn test_automotive_preset_profile_parses() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples/filters/automotive_main_log_profile.json");
-    if path.exists() {
-        let content = std::fs::read_to_string(&path).expect("read automotive profile");
-        let tabs = parse_filters_json(&content).expect("parse automotive profile");
-        assert_eq!(tabs.len(), 3);
-        assert_eq!(tabs[0].name, "🚨 Issue Triage");
-        assert!(tabs[0].filters.iter().any(|f| f.text == " F "));
-        assert!(tabs[0].filters.iter().any(|f| f.exclude && f.text == "ACCGYROCALIBRATION"));
-        assert_eq!(tabs[1].name, "🚗 Vehicle & Subsystems");
-        assert_eq!(tabs[2].name, "⏱️ Performance & Latency");
-    }
+    let tabs = parse_filters_json(AUTOMOTIVE_PROFILE_JSON).expect("parse automotive profile");
+    assert_eq!(tabs.len(), 3);
+
+    assert_eq!(tabs[0].name, "🚨 Issue Triage");
+    assert!(tabs[0].enabled);
+    let fatal_rule = tabs[0]
+        .filters
+        .iter()
+        .find(|f| f.text == " F ")
+        .expect("Issue Triage must contain ' F ' rule");
+    assert!(fatal_rule.active);
+    assert!(!fatal_rule.exclude);
+    assert_eq!(fatal_rule.bg_color, "Red");
+    assert_eq!(fatal_rule.text_color, "White");
+
+    let exclude_rule = tabs[0]
+        .filters
+        .iter()
+        .find(|f| f.exclude && f.text == "ACCGYROCALIBRATION")
+        .expect("Issue Triage must contain exclude ACCGYROCALIBRATION rule");
+    assert!(exclude_rule.active);
+
+    assert_eq!(tabs[1].name, "🚗 Vehicle & Subsystems");
+    assert!(tabs[1].enabled);
+    assert!(tabs[1].filters.iter().any(|f| f.text == "VehicleHal"));
+
+    assert_eq!(tabs[2].name, "⏱️ Performance & Latency");
+    assert!(tabs[2].enabled);
+    assert!(tabs[2].filters.iter().any(|f| f.text == "Choreographer"));
 }
 
 #[test]
@@ -1347,8 +1417,7 @@ fn test_compiled_stream_filters_parity_with_append_streaming_batch() {
             true,
             "batch2 compiled vs standalone",
         );
-        // Incremental append_streaming_batch maintains an O(batch) monotonic widest-line watermark on trim
-        assert_incremental_eq(&compiled_res, &full_2, false, "batch2 compiled vs full");
+        assert_incremental_eq(&compiled_res, &full_2, true, "batch2 compiled vs full");
 
         // 3. Trim-only step (evict 1 visible line without appending)
         let mut shrink_stream = StreamLogBuffer::new(5, 1);
@@ -1383,7 +1452,7 @@ fn test_compiled_stream_filters_parity_with_append_streaming_batch() {
             true,
             "trim-only compiled vs standalone",
         );
-        assert_incremental_eq(&compiled_res, &full_3, false, "trim-only compiled vs full");
+        assert_incremental_eq(&compiled_res, &full_3, true, "trim-only compiled vs full");
 
         // 4. Trim-only step dropping the excluded line: full parity across compiled, standalone, and execute_filtering [INV-09]
         let mut drop_excl_stream = StreamLogBuffer::new(4, 1);
@@ -1419,7 +1488,7 @@ fn test_compiled_stream_filters_parity_with_append_streaming_batch() {
             true,
             "trim-excluded compiled vs standalone",
         );
-        assert_incremental_eq(&compiled_res, &full_4, false, "trim-excluded compiled vs full");
+        assert_incremental_eq(&compiled_res, &full_4, true, "trim-excluded compiled vs full");
     }
 }
 
@@ -1723,4 +1792,145 @@ fn test_excluded_line_partial_trim_and_shift_parity() {
         assert!(compiled_res.visible_indices.is_empty());
         assert_eq!(compiled_res.total_matched_lines, 0);
     }
+}
+
+#[test]
+fn test_execute_filtering_cjk_display_width_and_streaming_trim_shrink() {
+    // 1. execute_filtering selects visually widest line (not byte-longest or trailing-whitespace-padded)
+    let cjk_24_cols = "한".repeat(12); // 36 bytes, display width 24
+    let ascii_26_cols = "a".repeat(26); // 26 bytes, display width 26 (visually widest!)
+    let padded_5_cols = format!("short{}", " ".repeat(60)); // 65 bytes, display width 5
+
+    let mut tmp = NamedTempFile::new().unwrap();
+    writeln!(tmp, "{cjk_24_cols}").unwrap();
+    writeln!(tmp, "{ascii_26_cols}").unwrap();
+    writeln!(tmp, "{padded_5_cols}").unwrap();
+    tmp.flush().unwrap();
+
+    let file_buf = FileLogBuffer::open(tmp.path()).unwrap();
+    let res = execute_filtering(&file_buf, &[], true, None, 0).unwrap();
+    assert_eq!(res.widest_visible_length, 26);
+    assert_eq!(res.widest_visible_text, ascii_26_cols);
+    assert_eq!(res.widest_visible_source_idx, Some(1));
+
+    // When a CJK line IS visually wider (15 Hangul chars = 45 bytes, width 30 vs 26 ASCII), it wins
+    let cjk_30_cols = "한".repeat(15);
+    let mut stream_cjk = StreamLogBuffer::new(10, 1);
+    stream_cjk.append_chunk(vec![ascii_26_cols.clone(), cjk_30_cols.clone()]);
+    let res_cjk = execute_filtering(&stream_cjk, &[], true, None, 0).unwrap();
+    assert_eq!(res_cjk.widest_visible_length, 30);
+    assert_eq!(res_cjk.widest_visible_text, cjk_30_cols);
+    assert_eq!(res_cjk.widest_visible_source_idx, Some(1));
+
+    // 2. append_streaming_batch_with_matcher shrinks widest_visible_length when widest visible row is trimmed
+    let wide_40 = "W".repeat(40);
+    let med_cjk_20 = "한".repeat(10); // 30 bytes, width 20
+    let narrow_8 = "N".repeat(8);
+    let small_10 = "S".repeat(10);
+
+    let rules = vec![FilterRule {
+        text: "NO_EXCLUDE".to_string(),
+        active: false,
+        ..Default::default()
+    }];
+    let prepared: Vec<PreparedFilter> = Vec::new();
+    let multi = MultiFilterMatcher::new(&prepared);
+
+    let mut stream = StreamLogBuffer::new(3, 1);
+    stream.append_chunk(vec![wide_40.clone(), med_cjk_20.clone(), narrow_8.clone()]);
+
+    let mut inc = FilterResult::default();
+    append_streaming_batch_with_matcher(&mut inc, &stream, 0..3, 0, &prepared, &multi, false);
+    assert_eq!(inc.widest_visible_length, 40);
+    assert_eq!(inc.widest_visible_text, wide_40);
+    assert_eq!(inc.widest_visible_source_idx, Some(0));
+
+    // Append small_10 (total 4 > cap 3 -> trims idx 0 = wide_40): widest must shrink from 40 to 20
+    stream.append_chunk(vec![small_10.clone()]);
+    let trimmed_1 = stream.trim_if_needed().unwrap();
+    assert_eq!(trimmed_1, 1);
+    append_streaming_batch_with_matcher(&mut inc, &stream, 2..3, trimmed_1, &prepared, &multi, false);
+    assert_eq!(inc.widest_visible_length, 20);
+    assert_eq!(inc.widest_visible_text, med_cjk_20);
+    assert_eq!(inc.widest_visible_source_idx, Some(0));
+
+    let full_after_1 = execute_filtering(&stream, &rules, false, None, 0).unwrap();
+    assert_eq!(inc.widest_visible_length, full_after_1.widest_visible_length);
+    assert_eq!(inc.widest_visible_text, full_after_1.widest_visible_text);
+
+    // Trim med_cjk_20 (no append): widest shrinks from 20 to 10 (small_10 at surviving idx 1)
+    let mut stream_2 = StreamLogBuffer::new(2, 1);
+    stream_2.append_chunk(vec![med_cjk_20, narrow_8, small_10.clone()]);
+    let trimmed_2 = stream_2.trim_if_needed().unwrap();
+    assert_eq!(trimmed_2, 1);
+    append_streaming_batch_with_matcher(&mut inc, &stream_2, 2..2, trimmed_2, &prepared, &multi, false);
+    assert_eq!(inc.widest_visible_length, 10);
+    assert_eq!(inc.widest_visible_text, small_10);
+    assert_eq!(inc.widest_visible_source_idx, Some(1));
+
+    // Trim all remaining rows: resets widest to 0 / empty / None
+    stream_2.clear();
+    append_streaming_batch_with_matcher(&mut inc, &stream_2, 0..0, 2, &prepared, &multi, false);
+    assert_eq!(inc.widest_visible_length, 0);
+    assert!(inc.widest_visible_text.is_empty());
+    assert_eq!(inc.widest_visible_source_idx, None);
+}
+
+#[test]
+fn test_execute_filtering_and_streaming_non_ascii_case_insensitive_parity() {
+    let rules = vec![
+        FilterRule {
+            text: "café".to_string(),
+            case_sensitive: false,
+            regex: false,
+            bg_color: "Yellow".to_string(),
+            active: true,
+            ..Default::default()
+        },
+        FilterRule {
+            text: "über".to_string(),
+            case_sensitive: false,
+            regex: false,
+            bg_color: "Cyan".to_string(),
+            active: true,
+            ..Default::default()
+        },
+    ];
+    let compiled = CompiledStreamFilters::new(&rules);
+    let prepared: Vec<PreparedFilter> = rules
+        .iter()
+        .enumerate()
+        .map(|(i, r)| PreparedFilter::new(r.clone(), i).unwrap())
+        .collect();
+
+    let lines = vec![
+        "ERROR: CAFÉ timeout".to_string(),
+        "INFO: normal line".to_string(),
+        "WARN: ÜBER connected".to_string(),
+    ];
+    let mut stream = StreamLogBuffer::new(10, 1);
+    stream.append_chunk(lines.clone());
+
+    let full = execute_filtering(&stream, &rules, true, None, 0).unwrap();
+    assert_eq!(full.visible_indices, vec![0, 2]);
+    assert_eq!(full.total_matched_lines, 2);
+    assert_eq!(full.count_for_rule(&rules[0].id), 1);
+    assert_eq!(full.count_for_rule(&rules[1].id), 1);
+
+    // Must match line-by-line evaluate_and_style_line identically
+    for (idx, line) in lines.iter().enumerate() {
+        let single = evaluate_and_style_line(line.as_bytes(), &prepared, true, None);
+        if single.0 {
+            assert!(full.visible_indices.contains(&idx));
+        } else {
+            assert!(!full.visible_indices.contains(&idx));
+        }
+    }
+
+    // Streaming incremental parity
+    let mut inc = FilterResult::default();
+    compiled.append_streaming_batch(&mut inc, &stream, 0..3, 0, true);
+    assert_eq!(inc.visible_indices, full.visible_indices);
+    assert_eq!(inc.visible_styles, full.visible_styles);
+    assert_eq!(inc.rule_counts, full.rule_counts);
 }

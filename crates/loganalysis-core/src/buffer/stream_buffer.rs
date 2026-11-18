@@ -5,7 +5,10 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use unicode_width::UnicodeWidthStr;
 
-use super::{extract_timestamp, trim_line_end, LogSource};
+use super::timestamp::{
+    extract_timestamp_with_kind, normalize_month_day_rollover, TimestampKind,
+};
+use super::{trim_line_end, LogSource};
 use crate::constants::{MAX_MONITOR_LINES, MONITOR_TRIM_BATCH};
 
 /// Fixed page size (in lines) for [`StreamLogBuffer`], capping CoW tail-page clones at `<= 1024` `Arc<str>` entries.
@@ -30,6 +33,7 @@ pub struct StreamLogBuffer {
     max_line_len: usize,
     longest_line_text: String,
     total_trimmed: usize,
+    first_month_day_ts: Option<i64>,
 }
 
 impl Default for StreamLogBuffer {
@@ -50,6 +54,7 @@ impl StreamLogBuffer {
             max_line_len: 0,
             longest_line_text: String::new(),
             total_trimmed: 0,
+            first_month_day_ts: None,
         }
     }
 
@@ -105,6 +110,14 @@ impl StreamLogBuffer {
             if width > self.max_line_len {
                 self.max_line_len = width;
                 self.longest_line_text = measured.to_string();
+            }
+
+            if self.first_month_day_ts.is_none() {
+                if let Some(parsed) = extract_timestamp_with_kind(trim_line_end(line.as_bytes())) {
+                    if parsed.kind == TimestampKind::MonthDayTime {
+                        self.first_month_day_ts = Some(parsed.timestamp.total_micros);
+                    }
+                }
             }
 
             let arc: Arc<str> = Arc::from(line);
@@ -212,6 +225,7 @@ impl StreamLogBuffer {
         self.max_line_len = 0;
         self.longest_line_text.clear();
         self.total_trimmed = 0;
+        self.first_month_day_ts = None;
     }
 
     /// Total number of lines trimmed from the head over the buffer's lifetime.
@@ -259,9 +273,14 @@ impl LogSource for StreamLogBuffer {
 
     #[inline]
     fn get_timestamp_micros(&self, idx: usize) -> Option<i64> {
-        self.get_raw_line(idx)
-            .and_then(extract_timestamp)
-            .map(|t| t.total_micros)
+        let parsed = self.get_raw_line(idx).and_then(extract_timestamp_with_kind)?;
+        let ts = parsed.timestamp.total_micros;
+        if parsed.kind == TimestampKind::MonthDayTime {
+            if let Some(anchor) = self.first_month_day_ts {
+                return Some(normalize_month_day_rollover(ts, anchor));
+            }
+        }
+        Some(ts)
     }
 }
 

@@ -8,6 +8,13 @@ pub fn should_render_timeline_ribbon(is_timeline_visible: bool, is_zen_mode: boo
     is_timeline_visible && !is_zen_mode
 }
 
+/// Returns the target visible row for clicking a timeline bucket bar, or `None` for empty buckets.
+pub fn bucket_navigation_row(bucket: &loganalysis_core::EpsTimelineBucket) -> Option<usize> {
+    (bucket.total_count > 0)
+        .then_some(bucket.start_visible_row)
+        .flatten()
+}
+
 /// Renders the Throughput & EPS (Events Per Second) Timeline Sparkline ribbon below the toolbar.
 pub fn render_timeline_sparkline(
     workspace: &LogAnalysisWorkspace,
@@ -51,32 +58,36 @@ pub fn render_timeline_sparkline(
                         (theme.border_subtle, theme.border_subtle)
                     };
 
-                    let target_row = bucket.start_visible_row;
+                    let target_row_opt = bucket_navigation_row(bucket);
 
                     div()
                         .id(("timeline-bucket-bar", idx))
-                        .cursor_pointer()
                         .flex_1()
                         .h(px(height_px))
                         .bg(bar_bg)
                         .border_t_1()
                         .border_color(bar_border)
                         .rounded_t_xs()
-                        .hover(|s| s.opacity(0.8))
-                        .on_click(cx.listener(move |this, _, _window, cx| {
-                            if let Some(res) = &this.filter_result {
-                                if let Some(&src_idx) = res.visible_indices.get(target_row) {
-                                    this.selection.select(target_row, src_idx);
-                                    this.scroll_handle
-                                        .scroll_to_item(target_row, ScrollStrategy::Center);
-                                    this.refresh_status_line(cx);
-                                    this.status_text =
-                                        format!("Navigated to timeline event at row {}", target_row + 1)
+                        .when_some(target_row_opt, |s, target_row| {
+                            s.cursor_pointer()
+                                .hover(|s| s.opacity(0.8))
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    if let Some(res) = &this.filter_result {
+                                        if let Some(&src_idx) = res.visible_indices.get(target_row) {
+                                            this.selection.select(target_row, src_idx);
+                                            this.scroll_handle
+                                                .scroll_to_item(target_row, ScrollStrategy::Center);
+                                            this.refresh_status_line(cx);
+                                            this.status_text = format!(
+                                                "Navigated to timeline event at row {}",
+                                                target_row + 1
+                                            )
                                             .into();
-                                    cx.notify();
-                                }
-                            }
-                        }))
+                                            cx.notify();
+                                        }
+                                    }
+                                }))
+                        })
                 }))
                 .into_any_element()
         } else {
@@ -178,4 +189,30 @@ pub fn render_timeline_sparkline(
                     .child("✕"),
             ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bucket_navigation_row;
+    use loganalysis_core::EpsTimelineBucket;
+
+    #[test]
+    fn test_bucket_navigation_row_ignores_empty_buckets() {
+        let empty = EpsTimelineBucket::default();
+        assert_eq!(bucket_navigation_row(&empty), None);
+
+        let zero_count_with_row = EpsTimelineBucket {
+            total_count: 0,
+            start_visible_row: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(bucket_navigation_row(&zero_count_with_row), None);
+
+        let populated = EpsTimelineBucket {
+            total_count: 3,
+            start_visible_row: Some(42),
+            ..Default::default()
+        };
+        assert_eq!(bucket_navigation_row(&populated), Some(42));
+    }
 }

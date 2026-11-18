@@ -39,6 +39,21 @@ pub fn format_search_outcome(
     }
 }
 
+/// Applies raw Find Bar input to [`SearchController`] while preserving meaningful
+/// leading/trailing spaces (e.g., `" E "`) and clearing empty/whitespace-only queries.
+pub(crate) fn apply_find_input_query(
+    ctrl: &mut crate::controllers::SearchController,
+    raw_input: &str,
+) {
+    if raw_input.trim().is_empty() {
+        ctrl.query.clear();
+        ctrl.match_status = None;
+    } else {
+        ctrl.query = raw_input.to_string();
+    }
+    ctrl.update_matcher_when_visible();
+}
+
 impl LogAnalysisWorkspace {
     fn apply_search_result(
         &mut self,
@@ -61,11 +76,8 @@ impl LogAnalysisWorkspace {
 
     /// Cyclic search forward or backward (with async dispatch for large logs)
     pub fn search(&mut self, forward: bool, cx: &mut Context<Self>) {
-        let input_text = self.find_input.read(cx).text().trim().to_string();
-        if !input_text.is_empty() {
-            self.search_ctrl.query = input_text;
-        }
-        self.update_cached_search_matcher();
+        let raw_input = self.find_input.read(cx).text().to_string();
+        apply_find_input_query(&mut self.search_ctrl, &raw_input);
 
         if self.search_ctrl.query.is_empty() {
             self.search_ctrl.match_status = None;
@@ -154,16 +166,26 @@ impl LogAnalysisWorkspace {
         cx.notify();
     }
 
-    /// Toggles the floating find bar
-    pub fn toggle_search_bar(&mut self, cx: &mut Context<Self>) {
-        self.search_ctrl.is_visible = !self.search_ctrl.is_visible;
-        if self.search_ctrl.is_visible {
-            self.input_focus = InputFocusTarget::SearchBar;
-        } else if self.input_focus == InputFocusTarget::SearchBar {
+    /// Closes the floating find bar and clears search bar focus
+    pub fn close_search_bar(&mut self, cx: &mut Context<Self>) {
+        self.search_ctrl.is_visible = false;
+        if self.input_focus == InputFocusTarget::SearchBar {
             self.input_focus = InputFocusTarget::None;
         }
         self.update_cached_search_matcher();
         cx.notify();
+    }
+
+    /// Toggles the floating find bar
+    pub fn toggle_search_bar(&mut self, cx: &mut Context<Self>) {
+        if self.search_ctrl.is_visible {
+            self.close_search_bar(cx);
+        } else {
+            self.search_ctrl.is_visible = true;
+            self.input_focus = InputFocusTarget::SearchBar;
+            self.update_cached_search_matcher();
+            cx.notify();
+        }
     }
 }
 
@@ -244,5 +266,31 @@ mod tests {
         let threshold = std::hint::black_box(loganalysis_core::ASYNC_SEARCH_THRESHOLD);
         assert!(49_999 < threshold);
         assert!(50_000 >= threshold);
+    }
+
+    #[test]
+    fn test_apply_find_input_query_preserves_spaces_and_clears_whitespace() {
+        use super::apply_find_input_query;
+        use crate::controllers::SearchController;
+
+        let mut ctrl = SearchController::new();
+        ctrl.is_visible = true;
+
+        // Non-whitespace query with surrounding spaces (" E ") must stay untrimmed
+        apply_find_input_query(&mut ctrl, " E ");
+        assert_eq!(ctrl.query, " E ");
+        let matcher = ctrl
+            .cached_matcher
+            .as_ref()
+            .expect("visible non-whitespace query must compile matcher");
+        assert!(matcher.matches(b"11-06 18:00:00.000 1000 1000 E Tag: boom"));
+        assert!(!matcher.matches(b"11-06 18:00:00.000 1000 1000 I Tag: Error"));
+
+        // Whitespace-only clears query, match_status, and cached_matcher (MAJ-02)
+        ctrl.match_status = Some("Line 1".to_string());
+        apply_find_input_query(&mut ctrl, "   \t\n");
+        assert!(ctrl.query.is_empty());
+        assert_eq!(ctrl.match_status, None);
+        assert!(ctrl.cached_matcher.is_none());
     }
 }

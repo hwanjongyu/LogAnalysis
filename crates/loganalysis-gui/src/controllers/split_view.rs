@@ -12,6 +12,7 @@ pub struct SplitViewController {
     pub secondary_log_source: Option<Arc<ActiveLogSource>>,
     pub secondary_file_name: Option<SharedString>,
     pub secondary_filter_result: Option<Arc<FilterResult>>,
+    pub secondary_source_gen: u64,
 }
 
 impl SplitViewController {
@@ -24,7 +25,14 @@ impl SplitViewController {
             secondary_log_source: None,
             secondary_file_name: None,
             secondary_filter_result: None,
+            secondary_source_gen: 0,
         }
+    }
+
+    /// Advances and returns the monotonic generation token for async secondary source loads.
+    pub fn advance_source_gen(&mut self) -> u64 {
+        self.secondary_source_gen = self.secondary_source_gen.wrapping_add(1);
+        self.secondary_source_gen
     }
 
     /// Toggles split view visibility.
@@ -49,8 +57,9 @@ impl SplitViewController {
         self.is_split_view = true;
     }
 
-    /// Clears secondary pane data.
+    /// Clears secondary pane data and invalidates any pending async secondary load.
     pub fn clear(&mut self) {
+        self.advance_source_gen();
         self.secondary_log_source = None;
         self.secondary_file_name = None;
         self.secondary_filter_result = None;
@@ -87,5 +96,36 @@ mod tests {
 
         controller.toggle_sync();
         assert!(!controller.is_scroll_synced);
+
+        let g1 = controller.advance_source_gen();
+        let g2 = controller.advance_source_gen();
+        assert!(g2 > g1);
+        controller.clear();
+        assert!(controller.secondary_source_gen > g2);
+    }
+
+    #[test]
+    fn test_split_view_source_gen_advance_and_clear_invalidation() {
+        let mut controller = SplitViewController::new();
+        assert_eq!(controller.secondary_source_gen, 0);
+
+        let gen_a = controller.advance_source_gen();
+        let gen_b = controller.advance_source_gen();
+        assert_eq!(gen_a, 1);
+        assert_eq!(gen_b, 2);
+        assert_ne!(controller.secondary_source_gen, gen_a);
+        assert_eq!(controller.secondary_source_gen, gen_b);
+
+        controller.secondary_file_name = Some("stale.log".into());
+        controller.is_split_view = true;
+        controller.clear();
+        assert!(!controller.is_split_view);
+        assert!(controller.secondary_file_name.is_none());
+        assert!(controller.secondary_log_source.is_none());
+        assert!(controller.secondary_filter_result.is_none());
+        assert!(
+            controller.secondary_source_gen > gen_b,
+            "clear() must advance secondary_source_gen to invalidate pending async secondary opens"
+        );
     }
 }

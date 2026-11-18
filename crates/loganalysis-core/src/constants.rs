@@ -85,9 +85,23 @@ pub fn parse_color_spec(spec: &str, is_bg: bool) -> Option<u32> {
 
     // Try hex parsing "#RRGGBB" or "RRGGBB"
     let hex_part = trimmed.strip_prefix('#').unwrap_or(trimmed);
-    if hex_part.len() == 6 {
+    if hex_part.len() == 6 && hex_part.bytes().all(|b| b.is_ascii_hexdigit()) {
         u32::from_str_radix(hex_part, 16).ok()
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_color_spec_rejects_signed_or_invalid_hex() {
+        assert_eq!(parse_color_spec("+12345", true), None);
+        assert_eq!(parse_color_spec("#+12345", false), None);
+        assert_eq!(parse_color_spec("-12345", true), None);
+        assert_eq!(parse_color_spec("#12345G", true), None);
+        assert_eq!(parse_color_spec("#1A2B3C", true), Some(0x1A2B3C));
     }
 }

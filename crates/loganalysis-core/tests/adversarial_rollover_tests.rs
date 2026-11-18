@@ -548,23 +548,23 @@ fn test_adversarial_leading_untimestamped_lines_cross_file_rollover() {
     let ts1 = merged.get_line_timestamp_micros(1).unwrap();
     assert!(ts0 < ts1);
 
-    // Lines 2..3: Jan 01 timestamped lines (must come AFTER Dec 31 and before un-timestamped headers)
-    let ts2 = merged.get_line_timestamp_micros(2).unwrap();
-    let ts3 = merged.get_line_timestamp_micros(3).unwrap();
+    // Lines 2..4: Un-timestamped header comments stay directly before f2_jan's first event
+    assert!(merged.get_line_timestamp_micros(2).is_none());
+    assert!(merged.get_line_timestamp_micros(3).is_none());
+    assert!(merged.get_line_timestamp_micros(4).is_none());
+    assert!(merged.get_line(2).unwrap().contains("Version 2.0"));
+    assert!(merged.get_line(3).unwrap().contains("Pixel 8 Pro"));
+    assert!(merged.get_line(4).unwrap().contains("Session started"));
+
+    // Lines 5..6: Jan 01 timestamped lines (must come AFTER Dec 31 and immediately after f2_jan headers)
+    let ts5 = merged.get_line_timestamp_micros(5).unwrap();
+    let ts6 = merged.get_line_timestamp_micros(6).unwrap();
     assert!(
-        ts1 < ts2,
+        ts1 < ts5,
         "Dec 31 line must precede Jan 01 line despite leading headers"
     );
-    assert!(ts2 < ts3);
-    assert!(ts2 >= ONE_YEAR_MICROS);
-
-    // Lines 4..6: Un-timestamped header comments (sorted to the end since timestamp is None)
-    assert!(merged.get_line_timestamp_micros(4).is_none());
-    assert!(merged.get_line_timestamp_micros(5).is_none());
-    assert!(merged.get_line_timestamp_micros(6).is_none());
-    assert!(merged.get_line(4).unwrap().contains("Version 2.0"));
-    assert!(merged.get_line(5).unwrap().contains("Pixel 8 Pro"));
-    assert!(merged.get_line(6).unwrap().contains("Session started"));
+    assert!(ts5 < ts6);
+    assert!(ts5 >= ONE_YEAR_MICROS);
 }
 
 // 7. Multi-Year Consecutive Rollover (2 Year Boundaries within Single Stream)

@@ -116,16 +116,89 @@ pub fn validate_filter_pattern(
     Ok(())
 }
 
+/// Validates that imported filter tabs are non-empty so `active_tab_index` stays in bounds.
+pub(crate) fn apply_imported_filter_tabs(
+    tabs: Vec<FilterTabData>,
+) -> Result<Vec<FilterTabData>, String> {
+    if tabs.is_empty() {
+        return Err("Filter profile contains no tabs".to_string());
+    }
+    Ok(tabs)
+}
+
+fn write_filters_atomically(path: &std::path::Path, json_bytes: &[u8]) -> std::io::Result<()> {
+    let tmp_path = build_unique_temp_path(path);
+    let res = std::fs::write(&tmp_path, json_bytes)
+        .and_then(|_| atomic_replace_file(&tmp_path, path));
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    res
+}
+
+/// Marks all filter tabs as having unsaved edits (`modified = true`).
+pub(crate) fn mark_tabs_modified(tabs: &mut [FilterTabData]) {
+    for tab in tabs {
+        tab.modified = true;
+    }
+}
+
+/// Records that the filter profile was saved or loaded from `path`, clearing `modified`
+/// and associating all tabs with `path`.
+pub(crate) fn mark_tabs_saved(
+    tabs: &mut [FilterTabData],
+    active_filter_profile_path: &mut Option<std::path::PathBuf>,
+    path: &std::path::Path,
+) {
+    let path_str = path.to_string_lossy().to_string();
+    *active_filter_profile_path = Some(path.to_path_buf());
+    for tab in tabs {
+        tab.file_path = Some(path_str.clone());
+        tab.modified = false;
+    }
+}
+
+/// Resolves the destination path for `SaveFilters`, returning `None` when a Save As prompt is needed.
+pub(crate) fn resolve_save_target_path(
+    active_filter_profile_path: Option<&std::path::Path>,
+    tabs: &[FilterTabData],
+    active_tab_index: usize,
+) -> Option<std::path::PathBuf> {
+    active_filter_profile_path
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| {
+            tabs.get(active_tab_index)
+                .and_then(|t| t.file_path.as_ref().map(std::path::PathBuf::from))
+        })
+}
+
 impl LogAnalysisWorkspace {
+    pub(crate) fn mark_filter_tabs_modified(&mut self) {
+        mark_tabs_modified(&mut self.filter_tabs);
+    }
+
+    pub(crate) fn set_filter_profile_saved(&mut self, path: &std::path::Path) {
+        mark_tabs_saved(
+            &mut self.filter_tabs,
+            &mut self.active_filter_profile_path,
+            path,
+        );
+    }
+
     /// Imports filter profile JSON supporting all 3 legacy Python formats
     pub fn import_filters_json(
         &mut self,
         json_str: &str,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let tabs = parse_filters_json(json_str).map_err(|e| e.to_string())?;
+        let parsed = parse_filters_json(json_str).map_err(|e| e.to_string())?;
+        let mut tabs = apply_imported_filter_tabs(parsed)?;
+        for tab in &mut tabs {
+            tab.modified = false;
+        }
         self.filter_tabs = tabs;
         self.active_tab_index = 0;
+        self.active_filter_profile_path = None;
         self.reapply_filters(cx);
         self.status_text = format!("Imported {} filter tabs", self.filter_tabs.len()).into();
         Ok(())
@@ -139,6 +212,7 @@ impl LogAnalysisWorkspace {
     pub fn add_filter_rule(&mut self, rule: FilterRule, cx: &mut Context<Self>) {
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
             tab.filters.push(rule);
+            self.mark_filter_tabs_modified();
             self.reapply_filters(cx);
         }
     }
@@ -148,6 +222,7 @@ impl LogAnalysisWorkspace {
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
             if let Some(rule) = tab.filters.get_mut(rule_idx) {
                 rule.active = !rule.active;
+                self.mark_filter_tabs_modified();
                 self.reapply_filters(cx);
             }
         }
@@ -158,6 +233,7 @@ impl LogAnalysisWorkspace {
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
             if rule_idx < tab.filters.len() {
                 tab.filters.remove(rule_idx);
+                self.mark_filter_tabs_modified();
                 self.reapply_filters(cx);
             }
         }
@@ -175,6 +251,7 @@ impl LogAnalysisWorkspace {
                         self.filter_edit_modal.editing_index = Some(rule_idx);
                     }
                 }
+                self.mark_filter_tabs_modified();
                 cx.notify();
                 self.reapply_filters(cx);
             }
@@ -193,6 +270,7 @@ impl LogAnalysisWorkspace {
                         self.filter_edit_modal.editing_index = Some(rule_idx);
                     }
                 }
+                self.mark_filter_tabs_modified();
                 cx.notify();
                 self.reapply_filters(cx);
             }
@@ -205,6 +283,7 @@ impl LogAnalysisWorkspace {
             if let Some(mut rule) = tab.filters.get(rule_idx).cloned() {
                 rule.id = FilterRule::default().id;
                 tab.filters.insert(rule_idx + 1, rule);
+                self.mark_filter_tabs_modified();
                 self.reapply_filters(cx);
             }
         }
@@ -296,12 +375,67 @@ impl LogAnalysisWorkspace {
             }
             self.filter_edit_modal.is_open = false;
             self.input_focus = InputFocusTarget::None;
+            self.mark_filter_tabs_modified();
             cx.notify();
             self.reapply_filters(cx);
         }
     }
 
-    /// Prompts user to save filter profiles to a JSON file atomically with filters
+    fn save_filters_to_path_async(
+        &mut self,
+        path: std::path::PathBuf,
+        json_str: String,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
+            let mut async_cx = cx.clone();
+            let path_for_bg = path.clone();
+            let json_bytes = json_str.into_bytes();
+
+            async move {
+                let write_res = bg_executor
+                    .spawn(async move { write_filters_atomically(&path_for_bg, &json_bytes) })
+                    .await;
+
+                let _ = this.update(&mut async_cx, |workspace, cx| {
+                    match write_res {
+                        Ok(_) => {
+                            workspace.set_filter_profile_saved(&path);
+                            workspace.status_text = format!("Saved filters to {:?}", path).into();
+                        }
+                        Err(e) => {
+                            workspace.status_text = format!("Save failed: {}", e).into();
+                        }
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Saves filter profiles directly to the active profile path if known, or falls back to Save As dialog.
+    pub fn save_filters(&mut self, parent: Option<&Window>, cx: &mut Context<Self>) {
+        let target_path = resolve_save_target_path(
+            self.active_filter_profile_path.as_deref(),
+            &self.filter_tabs,
+            self.active_tab_index,
+        );
+
+        if let Some(path) = target_path {
+            let Ok(json_str) = self.export_filters_json() else {
+                self.status_text = "Failed to serialize filters".into();
+                cx.notify();
+                return;
+            };
+            self.save_filters_to_path_async(path, json_str, cx);
+        } else {
+            self.prompt_save_filters(parent, cx);
+        }
+    }
+
+    /// Prompts user to save filter profiles to a JSON file atomically with filters (Save As)
     pub fn prompt_save_filters(&mut self, parent: Option<&Window>, cx: &mut Context<Self>) {
         let Ok(json_str) = self.export_filters_json() else {
             self.status_text = "Failed to serialize filters".into();
@@ -327,20 +461,13 @@ impl LogAnalysisWorkspace {
                     let path_for_bg = path.clone();
                     let json_bytes = json_str.into_bytes();
                     let write_res = bg_executor
-                        .spawn(async move {
-                            let tmp_path = build_unique_temp_path(&path_for_bg);
-                            let res = std::fs::write(&tmp_path, &json_bytes)
-                                .and_then(|_| atomic_replace_file(&tmp_path, &path_for_bg));
-                            if res.is_err() {
-                                let _ = std::fs::remove_file(&tmp_path);
-                            }
-                            res
-                        })
+                        .spawn(async move { write_filters_atomically(&path_for_bg, &json_bytes) })
                         .await;
 
                     let _ = this.update(&mut async_cx, |workspace, cx| {
                         match write_res {
                             Ok(_) => {
+                                workspace.set_filter_profile_saved(&path);
                                 workspace.status_text =
                                     format!("Saved filters to {:?}", path).into();
                             }
@@ -375,6 +502,7 @@ impl LogAnalysisWorkspace {
                     match read_res {
                         Ok(content) => match workspace.import_filters_json(&content, cx) {
                             Ok(_) => {
+                                workspace.set_filter_profile_saved(&path_buf);
                                 let fname =
                                     path_buf.file_name().unwrap_or_default().to_string_lossy();
                                 workspace.status_text =
@@ -447,6 +575,7 @@ impl LogAnalysisWorkspace {
             ..Default::default()
         });
         self.active_tab_index = self.filter_tabs.len() - 1;
+        self.mark_filter_tabs_modified();
         self.reapply_filters(cx);
         self.status_text = format!("Added new filter tab: {}", new_tab_name).into();
         cx.notify();
@@ -464,6 +593,7 @@ impl LogAnalysisWorkspace {
         if self.active_tab_index >= self.filter_tabs.len() {
             self.active_tab_index = self.filter_tabs.len() - 1;
         }
+        self.mark_filter_tabs_modified();
         self.reapply_filters(cx);
         self.status_text = format!("Deleted filter tab: {}", removed.name).into();
         cx.notify();
@@ -474,6 +604,7 @@ impl LogAnalysisWorkspace {
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
             let next_name = format!("{}_renamed", tab.name);
             tab.name = next_name.clone();
+            self.mark_filter_tabs_modified();
             self.status_text = format!("Renamed tab to: {}", next_name).into();
             cx.notify();
         }
@@ -483,6 +614,7 @@ impl LogAnalysisWorkspace {
     pub fn toggle_tab_enabled(&mut self, tab_idx: usize, cx: &mut Context<Self>) {
         if let Some(tab) = self.filter_tabs.get_mut(tab_idx) {
             tab.enabled = !tab.enabled;
+            self.mark_filter_tabs_modified();
             self.reapply_filters(cx);
             cx.notify();
         }
@@ -605,5 +737,84 @@ mod tests {
         );
         assert_eq!(validate_filter_pattern("[ERROR", false, false), Ok(()));
         assert_eq!(validate_filter_pattern("foo(", false, true), Ok(()));
+    }
+
+    #[test]
+    fn test_apply_imported_filter_tabs_rejects_empty() {
+        assert!(super::apply_imported_filter_tabs(Vec::new()).is_err());
+        let non_empty = vec![loganalysis_core::FilterTabData::default()];
+        assert_eq!(
+            super::apply_imported_filter_tabs(non_empty)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_filter_tab_dirty_and_save_target_transitions() {
+        use super::{mark_tabs_modified, mark_tabs_saved, resolve_save_target_path};
+        use loganalysis_core::FilterTabData;
+        use std::path::{Path, PathBuf};
+
+        let mut tabs = vec![
+            FilterTabData {
+                name: "Tab1".into(),
+                ..Default::default()
+            },
+            FilterTabData {
+                name: "Tab2".into(),
+                ..Default::default()
+            },
+        ];
+        let mut active_path: Option<PathBuf> = None;
+
+        // 1. Fresh tabs have no saved path -> SaveFilters falls back to Save As prompt
+        assert!(tabs.iter().all(|t| !t.modified && t.file_path.is_none()));
+        assert_eq!(
+            resolve_save_target_path(active_path.as_deref(), &tabs, 0),
+            None
+        );
+
+        // 2. Editing marks all tabs dirty while still lacking a saved path
+        mark_tabs_modified(&mut tabs);
+        assert!(tabs.iter().all(|t| t.modified));
+        assert_eq!(
+            resolve_save_target_path(active_path.as_deref(), &tabs, 0),
+            None
+        );
+
+        // 3. SaveFiltersAs / load_filters_from_path records path and clears dirty flags
+        let path1 = Path::new("/tmp/automotive_profile.json");
+        mark_tabs_saved(&mut tabs, &mut active_path, path1);
+        assert_eq!(active_path.as_deref(), Some(path1));
+        assert!(tabs
+            .iter()
+            .all(|t| !t.modified && t.file_path.as_deref() == Some("/tmp/automotive_profile.json")));
+        assert_eq!(
+            resolve_save_target_path(active_path.as_deref(), &tabs, 0),
+            Some(path1.to_path_buf())
+        );
+
+        // 4. Subsequent edit sets modified = true while keeping target path for direct SaveFilters
+        mark_tabs_modified(&mut tabs);
+        assert!(tabs.iter().all(|t| t.modified));
+        assert_eq!(
+            resolve_save_target_path(active_path.as_deref(), &tabs, 1),
+            Some(path1.to_path_buf())
+        );
+
+        // 5. Fallback to tab.file_path when active_filter_profile_path is None, and SaveFiltersAs rebinds path
+        active_path = None;
+        assert_eq!(
+            resolve_save_target_path(active_path.as_deref(), &tabs, 0),
+            Some(path1.to_path_buf())
+        );
+        let path2 = Path::new("/tmp/automotive_profile_v2.json");
+        mark_tabs_saved(&mut tabs, &mut active_path, path2);
+        assert_eq!(active_path.as_deref(), Some(path2));
+        assert!(tabs
+            .iter()
+            .all(|t| !t.modified && t.file_path.as_deref() == Some("/tmp/automotive_profile_v2.json")));
     }
 }
