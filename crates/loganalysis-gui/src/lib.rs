@@ -124,6 +124,13 @@ define_default_keybindings!(
 
 impl Render for LogAnalysisWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !cx.has_active_drag()
+            && (self.dragging_filter_rule_index.is_some()
+                || self.filter_drag_drop_target.is_some())
+        {
+            self.clear_filter_drag_state_fields();
+        }
+
         let modal_pattern_focused = self.modal_pattern_input.read(cx).focus_handle.is_focused(window);
         let note_input_focused = self.note_input.read(cx).focus_handle.is_focused(window);
         let find_input_focused = self.find_input.read(cx).focus_handle.is_focused(window);
@@ -227,9 +234,15 @@ impl Render for LogAnalysisWorkspace {
         div()
             .id("workspace-container")
             .track_focus(&self.focus_handle)
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 if this.is_resizing_filter_dock && event.dragging() {
                     this.update_resizing_filter_dock(event.position, cx);
+                }
+                if this.dragging_filter_rule_index.is_some() && !event.dragging() {
+                    if cx.has_active_drag() {
+                        cx.stop_active_drag(window);
+                    }
+                    this.clear_filter_drag_state(cx);
                 }
             }))
             .on_mouse_up(
@@ -238,11 +251,32 @@ impl Render for LogAnalysisWorkspace {
                     if this.is_resizing_filter_dock {
                         this.stop_resizing_filter_dock(cx);
                     }
+                    this.clear_filter_drag_state(cx);
                 }),
             )
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                if event.keystroke.key == "escape" && this.handle_escape(cx) {
-                    return;
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    if this.is_resizing_filter_dock {
+                        this.stop_resizing_filter_dock(cx);
+                    }
+                    this.clear_filter_drag_state(cx);
+                }),
+            )
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    if this.dragging_filter_rule_index.is_some()
+                        || this.filter_drag_drop_target.is_some()
+                    {
+                        if cx.has_active_drag() {
+                            cx.stop_active_drag(window);
+                        }
+                        this.clear_filter_drag_state(cx);
+                        return;
+                    }
+                    if this.handle_escape(cx) {
+                        return;
+                    }
                 }
                 this.handle_key_down(event, cx);
             }))

@@ -117,6 +117,7 @@ pub fn compute_facet_tags(source: &ActiveLogSource) -> Vec<(String, usize)> {
 impl LogAnalysisWorkspace {
     /// Toggles filter dock visibility between shown and hidden
     pub fn toggle_filter_dock(&mut self, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state_fields();
         self.is_filter_dock_visible = !self.is_filter_dock_visible;
         self.status_text = if self.is_filter_dock_visible {
             "Filter Dock: Visible".into()
@@ -235,6 +236,7 @@ impl LogAnalysisWorkspace {
 
     /// Adds or toggles a quick filter rule directly from a facet tag chip
     pub fn add_facet_filter(&mut self, tag: &str, is_exclude: bool, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state_fields();
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
             let status = apply_facet_filter_to_tab(tab, tag, is_exclude);
             self.mark_filter_tabs_modified();

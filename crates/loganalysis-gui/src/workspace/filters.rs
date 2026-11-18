@@ -1,7 +1,7 @@
 use gpui::*;
 use loganalysis_core::*;
 
-use crate::types::{FilterEditState, InputFocusTarget};
+use crate::types::{DropPosition, FilterEditState, InputFocusTarget};
 use super::LogAnalysisWorkspace;
 
 pub const MAX_FILTER_PROFILE_BYTES: u64 = 10 * 1024 * 1024;
@@ -178,7 +178,111 @@ pub(crate) fn resolve_save_target_path(
         })
 }
 
+/// Computes the final destination index in `Vec<FilterRule>` after removing `source_index`
+/// and inserting at `target_row_index` (`Before` / `After`). Returns `None` for no-op or invalid bounds.
+pub fn compute_drop_target_index(
+    source_index: usize,
+    target_row_index: usize,
+    position: DropPosition,
+    len: usize,
+) -> Option<usize> {
+    if len <= 1 || source_index >= len || target_row_index >= len {
+        return None;
+    }
+    let raw_insert = match position {
+        DropPosition::Before => target_row_index,
+        DropPosition::After => target_row_index + 1,
+    };
+    let dest_index = if raw_insert > source_index {
+        raw_insert - 1
+    } else {
+        raw_insert
+    };
+    if dest_index == source_index || dest_index >= len {
+        None
+    } else {
+        Some(dest_index)
+    }
+}
+
+/// Remaps a tracked row index (e.g. `FilterEditState::editing_index`) after moving an item
+/// from `from_idx` to `to_idx`.
+#[inline]
+pub fn remap_index_after_move(tracked_idx: usize, from_idx: usize, to_idx: usize) -> usize {
+    if tracked_idx == from_idx {
+        to_idx
+    } else if from_idx < to_idx && (from_idx + 1..=to_idx).contains(&tracked_idx) {
+        tracked_idx - 1
+    } else if from_idx > to_idx && (to_idx..from_idx).contains(&tracked_idx) {
+        tracked_idx + 1
+    } else {
+        tracked_idx
+    }
+}
+
+/// Updates `FilterEditState::editing_index` when rule at `deleted_idx` is removed.
+/// Returns `true` if the currently edited rule was deleted and the modal was closed
+/// (caller should reset `input_focus = InputFocusTarget::None`).
+pub fn remap_editing_index_on_delete(modal: &mut FilterEditState, deleted_idx: usize) -> bool {
+    if !modal.is_open {
+        return false;
+    }
+    match modal.editing_index {
+        Some(ed) if ed == deleted_idx => {
+            modal.is_open = false;
+            modal.editing_index = None;
+            true
+        }
+        Some(ed) if ed > deleted_idx => {
+            modal.editing_index = Some(ed - 1);
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Updates `FilterEditState::editing_index` when rule at `duplicated_idx` is duplicated at `duplicated_idx + 1`.
+pub fn remap_editing_index_on_duplicate(modal: &mut FilterEditState, duplicated_idx: usize) {
+    if modal.is_open {
+        if let Some(ed) = modal.editing_index {
+            if ed > duplicated_idx {
+                modal.editing_index = Some(ed + 1);
+            }
+        }
+    }
+}
+
+/// Reorders a rule inside `tab.filters` from `from_idx` to `to_idx`, marking `tab.modified = true`.
+/// Returns `false` if indices are equal or out of bounds.
+pub(crate) fn reorder_filter_rule_in_tab(
+    tab: &mut FilterTabData,
+    from_idx: usize,
+    to_idx: usize,
+) -> bool {
+    if from_idx == to_idx || from_idx >= tab.filters.len() || to_idx >= tab.filters.len() {
+        return false;
+    }
+    let rule = tab.filters.remove(from_idx);
+    tab.filters.insert(to_idx, rule);
+    tab.modified = true;
+    true
+}
+
 impl LogAnalysisWorkspace {
+    /// Clears transient filter rule drag-and-drop fields without scheduling a UI refresh.
+    pub(crate) fn clear_filter_drag_state_fields(&mut self) {
+        self.filter_drag_drop_target = None;
+        self.dragging_filter_rule_index = None;
+    }
+
+    /// Clears active filter rule drag-and-drop state and notifies the UI if anything changed.
+    pub fn clear_filter_drag_state(&mut self, cx: &mut Context<Self>) {
+        if self.filter_drag_drop_target.is_some() || self.dragging_filter_rule_index.is_some() {
+            self.clear_filter_drag_state_fields();
+            cx.notify();
+        }
+    }
+
     pub(crate) fn mark_filter_tabs_modified(&mut self) {
         mark_tabs_modified(&mut self.filter_tabs);
     }
@@ -197,6 +301,7 @@ impl LogAnalysisWorkspace {
         json_str: &str,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        self.clear_filter_drag_state(cx);
         let parsed = parse_filters_json(json_str).map_err(|e| e.to_string())?;
         let mut tabs = apply_imported_filter_tabs(parsed)?;
         for tab in &mut tabs {
@@ -216,19 +321,23 @@ impl LogAnalysisWorkspace {
     }
 
     pub fn add_filter_rule(&mut self, rule: FilterRule, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state(cx);
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
             tab.filters.push(rule);
             self.mark_filter_tabs_modified();
+            cx.notify();
             self.reapply_filters(cx);
         }
     }
 
     /// Toggles active state of a specific rule
     pub fn toggle_rule_active(&mut self, rule_idx: usize, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state(cx);
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
             if let Some(rule) = tab.filters.get_mut(rule_idx) {
                 rule.active = !rule.active;
                 self.mark_filter_tabs_modified();
+                cx.notify();
                 self.reapply_filters(cx);
             }
         }
@@ -236,17 +345,23 @@ impl LogAnalysisWorkspace {
 
     /// Deletes a rule from active tab
     pub fn delete_rule(&mut self, rule_idx: usize, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state(cx);
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
             if rule_idx < tab.filters.len() {
                 tab.filters.remove(rule_idx);
+                if remap_editing_index_on_delete(&mut self.filter_edit_modal, rule_idx) {
+                    self.input_focus = InputFocusTarget::None;
+                }
                 self.mark_filter_tabs_modified();
+                cx.notify();
                 self.reapply_filters(cx);
             }
         }
     }
 
-    /// Moves a rule up in the active tab (increases precedence)
+    /// Moves a rule up in the active tab (earlier evaluation; lower precedence in last-match-wins)
     pub fn move_rule_up(&mut self, rule_idx: usize, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state(cx);
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
             if rule_idx > 0 && rule_idx < tab.filters.len() {
                 tab.filters.swap(rule_idx, rule_idx - 1);
@@ -264,8 +379,9 @@ impl LogAnalysisWorkspace {
         }
     }
 
-    /// Moves a rule down in the active tab (decreases precedence)
+    /// Moves a rule down in the active tab (later evaluation; higher precedence in last-match-wins)
     pub fn move_rule_down(&mut self, rule_idx: usize, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state(cx);
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
             if rule_idx + 1 < tab.filters.len() {
                 tab.filters.swap(rule_idx, rule_idx + 1);
@@ -283,13 +399,38 @@ impl LogAnalysisWorkspace {
         }
     }
 
+    /// Reorders a rule in the active tab from `from_idx` to `to_idx` (last-match-wins precedence).
+    pub fn reorder_filter_rule(&mut self, from_idx: usize, to_idx: usize, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state_fields();
+        let moved = self
+            .filter_tabs
+            .get_mut(self.active_tab_index)
+            .is_some_and(|tab| reorder_filter_rule_in_tab(tab, from_idx, to_idx));
+        if moved {
+            if self.filter_edit_modal.is_open {
+                if let Some(ed) = self.filter_edit_modal.editing_index {
+                    self.filter_edit_modal.editing_index =
+                        Some(remap_index_after_move(ed, from_idx, to_idx));
+                }
+            }
+            self.mark_filter_tabs_modified();
+            cx.notify();
+            self.reapply_filters(cx);
+        } else {
+            cx.notify();
+        }
+    }
+
     /// Duplicates a rule in active tab
     pub fn duplicate_rule(&mut self, rule_idx: usize, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state(cx);
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
             if let Some(mut rule) = tab.filters.get(rule_idx).cloned() {
                 rule.id = FilterRule::default().id;
                 tab.filters.insert(rule_idx + 1, rule);
+                remap_editing_index_on_duplicate(&mut self.filter_edit_modal, rule_idx);
                 self.mark_filter_tabs_modified();
+                cx.notify();
                 self.reapply_filters(cx);
             }
         }
@@ -297,6 +438,7 @@ impl LogAnalysisWorkspace {
 
     /// Opens modal to add new filter rule
     pub fn open_add_filter_modal(&mut self, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state_fields();
         self.modal_pattern_input.update(cx, |input, cx| {
             input.clear(cx);
         });
@@ -315,6 +457,7 @@ impl LogAnalysisWorkspace {
 
     /// Opens modal to edit existing filter rule
     pub fn open_edit_filter_modal(&mut self, rule_idx: usize, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state(cx);
         if let Some(tab) = self.filter_tabs.get(self.active_tab_index) {
             if let Some(rule) = tab.filters.get(rule_idx) {
                 let pattern = rule.text.clone();
@@ -345,6 +488,7 @@ impl LogAnalysisWorkspace {
 
     /// Saves filter from modal into tab
     pub fn save_modal_filter(&mut self, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state(cx);
         let pattern = self.modal_pattern_input.read(cx).text().trim().to_string();
         if let Err(err) = validate_filter_pattern(
             &pattern,
@@ -573,6 +717,7 @@ impl LogAnalysisWorkspace {
 
     /// Adds a new filter tab (Ctrl+T)
     pub fn add_filter_tab(&mut self, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state_fields();
         let new_tab_name = format!("Tab {}", self.filter_tabs.len() + 1);
         self.filter_tabs.push(FilterTabData {
             name: new_tab_name.clone(),
@@ -589,6 +734,7 @@ impl LogAnalysisWorkspace {
 
     /// Deletes the current filter tab (Ctrl+D)
     pub fn delete_current_tab(&mut self, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state(cx);
         if self.filter_tabs.len() <= 1 {
             self.status_text = "Cannot delete the last remaining filter tab".into();
             cx.notify();
@@ -618,6 +764,7 @@ impl LogAnalysisWorkspace {
 
     /// Toggles active state of a whole tab
     pub fn toggle_tab_enabled(&mut self, tab_idx: usize, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state(cx);
         if let Some(tab) = self.filter_tabs.get_mut(tab_idx) {
             tab.enabled = !tab.enabled;
             self.mark_filter_tabs_modified();
@@ -628,6 +775,7 @@ impl LogAnalysisWorkspace {
 
     /// Switches active filter tab
     pub fn select_tab(&mut self, tab_idx: usize, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state(cx);
         if tab_idx < self.filter_tabs.len() {
             self.active_tab_index = tab_idx;
             cx.notify();
@@ -818,5 +966,234 @@ mod tests {
         assert!(tabs
             .iter()
             .all(|t| !t.modified && t.file_path.as_deref() == Some("/tmp/automotive_profile_v2.json")));
+    }
+
+    #[test]
+    fn test_compute_drop_target_index_all_directions_and_noops() {
+        use super::compute_drop_target_index;
+        use crate::types::DropPosition;
+
+        // Forward moves (earlier -> later)
+        assert_eq!(compute_drop_target_index(0, 1, DropPosition::After, 4), Some(1));
+        assert_eq!(compute_drop_target_index(0, 2, DropPosition::Before, 4), Some(1));
+        assert_eq!(compute_drop_target_index(0, 3, DropPosition::After, 4), Some(3));
+        assert_eq!(compute_drop_target_index(1, 3, DropPosition::Before, 4), Some(2));
+
+        // Backward moves (later -> earlier)
+        assert_eq!(compute_drop_target_index(3, 0, DropPosition::Before, 4), Some(0));
+        assert_eq!(compute_drop_target_index(3, 1, DropPosition::Before, 4), Some(1));
+        assert_eq!(compute_drop_target_index(2, 0, DropPosition::After, 4), Some(1));
+
+        // 2-element swaps and boundary no-ops
+        assert_eq!(compute_drop_target_index(0, 1, DropPosition::After, 2), Some(1));
+        assert_eq!(compute_drop_target_index(1, 0, DropPosition::Before, 2), Some(0));
+        assert_eq!(compute_drop_target_index(0, 1, DropPosition::Before, 2), None);
+        assert_eq!(compute_drop_target_index(1, 0, DropPosition::After, 2), None);
+
+        // Self and adjacent no-ops (including list endpoints)
+        assert_eq!(compute_drop_target_index(0, 0, DropPosition::Before, 4), None);
+        assert_eq!(compute_drop_target_index(3, 3, DropPosition::After, 4), None);
+        assert_eq!(compute_drop_target_index(0, 1, DropPosition::Before, 4), None);
+        assert_eq!(compute_drop_target_index(3, 2, DropPosition::After, 4), None);
+        assert_eq!(compute_drop_target_index(1, 1, DropPosition::Before, 4), None);
+        assert_eq!(compute_drop_target_index(1, 1, DropPosition::After, 4), None);
+        assert_eq!(compute_drop_target_index(1, 0, DropPosition::After, 4), None);
+        assert_eq!(compute_drop_target_index(1, 2, DropPosition::Before, 4), None);
+
+        // Empty, single-item, and out-of-bounds
+        assert_eq!(compute_drop_target_index(0, 0, DropPosition::Before, 0), None);
+        assert_eq!(compute_drop_target_index(0, 0, DropPosition::After, 1), None);
+        assert_eq!(compute_drop_target_index(4, 1, DropPosition::Before, 4), None);
+        assert_eq!(compute_drop_target_index(1, 4, DropPosition::Before, 4), None);
+    }
+
+    #[test]
+    fn test_remap_index_after_move_and_duplicate() {
+        use super::{remap_editing_index_on_duplicate, remap_index_after_move};
+        use crate::types::FilterEditState;
+
+        // Move forward: 1 -> 3 (including unchanged indices outside range)
+        assert_eq!(remap_index_after_move(0, 1, 3), 0);
+        assert_eq!(remap_index_after_move(1, 1, 3), 3);
+        assert_eq!(remap_index_after_move(2, 1, 3), 1);
+        assert_eq!(remap_index_after_move(3, 1, 3), 2);
+        assert_eq!(remap_index_after_move(4, 1, 3), 4);
+        assert_eq!(remap_index_after_move(99, 1, 3), 99);
+
+        // Move backward: 3 -> 1 (including unchanged indices outside range)
+        assert_eq!(remap_index_after_move(0, 3, 1), 0);
+        assert_eq!(remap_index_after_move(1, 3, 1), 2);
+        assert_eq!(remap_index_after_move(2, 3, 1), 3);
+        assert_eq!(remap_index_after_move(3, 3, 1), 1);
+        assert_eq!(remap_index_after_move(4, 3, 1), 4);
+        assert_eq!(remap_index_after_move(99, 3, 1), 99);
+
+        // No-op move (from == to) leaves any tracked index unchanged
+        assert_eq!(remap_index_after_move(0, 2, 2), 0);
+        assert_eq!(remap_index_after_move(2, 2, 2), 2);
+        assert_eq!(remap_index_after_move(5, 2, 2), 5);
+
+        // Duplicate remapping
+        let mut modal_after = FilterEditState {
+            is_open: true,
+            editing_index: Some(3),
+            ..Default::default()
+        };
+        remap_editing_index_on_duplicate(&mut modal_after, 1);
+        assert_eq!(modal_after.editing_index, Some(4));
+
+        let mut modal_same = FilterEditState {
+            is_open: true,
+            editing_index: Some(1),
+            ..Default::default()
+        };
+        remap_editing_index_on_duplicate(&mut modal_same, 1);
+        assert_eq!(modal_same.editing_index, Some(1));
+
+        let mut modal_closed = FilterEditState {
+            is_open: false,
+            editing_index: Some(3),
+            ..Default::default()
+        };
+        remap_editing_index_on_duplicate(&mut modal_closed, 1);
+        assert_eq!(modal_closed.editing_index, Some(3));
+    }
+
+    #[test]
+    fn test_remap_editing_index_on_delete_all_four_branches() {
+        use super::remap_editing_index_on_delete;
+        use crate::types::FilterEditState;
+
+        // 1. Deleted the rule currently being edited -> closes modal, clears editing_index, returns true
+        let mut modal_same = FilterEditState {
+            is_open: true,
+            editing_index: Some(2),
+            ..Default::default()
+        };
+        assert!(remap_editing_index_on_delete(&mut modal_same, 2));
+        assert!(!modal_same.is_open);
+        assert_eq!(modal_same.editing_index, None);
+
+        // 2. Deleted an earlier rule -> shifts editing_index down by 1, keeps open
+        let mut modal_after = FilterEditState {
+            is_open: true,
+            editing_index: Some(3),
+            ..Default::default()
+        };
+        assert!(!remap_editing_index_on_delete(&mut modal_after, 1));
+        assert!(modal_after.is_open);
+        assert_eq!(modal_after.editing_index, Some(2));
+
+        // 3. Deleted a later rule -> leaves editing_index unchanged
+        let mut modal_before = FilterEditState {
+            is_open: true,
+            editing_index: Some(1),
+            ..Default::default()
+        };
+        assert!(!remap_editing_index_on_delete(&mut modal_before, 3));
+        assert!(modal_before.is_open);
+        assert_eq!(modal_before.editing_index, Some(1));
+
+        // 4. Add mode (editing_index == None) or closed modal -> no change
+        let mut modal_none = FilterEditState {
+            is_open: true,
+            editing_index: None,
+            ..Default::default()
+        };
+        assert!(!remap_editing_index_on_delete(&mut modal_none, 0));
+        assert!(modal_none.is_open);
+        assert_eq!(modal_none.editing_index, None);
+
+        let mut modal_closed = FilterEditState {
+            is_open: false,
+            editing_index: Some(2),
+            ..Default::default()
+        };
+        assert!(!remap_editing_index_on_delete(&mut modal_closed, 2));
+        assert_eq!(modal_closed.editing_index, Some(2));
+    }
+
+    #[test]
+    fn test_reorder_filter_rule_vec_mutation_and_tab_modified() {
+        use super::reorder_filter_rule_in_tab;
+        use loganalysis_core::{FilterRule, FilterTabData};
+
+        let mut tab = FilterTabData {
+            name: "Main".into(),
+            enabled: true,
+            modified: false,
+            filters: vec![
+                FilterRule {
+                    text: "A".into(),
+                    ..Default::default()
+                },
+                FilterRule {
+                    text: "B".into(),
+                    ..Default::default()
+                },
+                FilterRule {
+                    text: "C".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let id_a = tab.filters[0].id;
+        let id_b = tab.filters[1].id;
+        let id_c = tab.filters[2].id;
+
+        // Invalid moves leave vector untouched and modified == false
+        assert!(!reorder_filter_rule_in_tab(&mut tab, 1, 1));
+        assert!(!reorder_filter_rule_in_tab(&mut tab, 0, 3));
+        assert!(!reorder_filter_rule_in_tab(&mut tab, 3, 0));
+        assert!(!reorder_filter_rule_in_tab(&mut tab, 3, 5));
+        assert!(!tab.modified);
+        assert_eq!(
+            tab.filters.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            vec!["A", "B", "C"]
+        );
+
+        // Forward move: 0 -> 2 => [B, C, A] (preserving rule UUIDs)
+        assert!(reorder_filter_rule_in_tab(&mut tab, 0, 2));
+        assert!(tab.modified);
+        assert_eq!(
+            tab.filters.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            vec!["B", "C", "A"]
+        );
+        assert_eq!(
+            tab.filters.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![id_b, id_c, id_a]
+        );
+
+        // Backward move: 2 -> 0 => [A, B, C]
+        tab.modified = false;
+        assert!(reorder_filter_rule_in_tab(&mut tab, 2, 0));
+        assert!(tab.modified);
+        assert_eq!(
+            tab.filters.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            vec!["A", "B", "C"]
+        );
+        assert_eq!(
+            tab.filters.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![id_a, id_b, id_c]
+        );
+
+        // Empty and single-rule tabs reject all moves cleanly
+        let mut empty_tab = FilterTabData::default();
+        assert!(!reorder_filter_rule_in_tab(&mut empty_tab, 0, 0));
+        assert!(!reorder_filter_rule_in_tab(&mut empty_tab, 0, 1));
+        assert!(!empty_tab.modified);
+
+        let mut single_tab = FilterTabData {
+            filters: vec![FilterRule {
+                text: "Only".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(!reorder_filter_rule_in_tab(&mut single_tab, 0, 0));
+        assert!(!reorder_filter_rule_in_tab(&mut single_tab, 0, 1));
+        assert!(!single_tab.modified);
     }
 }

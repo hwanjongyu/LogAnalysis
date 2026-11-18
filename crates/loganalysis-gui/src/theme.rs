@@ -172,6 +172,15 @@ impl Theme {
     }
 }
 
+/// Converts a GPUI `Rgba` color into a packed 24-bit `0xRRGGBB` integer for WCAG contrast math.
+#[inline]
+pub fn rgba_to_rgb24(color: Rgba) -> u32 {
+    let r = (color.r.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let g = (color.g.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let b = (color.b.clamp(0.0, 1.0) * 255.0).round() as u32;
+    (r << 16) | (g << 8) | b
+}
+
 /// Resolves the foreground color for a log row, preserving WCAG AA contrast (>= 4.5:1)
 /// against `theme.selection_bg_hex` when selected.
 pub fn resolve_selected_row_fg(

@@ -15,6 +15,10 @@ pub use dock::{
     DEFAULT_FILTER_DOCK_WIDTH, MAX_FILTER_DOCK_HEIGHT, MAX_FILTER_DOCK_WIDTH,
     MIN_FILTER_DOCK_HEIGHT, MIN_FILTER_DOCK_WIDTH,
 };
+pub use filters::{
+    compute_drop_target_index, remap_editing_index_on_delete, remap_editing_index_on_duplicate,
+    remap_index_after_move,
+};
 pub use recent_files::{
     load_recent_files_from_path, push_recent_path, save_recent_files_to_path,
 };
@@ -33,8 +37,8 @@ use crate::controllers::{
 use crate::selection::SelectionModel;
 use crate::theme::Theme;
 use crate::types::{
-    AdbStreamState, BookmarkDrawerState, FilterEditState, FilterPanelPosition, InputFocusTarget,
-    SearchState, SplitViewState,
+    AdbStreamState, BookmarkDrawerState, FilterDropTarget, FilterEditState, FilterPanelPosition,
+    InputFocusTarget, SearchState, SplitViewState,
 };
 
 /// Default workspace visibility/mode flags applied on workspace initialization.
@@ -75,6 +79,9 @@ pub struct LogAnalysisWorkspace {
     pub(crate) modal_pattern_input: Entity<TextInput>,
     pub(crate) filter_search_query: String,
     pub(crate) filter_rule_input: Entity<TextInput>,
+    pub(crate) filter_rules_scroll_handle: ScrollHandle,
+    pub(crate) filter_drag_drop_target: Option<FilterDropTarget>,
+    pub(crate) dragging_filter_rule_index: Option<usize>,
 
     // Search state
     pub(crate) search_ctrl: SearchController,
@@ -252,11 +259,13 @@ impl LogAnalysisWorkspace {
                 TextInputEvent::Cancel => {
                     input.update(cx, |inp, cx| inp.set_text("", cx));
                     this.filter_search_query.clear();
+                    this.clear_filter_drag_state_fields();
                     this.input_focus = InputFocusTarget::None;
                     cx.notify();
                 }
                 TextInputEvent::Change => {
                     this.filter_search_query = input.read(cx).text().to_string();
+                    this.clear_filter_drag_state_fields();
                     cx.notify();
                 }
             },
@@ -326,6 +335,9 @@ impl LogAnalysisWorkspace {
             modal_pattern_input,
             filter_search_query: String::new(),
             filter_rule_input,
+            filter_rules_scroll_handle: ScrollHandle::new(),
+            filter_drag_drop_target: None,
+            dragging_filter_rule_index: None,
 
             search_ctrl: SearchController::new(),
             find_input,
@@ -946,6 +958,7 @@ impl LogAnalysisWorkspace {
 
     /// Toggles filter panel dock position between Left and Bottom
     pub fn toggle_filter_panel_position(&mut self, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state_fields();
         self.filter_panel_position = match self.filter_panel_position {
             FilterPanelPosition::Left => FilterPanelPosition::Bottom,
             FilterPanelPosition::Bottom => FilterPanelPosition::Left,
@@ -1063,6 +1076,7 @@ impl LogAnalysisWorkspace {
 
     /// Toggles Zen Focus Mode (F11 / Ctrl+Shift+Z / Cmd+Shift+Z)
     pub fn toggle_zen_mode(&mut self, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state_fields();
         self.is_zen_mode = !self.is_zen_mode;
         self.status_text = if self.is_zen_mode {
             "Zen Focus Mode: ON (F11 to exit)".into()

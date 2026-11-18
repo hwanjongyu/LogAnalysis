@@ -79,8 +79,8 @@ pub fn render_filter_edit_modal(
     let is_modal_focused = workspace.input_focus == InputFocusTarget::ModalPattern;
 
     // WCAG 2.1 Contrast Calculation with Theme Fallbacks for None / Default
-    let effective_bg = if workspace.is_dark_theme { 0x1E1E1E } else { 0xFFFFFF };
-    let effective_fg = if workspace.is_dark_theme { 0xD4D4D4 } else { 0x1E1E1E };
+    let effective_bg = crate::theme::rgba_to_rgb24(theme.bg_dark);
+    let effective_fg = crate::theme::rgba_to_rgb24(theme.text_primary);
 
     let bg_hex = parse_color_spec(&bg_name, true).unwrap_or(effective_bg);
     let fg_hex = parse_color_spec(&fg_name, false).unwrap_or(effective_fg);

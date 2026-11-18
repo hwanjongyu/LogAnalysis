@@ -68,3 +68,29 @@ pub struct BookmarkDrawerState {
     pub is_note_modal_open: bool,
     pub note_editing_source_idx: Option<usize>,
 }
+
+/// Drag payload transferred while reordering filter rules inside the Filter Dock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DraggedFilterRule {
+    pub tab_index: usize,
+    pub source_index: usize,
+    pub rule_id: loganalysis_core::uuid::Uuid,
+    pub pattern: gpui::SharedString,
+    pub is_exclude: bool,
+    pub bg_color: String,
+    pub text_color: String,
+}
+
+/// Insertion side relative to a hovered filter row during drag-and-drop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropPosition {
+    Before,
+    After,
+}
+
+/// Active drop indicator target during filter rule drag-and-drop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FilterDropTarget {
+    pub target_row_index: usize,
+    pub position: DropPosition,
+}

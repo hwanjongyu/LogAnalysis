@@ -70,6 +70,7 @@ impl LogAnalysisWorkspace {
 
     /// Adds current selected line as an Include or Exclude filter
     pub fn add_quick_filter_from_selection(&mut self, exclude: bool, cx: &mut Context<Self>) {
+        self.clear_filter_drag_state_fields();
         let Some(sel_row) = self.selection.selected_row else {
             self.status_text = "Select a log line first".into();
             cx.notify();
