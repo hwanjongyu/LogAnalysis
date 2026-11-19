@@ -34,6 +34,7 @@ pub enum PaletteCommandId {
     NextBookmark,
     PrevBookmark,
     ClearBookmarks,
+    ClearPatternHistory,
     ExportHtmlReport,
     ToggleBookmarkDrawer,
     EditBookmarkNote,
@@ -82,6 +83,7 @@ pub fn palette_command_action_name(id: PaletteCommandId) -> &'static str {
         PaletteCommandId::NextBookmark => gpui::Action::name(&NextBookmark),
         PaletteCommandId::PrevBookmark => gpui::Action::name(&PrevBookmark),
         PaletteCommandId::ClearBookmarks => gpui::Action::name(&ClearBookmarks),
+        PaletteCommandId::ClearPatternHistory => gpui::Action::name(&ClearPatternHistory),
         PaletteCommandId::ExportHtmlReport => gpui::Action::name(&ExportHtmlReport),
         PaletteCommandId::ToggleBookmarkDrawer => gpui::Action::name(&ToggleBookmarkDrawer),
         PaletteCommandId::EditBookmarkNote => gpui::Action::name(&EditBookmarkNote),
@@ -153,6 +155,12 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             title: "Filter: Add New Filter Rule...",
             category: "FILTER",
             shortcut: Some("Ctrl+Shift+F"),
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ClearPatternHistory,
+            title: "Filter: Clear Pattern History",
+            category: "FILTER",
+            shortcut: None,
         },
         PaletteCommand {
             id: PaletteCommandId::AddFilterTab,
@@ -361,7 +369,9 @@ pub fn render_command_palette(
     let theme = workspace.theme;
     let query = workspace.palette_input.read(cx).text().to_string();
     let commands = workspace.get_filtered_palette_commands(&query);
-    let selected_idx = workspace.palette_selected_index.min(commands.len().saturating_sub(1));
+    let selected_idx = workspace
+        .palette_selected_index
+        .min(commands.len().saturating_sub(1));
 
     let items_el = if commands.is_empty() {
         div()
@@ -415,9 +425,7 @@ pub fn render_command_palette(
                             .border_l_2()
                             .border_color(theme.accent)
                     })
-                    .when(!is_selected, |s| {
-                        s.hover(|h| h.bg(rgba(0xffffff08)))
-                    })
+                    .when(!is_selected, |s| s.hover(|h| h.bg(rgba(0xffffff08))))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.execute_palette_command(cmd_id, Some(window), cx);
                     }))
@@ -501,12 +509,7 @@ pub fn render_command_palette(
                     .overflow_hidden()
                     .flex()
                     .flex_col()
-                    .child(
-                        div()
-                            .h(px(1.0))
-                            .w_full()
-                            .bg(theme.border_highlight),
-                    )
+                    .child(div().h(px(1.0)).w_full().bg(theme.border_highlight))
                     .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                         if event.keystroke.key == "escape" {
                             this.close_command_palette(cx);
@@ -550,11 +553,7 @@ pub fn render_command_palette(
                                     .text_color(theme.accent)
                                     .child(">"),
                             )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .child(workspace.palette_input.clone()),
-                            ),
+                            .child(div().flex_1().child(workspace.palette_input.clone())),
                     )
                     // Commands List
                     .child(items_el)

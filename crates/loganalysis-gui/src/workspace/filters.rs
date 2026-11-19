@@ -1,8 +1,8 @@
 use gpui::*;
 use loganalysis_core::*;
 
-use crate::types::{DropPosition, FilterEditState, InputFocusTarget};
 use super::LogAnalysisWorkspace;
+use crate::types::{DropPosition, FilterEditState, InputFocusTarget};
 
 pub const MAX_FILTER_PROFILE_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -450,6 +450,8 @@ impl LogAnalysisWorkspace {
             is_exclude: false,
             bg_color_name: "Yellow".to_string(),
             fg_color_name: "Black".to_string(),
+            programmatic_text: Some(String::new()),
+            ..Default::default()
         };
         self.input_focus = InputFocusTarget::ModalPattern;
         cx.notify();
@@ -472,6 +474,8 @@ impl LogAnalysisWorkspace {
                     is_exclude: rule.exclude,
                     bg_color_name: rule.bg_color.clone(),
                     fg_color_name: rule.text_color.clone(),
+                    programmatic_text: Some(pattern.clone()),
+                    ..Default::default()
                 };
                 self.input_focus = InputFocusTarget::ModalPattern;
                 cx.notify();
@@ -482,6 +486,8 @@ impl LogAnalysisWorkspace {
     /// Closes filter edit modal
     pub fn close_filter_modal(&mut self, cx: &mut Context<Self>) {
         self.filter_edit_modal.is_open = false;
+        self.filter_edit_modal.suggestions_open = false;
+        self.filter_edit_modal.suggestion_index = None;
         self.input_focus = InputFocusTarget::None;
         cx.notify();
     }
@@ -500,6 +506,11 @@ impl LogAnalysisWorkspace {
             return;
         }
 
+        let (hist_regex, hist_case) = (
+            self.filter_edit_modal.is_regex,
+            self.filter_edit_modal.is_case_sensitive,
+        );
+        let hist_pattern = pattern.clone();
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
             if let Some(idx) = self.filter_edit_modal.editing_index {
                 if let Some(existing) = tab.filters.get_mut(idx) {
@@ -524,7 +535,10 @@ impl LogAnalysisWorkspace {
                 tab.filters.push(new_rule);
             }
             self.filter_edit_modal.is_open = false;
+            self.filter_edit_modal.suggestions_open = false;
+            self.filter_edit_modal.suggestion_index = None;
             self.input_focus = InputFocusTarget::None;
+            self.record_pattern_history(&hist_pattern, hist_regex, hist_case, cx);
             self.mark_filter_tabs_modified();
             cx.notify();
             self.reapply_filters(cx);
@@ -602,8 +616,7 @@ impl LogAnalysisWorkspace {
             let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
             async move {
-                let dialog =
-                    crate::dialogs::resolve_dialog_for_display(dialog, &bg_executor).await;
+                let dialog = crate::dialogs::resolve_dialog_for_display(dialog, &bg_executor).await;
                 let file = dialog.save_file().await;
 
                 if let Some(handle) = file {
@@ -678,7 +691,10 @@ impl LogAnalysisWorkspace {
                             workspace.status_text = format!("Failed to read file: {}", e).into();
                             crate::logging::log_event(
                                 "WARN",
-                                &format!("Failed to read filter profile file {:?}: {}", path_buf, e),
+                                &format!(
+                                    "Failed to read filter profile file {:?}: {}",
+                                    path_buf, e
+                                ),
                             );
                         }
                     }
@@ -700,8 +716,7 @@ impl LogAnalysisWorkspace {
             let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
             async move {
-                let dialog =
-                    crate::dialogs::resolve_dialog_for_display(dialog, &bg_executor).await;
+                let dialog = crate::dialogs::resolve_dialog_for_display(dialog, &bg_executor).await;
                 let file = dialog.pick_file().await;
 
                 if let Some(handle) = file {
@@ -786,8 +801,8 @@ impl LogAnalysisWorkspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_FILTER_PROFILE_BYTES, atomic_replace_file, build_unique_temp_path,
-        read_filter_profile_bounded, validate_filter_pattern,
+        atomic_replace_file, build_unique_temp_path, read_filter_profile_bounded,
+        validate_filter_pattern, MAX_FILTER_PROFILE_BYTES,
     };
 
     #[test]
@@ -894,9 +909,7 @@ mod tests {
         assert!(super::apply_imported_filter_tabs(Vec::new()).is_err());
         let non_empty = vec![loganalysis_core::FilterTabData::default()];
         assert_eq!(
-            super::apply_imported_filter_tabs(non_empty)
-                .unwrap()
-                .len(),
+            super::apply_imported_filter_tabs(non_empty).unwrap().len(),
             1
         );
     }
@@ -938,9 +951,11 @@ mod tests {
         let path1 = Path::new("/tmp/automotive_profile.json");
         mark_tabs_saved(&mut tabs, &mut active_path, path1);
         assert_eq!(active_path.as_deref(), Some(path1));
-        assert!(tabs
-            .iter()
-            .all(|t| !t.modified && t.file_path.as_deref() == Some("/tmp/automotive_profile.json")));
+        assert!(
+            tabs.iter()
+                .all(|t| !t.modified
+                    && t.file_path.as_deref() == Some("/tmp/automotive_profile.json"))
+        );
         assert_eq!(
             resolve_save_target_path(active_path.as_deref(), &tabs, 0),
             Some(path1.to_path_buf())
@@ -965,7 +980,8 @@ mod tests {
         assert_eq!(active_path.as_deref(), Some(path2));
         assert!(tabs
             .iter()
-            .all(|t| !t.modified && t.file_path.as_deref() == Some("/tmp/automotive_profile_v2.json")));
+            .all(|t| !t.modified
+                && t.file_path.as_deref() == Some("/tmp/automotive_profile_v2.json")));
     }
 
     #[test]
@@ -974,37 +990,106 @@ mod tests {
         use crate::types::DropPosition;
 
         // Forward moves (earlier -> later)
-        assert_eq!(compute_drop_target_index(0, 1, DropPosition::After, 4), Some(1));
-        assert_eq!(compute_drop_target_index(0, 2, DropPosition::Before, 4), Some(1));
-        assert_eq!(compute_drop_target_index(0, 3, DropPosition::After, 4), Some(3));
-        assert_eq!(compute_drop_target_index(1, 3, DropPosition::Before, 4), Some(2));
+        assert_eq!(
+            compute_drop_target_index(0, 1, DropPosition::After, 4),
+            Some(1)
+        );
+        assert_eq!(
+            compute_drop_target_index(0, 2, DropPosition::Before, 4),
+            Some(1)
+        );
+        assert_eq!(
+            compute_drop_target_index(0, 3, DropPosition::After, 4),
+            Some(3)
+        );
+        assert_eq!(
+            compute_drop_target_index(1, 3, DropPosition::Before, 4),
+            Some(2)
+        );
 
         // Backward moves (later -> earlier)
-        assert_eq!(compute_drop_target_index(3, 0, DropPosition::Before, 4), Some(0));
-        assert_eq!(compute_drop_target_index(3, 1, DropPosition::Before, 4), Some(1));
-        assert_eq!(compute_drop_target_index(2, 0, DropPosition::After, 4), Some(1));
+        assert_eq!(
+            compute_drop_target_index(3, 0, DropPosition::Before, 4),
+            Some(0)
+        );
+        assert_eq!(
+            compute_drop_target_index(3, 1, DropPosition::Before, 4),
+            Some(1)
+        );
+        assert_eq!(
+            compute_drop_target_index(2, 0, DropPosition::After, 4),
+            Some(1)
+        );
 
         // 2-element swaps and boundary no-ops
-        assert_eq!(compute_drop_target_index(0, 1, DropPosition::After, 2), Some(1));
-        assert_eq!(compute_drop_target_index(1, 0, DropPosition::Before, 2), Some(0));
-        assert_eq!(compute_drop_target_index(0, 1, DropPosition::Before, 2), None);
-        assert_eq!(compute_drop_target_index(1, 0, DropPosition::After, 2), None);
+        assert_eq!(
+            compute_drop_target_index(0, 1, DropPosition::After, 2),
+            Some(1)
+        );
+        assert_eq!(
+            compute_drop_target_index(1, 0, DropPosition::Before, 2),
+            Some(0)
+        );
+        assert_eq!(
+            compute_drop_target_index(0, 1, DropPosition::Before, 2),
+            None
+        );
+        assert_eq!(
+            compute_drop_target_index(1, 0, DropPosition::After, 2),
+            None
+        );
 
         // Self and adjacent no-ops (including list endpoints)
-        assert_eq!(compute_drop_target_index(0, 0, DropPosition::Before, 4), None);
-        assert_eq!(compute_drop_target_index(3, 3, DropPosition::After, 4), None);
-        assert_eq!(compute_drop_target_index(0, 1, DropPosition::Before, 4), None);
-        assert_eq!(compute_drop_target_index(3, 2, DropPosition::After, 4), None);
-        assert_eq!(compute_drop_target_index(1, 1, DropPosition::Before, 4), None);
-        assert_eq!(compute_drop_target_index(1, 1, DropPosition::After, 4), None);
-        assert_eq!(compute_drop_target_index(1, 0, DropPosition::After, 4), None);
-        assert_eq!(compute_drop_target_index(1, 2, DropPosition::Before, 4), None);
+        assert_eq!(
+            compute_drop_target_index(0, 0, DropPosition::Before, 4),
+            None
+        );
+        assert_eq!(
+            compute_drop_target_index(3, 3, DropPosition::After, 4),
+            None
+        );
+        assert_eq!(
+            compute_drop_target_index(0, 1, DropPosition::Before, 4),
+            None
+        );
+        assert_eq!(
+            compute_drop_target_index(3, 2, DropPosition::After, 4),
+            None
+        );
+        assert_eq!(
+            compute_drop_target_index(1, 1, DropPosition::Before, 4),
+            None
+        );
+        assert_eq!(
+            compute_drop_target_index(1, 1, DropPosition::After, 4),
+            None
+        );
+        assert_eq!(
+            compute_drop_target_index(1, 0, DropPosition::After, 4),
+            None
+        );
+        assert_eq!(
+            compute_drop_target_index(1, 2, DropPosition::Before, 4),
+            None
+        );
 
         // Empty, single-item, and out-of-bounds
-        assert_eq!(compute_drop_target_index(0, 0, DropPosition::Before, 0), None);
-        assert_eq!(compute_drop_target_index(0, 0, DropPosition::After, 1), None);
-        assert_eq!(compute_drop_target_index(4, 1, DropPosition::Before, 4), None);
-        assert_eq!(compute_drop_target_index(1, 4, DropPosition::Before, 4), None);
+        assert_eq!(
+            compute_drop_target_index(0, 0, DropPosition::Before, 0),
+            None
+        );
+        assert_eq!(
+            compute_drop_target_index(0, 0, DropPosition::After, 1),
+            None
+        );
+        assert_eq!(
+            compute_drop_target_index(4, 1, DropPosition::Before, 4),
+            None
+        );
+        assert_eq!(
+            compute_drop_target_index(1, 4, DropPosition::Before, 4),
+            None
+        );
     }
 
     #[test]
@@ -1150,7 +1235,10 @@ mod tests {
         assert!(!reorder_filter_rule_in_tab(&mut tab, 3, 5));
         assert!(!tab.modified);
         assert_eq!(
-            tab.filters.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            tab.filters
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>(),
             vec!["A", "B", "C"]
         );
 
@@ -1158,7 +1246,10 @@ mod tests {
         assert!(reorder_filter_rule_in_tab(&mut tab, 0, 2));
         assert!(tab.modified);
         assert_eq!(
-            tab.filters.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            tab.filters
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>(),
             vec!["B", "C", "A"]
         );
         assert_eq!(
@@ -1171,7 +1262,10 @@ mod tests {
         assert!(reorder_filter_rule_in_tab(&mut tab, 2, 0));
         assert!(tab.modified);
         assert_eq!(
-            tab.filters.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            tab.filters
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>(),
             vec!["A", "B", "C"]
         );
         assert_eq!(

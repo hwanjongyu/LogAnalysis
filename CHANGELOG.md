@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Filter Pattern History & Suggestions**: The New/Edit Filter Rule modal now remembers saved patterns (MRU, deduplicated by pattern+Regex+Case, capped at 200, persisted atomically to `~/.config/loganalysis/pattern_history.json`) and shows a dropdown of up to 8 matches (prefix before substring) while typing. Selecting restores the Regex/Case toggles (colors are not stored). Keyboard: Up/Down, Enter/Tab select, Esc closes only the dropdown, Shift+Delete or the row ✕ removes an entry. New Command Palette command `filter:clear_pattern_history`.
 - **Root `LICENSE`**: Added standard MIT License file (`Copyright (c) 2026 Drew Yu`).
 - **Extracted Production Helpers & Coverage**: Extracted reusable workspace and GUI helpers (`apply_facet_filter_to_tab`, `clamp_filter_dock_width`, `clamp_filter_dock_height`, `default_filter_dock_size`, `compute_highlight_ranges`, `LOG_ROW_HEIGHT_MULTIPLIER`, `log_row_height_px`, `format_byte_size`, `format_source_memory_display`, `QUICK_FILTER_PRESETS`, `push_recent_path`, `load_recent_files_from_path`, `save_recent_files_to_path`, `build_desktop_entry_content`, `write_if_changed`) along with comprehensive `contrast.rs` and `searcher.rs` unit test suites.
 

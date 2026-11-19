@@ -93,19 +93,36 @@ impl LogAnalysisWorkspace {
 }
 
 pub(crate) fn get_recent_files_path() -> Option<std::path::PathBuf> {
+    config_file_path("recent_files.json")
+}
+
+/// Resolves `<config dir>/loganalysis/<name>` using XDG_CONFIG_HOME, HOME, then APPDATA.
+pub(crate) fn config_file_path(name: &str) -> Option<std::path::PathBuf> {
     if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
         if !config_home.is_empty() {
-            return Some(std::path::PathBuf::from(config_home).join("loganalysis/recent_files.json"));
+            return Some(
+                std::path::PathBuf::from(config_home)
+                    .join("loganalysis")
+                    .join(name),
+            );
         }
     }
     if let Ok(home) = std::env::var("HOME") {
         if !home.is_empty() {
-            return Some(std::path::PathBuf::from(home).join(".config/loganalysis/recent_files.json"));
+            return Some(
+                std::path::PathBuf::from(home)
+                    .join(".config/loganalysis")
+                    .join(name),
+            );
         }
     }
     if let Ok(appdata) = std::env::var("APPDATA") {
         if !appdata.is_empty() {
-            return Some(std::path::PathBuf::from(appdata).join("loganalysis/recent_files.json"));
+            return Some(
+                std::path::PathBuf::from(appdata)
+                    .join("loganalysis")
+                    .join(name),
+            );
         }
     }
     None

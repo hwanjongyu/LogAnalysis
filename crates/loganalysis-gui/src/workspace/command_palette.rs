@@ -1,7 +1,7 @@
 use gpui::*;
 
-use crate::types::InputFocusTarget;
 use super::LogAnalysisWorkspace;
+use crate::types::InputFocusTarget;
 
 impl LogAnalysisWorkspace {
     pub fn toggle_command_palette(&mut self, cx: &mut Context<Self>) {
@@ -48,9 +48,7 @@ impl LogAnalysisWorkspace {
 
         let mut scored: Vec<(crate::modals::command_palette::PaletteCommand, i32)> = commands
             .into_iter()
-            .filter_map(|cmd| {
-                fuzzy_match(trimmed, cmd.title).map(|score| (cmd, score))
-            })
+            .filter_map(|cmd| fuzzy_match(trimmed, cmd.title).map(|score| (cmd, score)))
             .collect();
 
         scored.sort_by_key(|a| std::cmp::Reverse(a.1));
@@ -119,6 +117,7 @@ impl LogAnalysisWorkspace {
             PaletteCommandId::ToggleBookmark => self.toggle_bookmark_on_selected(cx),
             PaletteCommandId::NextBookmark => self.jump_next_bookmark(cx),
             PaletteCommandId::PrevBookmark => self.jump_prev_bookmark(cx),
+            PaletteCommandId::ClearPatternHistory => self.clear_pattern_history(cx),
             PaletteCommandId::ClearBookmarks => self.clear_all_bookmarks(cx),
             PaletteCommandId::ExportHtmlReport => {
                 self.prompt_export_html_report(window.as_deref(), cx)

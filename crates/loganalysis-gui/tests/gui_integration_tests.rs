@@ -1063,9 +1063,9 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
         workspace_shows_status_bar, LogAnalysisWorkspace,
     };
 
-    // 1. Verification of compiled registered action contracts (47 actions including ToggleLineDetail)
+    // 1. Verification of compiled registered action contracts (48 actions including ToggleLineDetail, ClearPatternHistory)
     let action_names = all_action_names();
-    assert_eq!(REGISTERED_ACTION_COUNT, 47);
+    assert_eq!(REGISTERED_ACTION_COUNT, 48);
     assert_eq!(action_names.len(), REGISTERED_ACTION_COUNT);
     let unique_actions: HashSet<&str> = action_names.iter().copied().collect();
     assert_eq!(unique_actions.len(), REGISTERED_ACTION_COUNT);

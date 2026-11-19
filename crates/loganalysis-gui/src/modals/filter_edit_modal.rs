@@ -1,3 +1,4 @@
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use loganalysis_core::{evaluate_contrast, parse_color_spec, ContrastLevel};
 
@@ -41,7 +42,12 @@ pub const QUICK_FILTER_PRESETS: &[(&str, &str, &str, &str)] = &[
     ("⚪ TRACE", "trace", "Gray", "Black"),
     ("⚡ FATAL", "fatal", "Salmon", "DarkRed"),
     ("✓ SUCCESS", "success", "Green", "DarkGreen"),
-    ("⚙ ActivityTaskManager", "ActivityTaskManager", "Cyan", "Black"),
+    (
+        "⚙ ActivityTaskManager",
+        "ActivityTaskManager",
+        "Cyan",
+        "Black",
+    ),
     ("⚙ System", "System", "Blue", "DarkBlue"),
 ];
 
@@ -58,6 +64,198 @@ pub fn bg_color_section_label(bg_name: &str) -> String {
 /// Formats the foreground text color section heading for the Filter Rule Editor modal.
 pub fn fg_color_section_label(fg_name: &str) -> String {
     format!("Text Color: {fg_name}")
+}
+
+/// Formats a history pattern for dropdown display, truncating very long patterns with an ellipsis.
+pub fn truncate_suggestion_label(pattern: &str, max_chars: usize) -> String {
+    if pattern.chars().count() <= max_chars {
+        pattern.to_string()
+    } else {
+        let head: String = pattern.chars().take(max_chars).collect();
+        format!("{head}…")
+    }
+}
+
+/// Renders the pattern history suggestion dropdown anchored below the pattern input.
+fn render_pattern_suggestions(
+    workspace: &LogAnalysisWorkspace,
+    selected: Option<usize>,
+    cx: &mut Context<LogAnalysisWorkspace>,
+) -> Option<AnyElement> {
+    if !workspace.filter_edit_modal.suggestions_open {
+        return None;
+    }
+    let suggestions = workspace.current_pattern_suggestions(cx);
+    if suggestions.is_empty() {
+        return None;
+    }
+    let theme = workspace.theme;
+    let rows: Vec<AnyElement> = suggestions
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| {
+            let is_sel = selected == Some(idx);
+            div()
+                .id(("pattern-suggestion", idx))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .px(px(10.0))
+                .py(px(5.0))
+                .cursor_pointer()
+                .font_family("monospace")
+                .text_size(px(12.0))
+                .text_color(theme.text_primary)
+                .when(is_sel, |d| d.bg(theme.btn_hover))
+                .hover(move |s| s.bg(theme.btn_hover))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.apply_pattern_suggestion(idx, cx);
+                    this.input_focus = InputFocusTarget::ModalPattern;
+                    window.focus(&this.modal_pattern_input.read(cx).focus_handle);
+                    cx.stop_propagation();
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(truncate_suggestion_label(&entry.pattern, 80)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .flex_shrink_0()
+                        .text_size(px(10.0))
+                        .text_color(theme.text_muted)
+                        .when(entry.regex, |d| d.child(".*"))
+                        .when(entry.case_sensitive, |d| d.child("Aa"))
+                        .child(
+                            div()
+                                .id(("pattern-suggestion-delete", idx))
+                                .px(px(4.0))
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .hover(move |s| s.text_color(theme.text_primary))
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    this.delete_pattern_suggestion(idx, cx);
+                                    cx.stop_propagation();
+                                }))
+                                .child("✕"),
+                        ),
+                )
+                .into_any_element()
+        })
+        .collect();
+
+    Some(
+        deferred(
+            div()
+                .id("pattern-suggestions-dropdown")
+                .occlude()
+                .absolute()
+                .top(px(56.0))
+                .left_0()
+                .right_0()
+                .bg(theme.bg_panel)
+                .border_1()
+                .border_color(theme.border)
+                .rounded_md()
+                .shadow_lg()
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .children(rows),
+        )
+        .with_priority(10)
+        .into_any_element(),
+    )
+}
+
+/// Renders the Pattern label, input field and suggestion dropdown (boxed to bound element type depth).
+fn render_pattern_field(
+    workspace: &LogAnalysisWorkspace,
+    is_modal_focused: bool,
+    modal_pattern: &str,
+    suggestion_dropdown: Option<AnyElement>,
+    cx: &mut Context<LogAnalysisWorkspace>,
+) -> AnyElement {
+    let theme = workspace.theme;
+    div()
+        .relative()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_size(px(11.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_muted)
+                .child("Pattern (type directly or pick a preset below):"),
+        )
+        .child(
+            div()
+                .id("input-modal-pattern")
+                .w_full()
+                .px(px(10.0))
+                .py(px(8.0))
+                .bg(theme.bg_dark)
+                .border_1()
+                .border_color(if is_modal_focused {
+                    theme.accent
+                } else {
+                    theme.border
+                })
+                .rounded_md()
+                .font_family("monospace")
+                .text_size(px(12.5))
+                .flex()
+                .items_center()
+                .justify_between()
+                .cursor_text()
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.input_focus = InputFocusTarget::ModalPattern;
+                    window.focus(&this.modal_pattern_input.read(cx).focus_handle);
+                    cx.stop_propagation();
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .child(workspace.modal_pattern_input.clone()),
+                )
+                .children(if !modal_pattern.is_empty() {
+                    Some(
+                        div()
+                            .id("btn-clear-modal-pattern")
+                            .flex_shrink_0()
+                            .ml(px(8.0))
+                            .px(px(6.0))
+                            .py(px(2.0))
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .text_size(px(11.0))
+                            .text_color(theme.text_muted)
+                            .hover(move |s| s.text_color(theme.text_primary).bg(theme.btn_hover))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.modal_pattern_input.update(cx, |input, cx| {
+                                    input.clear(cx);
+                                });
+                                window.focus(&this.modal_pattern_input.read(cx).focus_handle);
+                                cx.stop_propagation();
+                                cx.notify();
+                            }))
+                            .child("✕"),
+                    )
+                } else {
+                    None
+                }),
+        )
+        .children(suggestion_dropdown)
+        .into_any_element()
 }
 
 pub fn render_filter_edit_modal(
@@ -77,6 +275,8 @@ pub fn render_filter_edit_modal(
     let bg_name = workspace.filter_edit_modal.bg_color_name.clone();
     let fg_name = workspace.filter_edit_modal.fg_color_name.clone();
     let is_modal_focused = workspace.input_focus == InputFocusTarget::ModalPattern;
+    let suggestion_index = workspace.filter_edit_modal.suggestion_index;
+    let suggestion_dropdown = render_pattern_suggestions(workspace, suggestion_index, cx);
 
     // WCAG 2.1 Contrast Calculation with Theme Fallbacks for None / Default
     let effective_bg = crate::theme::rgba_to_rgb24(theme.bg_dark);
@@ -155,79 +355,7 @@ pub fn render_filter_edit_modal(
                     )
                     // Interactive Pattern Input Field
                     .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme.text_muted)
-                                    .child("Pattern (type directly or pick a preset below):"),
-                            )
-                            .child(
-                                div()
-                                    .id("input-modal-pattern")
-                                    .w_full()
-                                    .px(px(10.0))
-                                    .py(px(8.0))
-                                    .bg(theme.bg_dark)
-                                    .border_1()
-                                    .border_color(if is_modal_focused {
-                                        theme.accent
-                                    } else {
-                                        theme.border
-                                    })
-                                    .rounded_md()
-                                    .font_family("monospace")
-                                    .text_size(px(12.5))
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .cursor_text()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.input_focus = InputFocusTarget::ModalPattern;
-                                        window.focus(&this.modal_pattern_input.read(cx).focus_handle);
-                                        cx.stop_propagation();
-                                    }))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .overflow_hidden()
-                                            .child(workspace.modal_pattern_input.clone()),
-                                    )
-                                    .children(if !modal_pattern.is_empty() {
-                                        Some(
-                                            div()
-                                                .id("btn-clear-modal-pattern")
-                                                .flex_shrink_0()
-                                                .ml(px(8.0))
-                                                .px(px(6.0))
-                                                .py(px(2.0))
-                                                .rounded_sm()
-                                                .cursor_pointer()
-                                                .text_size(px(11.0))
-                                                .text_color(theme.text_muted)
-                                                .hover(move |s| {
-                                                    s.text_color(theme.text_primary)
-                                                        .bg(theme.btn_hover)
-                                                })
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.modal_pattern_input.update(cx, |input, cx| {
-                                                        input.clear(cx);
-                                                    });
-                                                    window.focus(&this.modal_pattern_input.read(cx).focus_handle);
-                                                    cx.stop_propagation();
-                                                    cx.notify();
-                                                }))
-                                                .child("✕"),
-                                        )
-                                    } else {
-                                        None
-                                    }),
-                            ),
+                        render_pattern_field(workspace, is_modal_focused, &modal_pattern, suggestion_dropdown, cx)
                     )
                     // Rule Flags: Exclude, Regex, Case Sensitive
                     .child(

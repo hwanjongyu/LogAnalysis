@@ -127,8 +127,7 @@ define_default_keybindings!(
 impl Render for LogAnalysisWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !cx.has_active_drag()
-            && (self.dragging_filter_rule_index.is_some()
-                || self.filter_drag_drop_target.is_some())
+            && (self.dragging_filter_rule_index.is_some() || self.filter_drag_drop_target.is_some())
         {
             self.clear_filter_drag_state_fields();
         }
@@ -136,11 +135,19 @@ impl Render for LogAnalysisWorkspace {
             self.ensure_line_detail_cache();
         }
 
-        let modal_pattern_focused = self.modal_pattern_input.read(cx).focus_handle.is_focused(window);
+        let modal_pattern_focused = self
+            .modal_pattern_input
+            .read(cx)
+            .focus_handle
+            .is_focused(window);
         let note_input_focused = self.note_input.read(cx).focus_handle.is_focused(window);
         let find_input_focused = self.find_input.read(cx).focus_handle.is_focused(window);
         let palette_input_focused = self.palette_input.read(cx).focus_handle.is_focused(window);
-        let filter_rule_focused = self.filter_rule_input.read(cx).focus_handle.is_focused(window);
+        let filter_rule_focused = self
+            .filter_rule_input
+            .read(cx)
+            .focus_handle
+            .is_focused(window);
 
         if self.filter_edit_modal.is_open {
             if self.input_focus == InputFocusTarget::ModalPattern && !modal_pattern_focused {
@@ -424,15 +431,21 @@ impl Render for LogAnalysisWorkspace {
                 }
                 this.toggle_pause_stream(cx);
             }))
-            .on_action(cx.listener(|this, _: &AddIncludeFromSelection, _window, cx| {
-                this.add_quick_filter_from_selection(false, cx);
-            }))
-            .on_action(cx.listener(|this, _: &AddExcludeFromSelection, _window, cx| {
-                this.add_quick_filter_from_selection(true, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ToggleFilterPanelPosition, _window, cx| {
-                this.toggle_filter_panel_position(cx);
-            }))
+            .on_action(
+                cx.listener(|this, _: &AddIncludeFromSelection, _window, cx| {
+                    this.add_quick_filter_from_selection(false, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &AddExcludeFromSelection, _window, cx| {
+                    this.add_quick_filter_from_selection(true, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &ToggleFilterPanelPosition, _window, cx| {
+                    this.toggle_filter_panel_position(cx);
+                }),
+            )
             .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
                 this.toggle_command_palette(cx);
                 if this.is_command_palette_open {
@@ -447,6 +460,9 @@ impl Render for LogAnalysisWorkspace {
             }))
             .on_action(cx.listener(|this, _: &PrevBookmark, _window, cx| {
                 this.jump_prev_bookmark(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ClearPatternHistory, _window, cx| {
+                this.clear_pattern_history(cx);
             }))
             .on_action(cx.listener(|this, _: &ClearBookmarks, _window, cx| {
                 this.clear_all_bookmarks(cx);
@@ -472,9 +488,11 @@ impl Render for LogAnalysisWorkspace {
             .on_action(cx.listener(|this, _: &ToggleSplitView, _window, cx| {
                 this.toggle_split_view(cx);
             }))
-            .on_action(cx.listener(|this, _: &ToggleSplitOrientation, _window, cx| {
-                this.toggle_split_orientation(cx);
-            }))
+            .on_action(
+                cx.listener(|this, _: &ToggleSplitOrientation, _window, cx| {
+                    this.toggle_split_orientation(cx);
+                }),
+            )
             .on_action(cx.listener(|this, _: &ToggleSyncedScroll, _window, cx| {
                 this.toggle_synced_scroll(cx);
             }))
@@ -521,7 +539,9 @@ impl Render for LogAnalysisWorkspace {
             .size_full()
             .bg(theme.bg_dark)
             .text_color(theme.text_primary)
-            .when(is_csd && is_floating, |s| s.border_1().border_color(theme.border))
+            .when(is_csd && is_floating, |s| {
+                s.border_1().border_color(theme.border)
+            })
             .child(unified_header_el)
             .children(timeline_ribbon_el)
             .child(body)
@@ -584,7 +604,9 @@ pub fn write_if_changed(path: &std::path::Path, bytes: &[u8]) -> std::io::Result
 /// Ensures desktop entry and application icon are installed on Linux desktops.
 #[cfg(target_os = "linux")]
 pub fn ensure_desktop_integration() {
-    let Ok(home) = std::env::var("HOME") else { return; };
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
     if home.is_empty() {
         return;
     }
@@ -782,8 +804,12 @@ mod tests {
         assert!(sanitized.contains("Exec=\"/opt/evilapp\" %F\n"));
         assert!(sanitized.contains("Icon=/home/user/icon.png\n"));
 
-        assert!(build_desktop_entry_content(Path::new("\"\n\r\\"), Path::new("/icon.png")).is_none());
-        assert!(build_desktop_entry_content(Path::new("/bin/app"), Path::new("\"\n\r\\")).is_none());
+        assert!(
+            build_desktop_entry_content(Path::new("\"\n\r\\"), Path::new("/icon.png")).is_none()
+        );
+        assert!(
+            build_desktop_entry_content(Path::new("/bin/app"), Path::new("\"\n\r\\")).is_none()
+        );
     }
 
     #[test]

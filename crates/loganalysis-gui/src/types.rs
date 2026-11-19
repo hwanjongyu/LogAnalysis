@@ -27,6 +27,12 @@ pub struct FilterEditState {
     pub is_exclude: bool,
     pub bg_color_name: String,
     pub fg_color_name: String,
+    /// Whether the pattern history suggestion dropdown is visible.
+    pub suggestions_open: bool,
+    /// Highlighted dropdown row, if any.
+    pub suggestion_index: Option<usize>,
+    /// Text last set programmatically (modal open / suggestion pick); changes equal to it do not reopen the dropdown.
+    pub programmatic_text: Option<String>,
 }
 
 /// Sub-state for Dual-Pane Split View and Lockstep Correlation.

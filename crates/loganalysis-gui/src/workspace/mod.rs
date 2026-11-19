@@ -4,6 +4,7 @@ mod command_palette;
 mod dock;
 mod filters;
 mod merged;
+mod pattern_history;
 mod recent_files;
 mod search;
 mod selection;
@@ -19,9 +20,8 @@ pub use filters::{
     compute_drop_target_index, remap_editing_index_on_delete, remap_editing_index_on_duplicate,
     remap_index_after_move,
 };
-pub use recent_files::{
-    load_recent_files_from_path, push_recent_path, save_recent_files_to_path,
-};
+pub use pattern_history::{PatternHistory, PatternHistoryEntry};
+pub use recent_files::{load_recent_files_from_path, push_recent_path, save_recent_files_to_path};
 pub use selection::ActiveSelectedLine;
 pub use split_view::probe_parent_timestamp;
 
@@ -54,11 +54,10 @@ pub(crate) struct LineDetailCacheKey {
     pub line_len: usize,
 }
 
-
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use gpui::*;
 use loganalysis_core::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::components::text_input::{TextInput, TextInputEvent};
 use crate::controllers::{
@@ -128,6 +127,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) active_file_name: Option<SharedString>,
     pub(crate) recent_files: Vec<std::path::PathBuf>,
     pub(crate) recent_files_gen: u64,
+    pub(crate) pattern_history: PatternHistory,
     pub(crate) is_dark_theme: bool,
     pub(crate) full_line_display: bool,
     pub(crate) filter_panel_position: FilterPanelPosition,
@@ -150,8 +150,10 @@ pub struct LogAnalysisWorkspace {
     pub(crate) line_detail_scroll_handle: ScrollHandle,
     pub(crate) is_line_detail_json_pretty: bool,
     pub(crate) line_detail_inspected_key: Option<(bool, usize)>,
-    pub(crate) cached_line_detail:
-        Option<(LineDetailCacheKey, crate::components::log_view::LineDetailFormatted)>,
+    pub(crate) cached_line_detail: Option<(
+        LineDetailCacheKey,
+        crate::components::log_view::LineDetailFormatted,
+    )>,
 
     // Command Palette state
     pub(crate) is_command_palette_open: bool,
@@ -267,12 +269,16 @@ impl LogAnalysisWorkspace {
             &modal_pattern_input,
             |this, _input, event: &TextInputEvent, cx| match event {
                 TextInputEvent::Submit => {
-                    this.save_modal_filter(cx);
+                    if !this.handle_suggestion_key("enter", false, cx) {
+                        this.save_modal_filter(cx);
+                    }
                 }
                 TextInputEvent::Cancel => {
-                    this.close_filter_modal(cx);
+                    if !this.handle_suggestion_key("escape", false, cx) {
+                        this.close_filter_modal(cx);
+                    }
                 }
-                TextInputEvent::Change => {}
+                TextInputEvent::Change => this.on_modal_pattern_changed(cx),
             },
         )
         .detach();
@@ -327,7 +333,8 @@ impl LogAnalysisWorkspace {
         )
         .detach();
 
-        let palette_input = cx.new(|cx| TextInput::new("Type a command or search (Esc to close)...", cx));
+        let palette_input =
+            cx.new(|cx| TextInput::new("Type a command or search (Esc to close)...", cx));
 
         cx.subscribe(
             &palette_input,
@@ -404,6 +411,7 @@ impl LogAnalysisWorkspace {
             active_file_name: None,
             recent_files: Vec::new(),
             recent_files_gen: 0,
+            pattern_history: PatternHistory::default(),
             is_dark_theme: false,
             full_line_display: WORKSPACE_DEFAULTS.full_line_display,
             filter_panel_position: FilterPanelPosition::Bottom,
@@ -450,6 +458,7 @@ impl LogAnalysisWorkspace {
             filter_dock_drag_start_size: 0.0,
         };
         workspace.load_recent_files_async(cx);
+        workspace.load_pattern_history_async(cx);
         workspace
     }
 
@@ -513,8 +522,7 @@ impl LogAnalysisWorkspace {
             let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
             async move {
-                let dialog =
-                    crate::dialogs::resolve_dialog_for_display(dialog, &bg_executor).await;
+                let dialog = crate::dialogs::resolve_dialog_for_display(dialog, &bg_executor).await;
 
                 let file = dialog.pick_file().await;
                 if let Some(handle) = file {
@@ -581,9 +589,12 @@ impl LogAnalysisWorkspace {
                             workspace.active_file_name = Some(file_name);
                             workspace.add_recent_file_async(path_buf.clone(), cx);
                             workspace.refresh_facet_tags_async(cx);
-                            workspace.status_text =
-                                format!("Loaded {} lines from {:?}", arc_buf.line_count(), path_buf)
-                                    .into();
+                            workspace.status_text = format!(
+                                "Loaded {} lines from {:?}",
+                                arc_buf.line_count(),
+                                path_buf
+                            )
+                            .into();
                             workspace.reapply_filters(cx);
                         }
                         Err(e) => {
@@ -671,7 +682,9 @@ impl LogAnalysisWorkspace {
                             show_only,
                         );
 
-                        workspace.analytics_cancel_gen.fetch_add(1, Ordering::SeqCst);
+                        workspace
+                            .analytics_cancel_gen
+                            .fetch_add(1, Ordering::SeqCst);
                         workspace.filter_result = Some(Arc::new(final_res));
                         workspace.heatmap_data = Some(Arc::new(heatmap));
                         workspace.timeline_data = Some(Arc::new(timeline));
@@ -724,6 +737,10 @@ impl LogAnalysisWorkspace {
     /// Handles Escape key dismissal using reverse z-order priority.
     /// Returns `true` if the Escape key was consumed.
     pub fn handle_escape(&mut self, cx: &mut Context<Self>) -> bool {
+        // An open suggestion dropdown consumes Escape before the modal closes.
+        if self.handle_suggestion_key("escape", false, cx) {
+            return true;
+        }
         let has_selection = self.selection.selected_row.is_some()
             || (self.split_view.is_split_view && self.secondary_selection.selected_row.is_some());
         match determine_escape_action(
@@ -781,19 +798,38 @@ impl LogAnalysisWorkspace {
 
     /// Returns `true` when any workspace `TextInput` currently holds window focus.
     pub(crate) fn has_any_text_input_focus(&self, window: &Window, cx: &App) -> bool {
-        self.modal_pattern_input.read(cx).focus_handle.is_focused(window)
+        self.modal_pattern_input
+            .read(cx)
+            .focus_handle
+            .is_focused(window)
             || self.note_input.read(cx).focus_handle.is_focused(window)
             || self.find_input.read(cx).focus_handle.is_focused(window)
             || self.palette_input.read(cx).focus_handle.is_focused(window)
-            || self.filter_rule_input.read(cx).focus_handle.is_focused(window)
+            || self
+                .filter_rule_input
+                .read(cx)
+                .focus_handle
+                .is_focused(window)
     }
 
     /// Handles keyboard events across application components
-    pub fn handle_key_down(&mut self, event: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
+    pub fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let key = event.keystroke.key.as_str();
 
         // Handle Escape key dismissal using reverse z-order priority
         if key == "escape" && self.handle_escape(cx) {
+            return;
+        }
+
+        // Suggestion dropdown gets first claim on navigation/selection keys.
+        if self.filter_edit_modal.is_open
+            && self.handle_suggestion_key(key, event.keystroke.modifiers.shift, cx)
+        {
             return;
         }
 
@@ -824,14 +860,22 @@ impl LogAnalysisWorkspace {
                 }
                 return;
             } else if key == "enter" {
-                if let Some(b) = self.bookmarks.items().get(self.bookmarks.drawer_selected_index) {
+                if let Some(b) = self
+                    .bookmarks
+                    .items()
+                    .get(self.bookmarks.drawer_selected_index)
+                {
                     let src_idx = b.source_idx;
                     self.jump_to_bookmark_source_idx(src_idx, cx);
                     self.close_bookmark_drawer(cx);
                 }
                 return;
             } else if key == "delete" || key == "backspace" {
-                if let Some(b) = self.bookmarks.items().get(self.bookmarks.drawer_selected_index) {
+                if let Some(b) = self
+                    .bookmarks
+                    .items()
+                    .get(self.bookmarks.drawer_selected_index)
+                {
                     let src_idx = b.source_idx;
                     let line_num = b.line_number;
                     self.bookmarks.remove(src_idx);
@@ -865,7 +909,8 @@ impl LogAnalysisWorkspace {
                             let new_row = cur_row.saturating_sub(1);
                             if let Some(&src_idx) = res.visible_indices.get(new_row) {
                                 self.select_secondary_log_row(new_row, src_idx, cx);
-                                self.secondary_scroll_handle.scroll_to_item_strict(new_row, ScrollStrategy::Center);
+                                self.secondary_scroll_handle
+                                    .scroll_to_item_strict(new_row, ScrollStrategy::Center);
                             }
                         }
                     }
@@ -876,7 +921,8 @@ impl LogAnalysisWorkspace {
                         let new_row = cur_row.saturating_sub(1);
                         if let Some(&src_idx) = res.visible_indices.get(new_row) {
                             self.select_log_row(new_row, src_idx, cx);
-                            self.scroll_handle.scroll_to_item_strict(new_row, ScrollStrategy::Center);
+                            self.scroll_handle
+                                .scroll_to_item_strict(new_row, ScrollStrategy::Center);
                         }
                     }
                 }
@@ -885,11 +931,16 @@ impl LogAnalysisWorkspace {
                     if let Some(res) = &self.split_view.secondary_filter_result {
                         let total_rows = res.visible_indices.len();
                         if total_rows > 0 {
-                            let cur_row = self.secondary_selection.selected_row.map(|r| r + 1).unwrap_or(0);
+                            let cur_row = self
+                                .secondary_selection
+                                .selected_row
+                                .map(|r| r + 1)
+                                .unwrap_or(0);
                             let new_row = cur_row.min(total_rows.saturating_sub(1));
                             if let Some(&src_idx) = res.visible_indices.get(new_row) {
                                 self.select_secondary_log_row(new_row, src_idx, cx);
-                                self.secondary_scroll_handle.scroll_to_item_strict(new_row, ScrollStrategy::Center);
+                                self.secondary_scroll_handle
+                                    .scroll_to_item_strict(new_row, ScrollStrategy::Center);
                             }
                         }
                     }
@@ -900,7 +951,8 @@ impl LogAnalysisWorkspace {
                         let new_row = cur_row.min(total_rows.saturating_sub(1));
                         if let Some(&src_idx) = res.visible_indices.get(new_row) {
                             self.select_log_row(new_row, src_idx, cx);
-                            self.scroll_handle.scroll_to_item_strict(new_row, ScrollStrategy::Center);
+                            self.scroll_handle
+                                .scroll_to_item_strict(new_row, ScrollStrategy::Center);
                         }
                     }
                 }
@@ -932,9 +984,7 @@ impl LogAnalysisWorkspace {
                         crate::components::log_view::clamp_horizontal_scroll_x(cur_x - step, max_x)
                     }
                     "home" => 0.0,
-                    "end" => {
-                        crate::components::log_view::clamp_horizontal_scroll_x(-max_x, max_x)
-                    }
+                    "end" => crate::components::log_view::clamp_horizontal_scroll_x(-max_x, max_x),
                     _ => cur_x,
                 };
                 let changed = (next_x - cur_x).abs() > 0.01;
@@ -1022,7 +1072,11 @@ impl LogAnalysisWorkspace {
     }
 
     /// Scrolls the secondary log viewport based on mouse vertical position in the scrollbar track
-    pub fn scroll_secondary_to_ratio_from_mouse_y(&mut self, mouse_y: Pixels, cx: &mut Context<Self>) {
+    pub fn scroll_secondary_to_ratio_from_mouse_y(
+        &mut self,
+        mouse_y: Pixels,
+        cx: &mut Context<Self>,
+    ) {
         let row_count = self
             .split_view
             .secondary_filter_result
@@ -1459,7 +1513,6 @@ impl LogAnalysisWorkspace {
         self.add_filter_rule(rule, cx);
         self.status_text = format!("Added quick filter for tag: {}", trimmed).into();
     }
-
 }
 
 /// Formats a byte count uniformly into human-readable `KB`, `MB`, or `GB`.
@@ -1845,8 +1898,13 @@ mod tests {
         );
 
         // Unmatched line (never matched by empty rule)
-        let status_none =
-            resolve_status_line_for_selection(1, Some(1), &src, Some(&filter_res_tab1), &compiled_tab1);
+        let status_none = resolve_status_line_for_selection(
+            1,
+            Some(1),
+            &src,
+            Some(&filter_res_tab1),
+            &compiled_tab1,
+        );
         assert_eq!(status_none, "Line 2 | No filter rule match");
     }
 
@@ -1911,10 +1969,22 @@ mod tests {
 
         // [LOW-8f]: auto-sampled facets flag cleared on reset and gated until reset
         assert!(!has_auto_sampled_facets);
-        assert!(!should_auto_sample_facets(has_auto_sampled_facets, true, 99));
-        assert!(should_auto_sample_facets(has_auto_sampled_facets, true, 100));
+        assert!(!should_auto_sample_facets(
+            has_auto_sampled_facets,
+            true,
+            99
+        ));
+        assert!(should_auto_sample_facets(
+            has_auto_sampled_facets,
+            true,
+            100
+        ));
         has_auto_sampled_facets = true;
-        assert!(!should_auto_sample_facets(has_auto_sampled_facets, true, 25_000));
+        assert!(!should_auto_sample_facets(
+            has_auto_sampled_facets,
+            true,
+            25_000
+        ));
 
         // [HIGH-3]: monotonic source generation rejects stale completions
         let mut primary_gen = 0u64;
@@ -1959,8 +2029,7 @@ mod tests {
             (format_byte_size(2 * 128), "Heap")
         );
 
-        let merged_buf =
-            MergedLogBuffer::open_multiple(&[tmp_file.path().to_path_buf()]).unwrap();
+        let merged_buf = MergedLogBuffer::open_multiple(&[tmp_file.path().to_path_buf()]).unwrap();
         let merged_src = ActiveLogSource::Merged(merged_buf);
         assert_eq!(
             format_source_memory_display(Some(&merged_src)),
