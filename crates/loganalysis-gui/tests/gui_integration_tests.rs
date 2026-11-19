@@ -697,6 +697,7 @@ fn test_overflow_menu_state_and_escape_priority() {
     let note_modal_open = false;
     let drawer_open = false;
     let palette_open = false;
+    let mut line_detail_open = false;
     let mut selection = SelectionModel::new();
 
     // 1. Initial state: nothing open, no selection -> Escape action is None
@@ -708,6 +709,7 @@ fn test_overflow_menu_state_and_escape_priority() {
             note_modal_open,
             drawer_open,
             palette_open,
+            line_detail_open,
             selection.selected_row.is_some()
         ),
         EscapeAction::None
@@ -745,6 +747,7 @@ fn test_overflow_menu_state_and_escape_priority() {
             true,
             true,
             true,
+            true,
             selection.selected_row.is_some()
         ),
         EscapeAction::CloseOverflowMenu
@@ -759,12 +762,13 @@ fn test_overflow_menu_state_and_escape_priority() {
             true,
             true,
             true,
+            true,
             selection.selected_row.is_some()
         ),
         EscapeAction::CloseDeviceSelector
     );
 
-    // Priority 3: Modals take precedence over selection
+    // Priority 3: Modals take precedence over Line Detail and selection
     assert_eq!(
         determine_escape_action(
             false,
@@ -773,6 +777,7 @@ fn test_overflow_menu_state_and_escape_priority() {
             false,
             false,
             false,
+            true,
             selection.selected_row.is_some()
         ),
         EscapeAction::CloseFilterModal
@@ -785,6 +790,7 @@ fn test_overflow_menu_state_and_escape_priority() {
             true,
             false,
             false,
+            true,
             selection.selected_row.is_some()
         ),
         EscapeAction::CloseNoteModal
@@ -797,6 +803,7 @@ fn test_overflow_menu_state_and_escape_priority() {
             false,
             true,
             false,
+            true,
             selection.selected_row.is_some()
         ),
         EscapeAction::CloseBookmarkDrawer
@@ -809,12 +816,14 @@ fn test_overflow_menu_state_and_escape_priority() {
             false,
             false,
             true,
+            true,
             selection.selected_row.is_some()
         ),
         EscapeAction::CloseCommandPalette
     );
 
-    // Priority 4: Selection clearing when no popovers or modals open
+    // Priority 3b: Line Detail inspector closes before clearing row selection
+    line_detail_open = true;
     assert_eq!(
         determine_escape_action(
             false,
@@ -823,6 +832,23 @@ fn test_overflow_menu_state_and_escape_priority() {
             false,
             false,
             false,
+            line_detail_open,
+            selection.selected_row.is_some()
+        ),
+        EscapeAction::CloseLineDetail
+    );
+    line_detail_open = false;
+
+    // Priority 4: Selection clearing when no popovers, modals, or Line Detail are open
+    assert_eq!(
+        determine_escape_action(
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            line_detail_open,
             selection.selected_row.is_some()
         ),
         EscapeAction::ClearSelection
@@ -836,6 +862,7 @@ fn test_overflow_menu_state_and_escape_priority() {
     // Once cleared, action becomes None
     assert_eq!(
         determine_escape_action(
+            false,
             false,
             false,
             false,
@@ -1023,7 +1050,8 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
     use gpui::Action;
     use loganalysis_core::fuzzy_match;
     use loganalysis_gui::actions::{
-        all_action_names, CloseFind, ResetZoom, ToggleZenMode, REGISTERED_ACTION_COUNT,
+        all_action_names, CloseFind, ResetZoom, ToggleLineDetail, ToggleZenMode,
+        REGISTERED_ACTION_COUNT,
     };
     use loganalysis_gui::components::timeline_sparkline::should_render_timeline_ribbon;
     use loganalysis_gui::modals::command_palette::{
@@ -1035,20 +1063,22 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
         workspace_shows_status_bar, LogAnalysisWorkspace,
     };
 
-    // 1. Verification of compiled registered action contracts (46 actions including ToggleZenMode, ResetZoom & CloseFind)
+    // 1. Verification of compiled registered action contracts (47 actions including ToggleLineDetail)
     let action_names = all_action_names();
-    assert_eq!(REGISTERED_ACTION_COUNT, 46);
+    assert_eq!(REGISTERED_ACTION_COUNT, 47);
     assert_eq!(action_names.len(), REGISTERED_ACTION_COUNT);
     let unique_actions: HashSet<&str> = action_names.iter().copied().collect();
     assert_eq!(unique_actions.len(), REGISTERED_ACTION_COUNT);
     assert!(action_names.contains(&Action::name(&ToggleZenMode)));
     assert!(action_names.contains(&Action::name(&ResetZoom)));
     assert!(action_names.contains(&Action::name(&CloseFind)));
+    assert!(action_names.contains(&Action::name(&ToggleLineDetail)));
 
     // 2. Verification of workspace default state contracts & toggle/reset method existence
     let defaults = std::hint::black_box(WORKSPACE_DEFAULTS);
     assert!(!defaults.is_timeline_visible);
     assert!(!defaults.is_zen_mode);
+    assert!(defaults.full_line_display);
     let _: fn(&mut LogAnalysisWorkspace, &mut gpui::Context<LogAnalysisWorkspace>) =
         LogAnalysisWorkspace::toggle_zen_mode;
     let _: fn(&mut LogAnalysisWorkspace, &mut gpui::Context<LogAnalysisWorkspace>) =
@@ -1057,6 +1087,12 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
         LogAnalysisWorkspace::reset_zoom;
     let _: fn(&mut LogAnalysisWorkspace, &mut gpui::Context<LogAnalysisWorkspace>) =
         LogAnalysisWorkspace::close_search_bar;
+    let _: fn(&mut LogAnalysisWorkspace, &mut gpui::Context<LogAnalysisWorkspace>) =
+        LogAnalysisWorkspace::toggle_line_detail;
+    let _: fn(&mut LogAnalysisWorkspace, &mut gpui::Context<LogAnalysisWorkspace>) =
+        LogAnalysisWorkspace::open_line_detail;
+    let _: fn(&mut LogAnalysisWorkspace, &mut gpui::Context<LogAnalysisWorkspace>) =
+        LogAnalysisWorkspace::close_line_detail;
 
     // 3. Verification of Command Palette catalog integration and action wiring ([LOW-5])
     let commands = get_palette_commands();
@@ -1071,6 +1107,29 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
         palette_command_action_name(PaletteCommandId::ToggleZenMode),
         Action::name(&ToggleZenMode)
     );
+
+    let line_detail_cmd = commands
+        .iter()
+        .find(|c| c.id == PaletteCommandId::ToggleLineDetail)
+        .expect("ToggleLineDetail must be present in command palette catalog");
+    assert_eq!(line_detail_cmd.category, "VIEW");
+    assert_eq!(
+        line_detail_cmd.title,
+        "View: Toggle Line Detail Inspector (Word Wrap)"
+    );
+    assert_eq!(line_detail_cmd.shortcut, Some("Ctrl+Shift+D"));
+    assert_eq!(
+        palette_command_action_name(PaletteCommandId::ToggleLineDetail),
+        Action::name(&ToggleLineDetail)
+    );
+    assert!(fuzzy_match("detail", line_detail_cmd.title).is_some());
+    assert!(fuzzy_match("wrap", line_detail_cmd.title).is_some());
+
+    let hscroll_cmd = commands
+        .iter()
+        .find(|c| c.id == PaletteCommandId::ToggleFullLineDisplay)
+        .expect("ToggleFullLineDisplay must exist");
+    assert_eq!(hscroll_cmd.title, "View: Toggle Full Line Horizontal Scroll");
 
     let dock_pos_cmd = commands
         .iter()
@@ -1119,7 +1178,7 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
     assert!(!workspace_shows_filter_dock(true, true));
     assert!(!workspace_shows_filter_dock(true, false));
 
-    // 6. Verification of compiled keybinding contracts for Zen Mode & ResetZoom ([LOW-5])
+    // 6. Verification of compiled keybinding contracts for Zen Mode, ResetZoom & Line Detail ([LOW-5])
     let specs = default_keybinding_specs();
     let zen_action_name = Action::name(&ToggleZenMode);
     assert!(specs.contains(&("f11", zen_action_name)));
@@ -1128,10 +1187,13 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
     let reset_zoom_action_name = Action::name(&ResetZoom);
     assert!(specs.contains(&("ctrl-0", reset_zoom_action_name)));
     assert!(specs.contains(&("cmd-0", reset_zoom_action_name)));
+    let line_detail_action_name = Action::name(&ToggleLineDetail);
+    assert!(specs.contains(&("ctrl-shift-d", line_detail_action_name)));
+    assert!(specs.contains(&("cmd-shift-d", line_detail_action_name)));
 
     // 7. Verification of Escape key dismissal fallback (None permits Zen mode exit in workspace::handle_escape)
     assert_eq!(
-        determine_escape_action(false, false, false, false, false, false, false),
+        determine_escape_action(false, false, false, false, false, false, false, false),
         EscapeAction::None
     );
 }
@@ -1158,6 +1220,7 @@ fn test_workspace_controller_snapshots_and_defaults() {
     let defaults = std::hint::black_box(WORKSPACE_DEFAULTS);
     assert!(!defaults.is_timeline_visible);
     assert!(!defaults.is_zen_mode);
+    assert!(defaults.full_line_display);
 
     // 2. SplitViewController default orientation (horizontal: is_split_vertical == false) & snapshot
     let mut split = SplitViewController::new();
@@ -1315,6 +1378,7 @@ fn test_escape_priority_with_controllers() {
     bookmarks.toggle_drawer();
     bookmarks.open_note_modal(42);
     let mut is_command_palette_open = true;
+    let mut is_line_detail_open = true;
     let mut selection = SelectionModel::new();
     selection.select(5, 42);
 
@@ -1323,6 +1387,7 @@ fn test_escape_priority_with_controllers() {
                 filter_modal: &FilterEditState,
                 bm_ctrl: &BookmarkController,
                 palette: bool,
+                line_detail: bool,
                 sel: &SelectionModel| {
         let adb_state = adb_ctrl.state();
         let bm_state = bm_ctrl.state();
@@ -1333,11 +1398,12 @@ fn test_escape_priority_with_controllers() {
             bm_state.is_note_modal_open,
             bm_state.is_bookmark_drawer_open,
             palette,
+            line_detail,
             sel.selected_row.is_some(),
         )
     };
 
-    // Walk strictly down the 8-level Escape priority chain driven by controller snapshots
+    // Walk strictly down the 9-level Escape priority chain driven by controller snapshots
     assert_eq!(
         eval(
             is_overflow_menu_open,
@@ -1345,6 +1411,7 @@ fn test_escape_priority_with_controllers() {
             &filter_edit_modal,
             &bookmarks,
             is_command_palette_open,
+            is_line_detail_open,
             &selection
         ),
         EscapeAction::CloseOverflowMenu
@@ -1358,6 +1425,7 @@ fn test_escape_priority_with_controllers() {
             &filter_edit_modal,
             &bookmarks,
             is_command_palette_open,
+            is_line_detail_open,
             &selection
         ),
         EscapeAction::CloseDeviceSelector
@@ -1371,6 +1439,7 @@ fn test_escape_priority_with_controllers() {
             &filter_edit_modal,
             &bookmarks,
             is_command_palette_open,
+            is_line_detail_open,
             &selection
         ),
         EscapeAction::CloseFilterModal
@@ -1384,6 +1453,7 @@ fn test_escape_priority_with_controllers() {
             &filter_edit_modal,
             &bookmarks,
             is_command_palette_open,
+            is_line_detail_open,
             &selection
         ),
         EscapeAction::CloseNoteModal
@@ -1397,6 +1467,7 @@ fn test_escape_priority_with_controllers() {
             &filter_edit_modal,
             &bookmarks,
             is_command_palette_open,
+            is_line_detail_open,
             &selection
         ),
         EscapeAction::CloseBookmarkDrawer
@@ -1410,6 +1481,7 @@ fn test_escape_priority_with_controllers() {
             &filter_edit_modal,
             &bookmarks,
             is_command_palette_open,
+            is_line_detail_open,
             &selection
         ),
         EscapeAction::CloseCommandPalette
@@ -1423,6 +1495,21 @@ fn test_escape_priority_with_controllers() {
             &filter_edit_modal,
             &bookmarks,
             is_command_palette_open,
+            is_line_detail_open,
+            &selection
+        ),
+        EscapeAction::CloseLineDetail
+    );
+    is_line_detail_open = false;
+
+    assert_eq!(
+        eval(
+            is_overflow_menu_open,
+            &adb,
+            &filter_edit_modal,
+            &bookmarks,
+            is_command_palette_open,
+            is_line_detail_open,
             &selection
         ),
         EscapeAction::ClearSelection
@@ -1436,6 +1523,7 @@ fn test_escape_priority_with_controllers() {
             &filter_edit_modal,
             &bookmarks,
             is_command_palette_open,
+            is_line_detail_open,
             &selection
         ),
         EscapeAction::None

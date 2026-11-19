@@ -72,19 +72,20 @@ pub fn render_timeline_sparkline(
                             s.cursor_pointer()
                                 .hover(|s| s.opacity(0.8))
                                 .on_click(cx.listener(move |this, _, _window, cx| {
-                                    if let Some(res) = &this.filter_result {
-                                        if let Some(&src_idx) = res.visible_indices.get(target_row) {
-                                            this.selection.select(target_row, src_idx);
-                                            this.scroll_handle
-                                                .scroll_to_item(target_row, ScrollStrategy::Center);
-                                            this.refresh_status_line(cx);
-                                            this.status_text = format!(
-                                                "Navigated to timeline event at row {}",
-                                                target_row + 1
-                                            )
-                                            .into();
-                                            cx.notify();
-                                        }
+                                    let src_idx_opt = this
+                                        .filter_result
+                                        .as_ref()
+                                        .and_then(|res| res.visible_indices.get(target_row).copied());
+                                    if let Some(src_idx) = src_idx_opt {
+                                        this.select_log_row(target_row, src_idx, cx);
+                                        this.scroll_handle
+                                            .scroll_to_item(target_row, ScrollStrategy::Center);
+                                        this.status_text = format!(
+                                            "Navigated to timeline event at row {}",
+                                            target_row + 1
+                                        )
+                                        .into();
+                                        cx.notify();
                                     }
                                 }))
                         })

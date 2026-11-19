@@ -22,7 +22,37 @@ pub use filters::{
 pub use recent_files::{
     load_recent_files_from_path, push_recent_path, save_recent_files_to_path,
 };
+pub use selection::ActiveSelectedLine;
 pub use split_view::probe_parent_timestamp;
+
+/// Default height in logical pixels of the collapsible Line Detail inspector panel.
+pub const DEFAULT_LINE_DETAIL_HEIGHT: f32 = 160.0;
+/// Minimum allowed height in logical pixels of the collapsible Line Detail inspector panel.
+pub const MIN_LINE_DETAIL_HEIGHT: f32 = 90.0;
+/// Maximum allowed height in logical pixels of the collapsible Line Detail inspector panel.
+pub const MAX_LINE_DETAIL_HEIGHT: f32 = 420.0;
+/// Horizontal keyboard scroll step in logical pixels for Left/Right arrow keys.
+pub const H_SCROLL_STEP_PX: f32 = 40.0;
+/// Accelerated horizontal keyboard scroll step in logical pixels when holding Shift.
+pub const H_SCROLL_FAST_STEP_PX: f32 = 160.0;
+
+/// Clamps Line Detail inspector panel height adjustment from `start_height + delta` to `[90.0, 420.0]`.
+#[inline]
+pub fn clamp_line_detail_height(start_height: f32, delta: f32) -> f32 {
+    let sum = start_height + delta;
+    if !sum.is_finite() {
+        return DEFAULT_LINE_DETAIL_HEIGHT;
+    }
+    sum.clamp(MIN_LINE_DETAIL_HEIGHT, MAX_LINE_DETAIL_HEIGHT)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LineDetailCacheKey {
+    pub is_secondary: bool,
+    pub abs_source_idx: usize,
+    pub pretty_json: bool,
+    pub line_len: usize,
+}
 
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -46,12 +76,14 @@ use crate::types::{
 pub struct WorkspaceDefaults {
     pub is_timeline_visible: bool,
     pub is_zen_mode: bool,
+    pub full_line_display: bool,
 }
 
 /// Canonical default flags for newly initialized workspaces.
 pub const WORKSPACE_DEFAULTS: WorkspaceDefaults = WorkspaceDefaults {
     is_timeline_visible: false,
     is_zen_mode: false,
+    full_line_display: true,
 };
 
 pub struct LogAnalysisWorkspace {
@@ -101,8 +133,25 @@ pub struct LogAnalysisWorkspace {
     pub(crate) filter_panel_position: FilterPanelPosition,
     pub(crate) is_dragging_scrollbar: bool,
     pub(crate) is_dragging_secondary_scrollbar: bool,
+    pub(crate) is_dragging_h_scrollbar: bool,
+    pub(crate) is_dragging_secondary_h_scrollbar: bool,
+    pub(crate) h_scrollbar_drag_grab_offset: Option<f32>,
+    pub(crate) h_scrollbar_track_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
+    pub(crate) secondary_h_scrollbar_track_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
     pub is_overflow_menu_open: bool,
     pub is_zen_mode: bool,
+
+    // Line Detail Inspector state
+    pub(crate) is_line_detail_open: bool,
+    pub(crate) line_detail_height: f32,
+    pub(crate) is_resizing_line_detail: bool,
+    pub(crate) line_detail_drag_start_pos: Option<Point<Pixels>>,
+    pub(crate) line_detail_drag_start_height: f32,
+    pub(crate) line_detail_scroll_handle: ScrollHandle,
+    pub(crate) is_line_detail_json_pretty: bool,
+    pub(crate) line_detail_inspected_key: Option<(bool, usize)>,
+    pub(crate) cached_line_detail:
+        Option<(LineDetailCacheKey, crate::components::log_view::LineDetailFormatted)>,
 
     // Command Palette state
     pub(crate) is_command_palette_open: bool,
@@ -140,7 +189,8 @@ pub struct LogAnalysisWorkspace {
 /// evaluated in strict reverse z-order:
 /// 1. Floating ephemeral menus (Overflow menu -> ADB device selector)
 /// 2. Modals and drawers (Filter modal -> Note modal -> Bookmark drawer -> Command palette)
-/// 3. Active log row selection (Primary / Secondary)
+/// 3. Collapsible bottom inspector (Line Detail)
+/// 4. Active log row selection (Primary / Secondary)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EscapeAction {
     CloseOverflowMenu,
@@ -149,11 +199,13 @@ pub enum EscapeAction {
     CloseNoteModal,
     CloseBookmarkDrawer,
     CloseCommandPalette,
+    CloseLineDetail,
     ClearSelection,
     None,
 }
 
 /// Evaluates reverse z-order Escape dismissal priority across application UI elements
+#[allow(clippy::too_many_arguments)]
 pub fn determine_escape_action(
     is_overflow_menu_open: bool,
     is_device_selector_open: bool,
@@ -161,6 +213,7 @@ pub fn determine_escape_action(
     is_note_modal_open: bool,
     is_bookmark_drawer_open: bool,
     is_command_palette_open: bool,
+    is_line_detail_open: bool,
     has_selection: bool,
 ) -> EscapeAction {
     if is_overflow_menu_open {
@@ -175,6 +228,8 @@ pub fn determine_escape_action(
         EscapeAction::CloseBookmarkDrawer
     } else if is_command_palette_open {
         EscapeAction::CloseCommandPalette
+    } else if is_line_detail_open {
+        EscapeAction::CloseLineDetail
     } else if has_selection {
         EscapeAction::ClearSelection
     } else {
@@ -350,12 +405,28 @@ impl LogAnalysisWorkspace {
             recent_files: Vec::new(),
             recent_files_gen: 0,
             is_dark_theme: false,
-            full_line_display: false,
+            full_line_display: WORKSPACE_DEFAULTS.full_line_display,
             filter_panel_position: FilterPanelPosition::Bottom,
             is_dragging_scrollbar: false,
             is_dragging_secondary_scrollbar: false,
+            is_dragging_h_scrollbar: false,
+            is_dragging_secondary_h_scrollbar: false,
+            h_scrollbar_drag_grab_offset: None,
+            h_scrollbar_track_bounds: std::rc::Rc::new(std::cell::Cell::new(Bounds::default())),
+            secondary_h_scrollbar_track_bounds: std::rc::Rc::new(std::cell::Cell::new(
+                Bounds::default(),
+            )),
             is_overflow_menu_open: false,
             is_zen_mode: WORKSPACE_DEFAULTS.is_zen_mode,
+            is_line_detail_open: false,
+            line_detail_height: DEFAULT_LINE_DETAIL_HEIGHT,
+            is_resizing_line_detail: false,
+            line_detail_drag_start_pos: None,
+            line_detail_drag_start_height: DEFAULT_LINE_DETAIL_HEIGHT,
+            line_detail_scroll_handle: ScrollHandle::new(),
+            is_line_detail_json_pretty: true,
+            line_detail_inspected_key: None,
+            cached_line_detail: None,
             is_command_palette_open: false,
             palette_input,
             palette_selected_index: 0,
@@ -600,7 +671,6 @@ impl LogAnalysisWorkspace {
                             show_only,
                         );
 
-                        let prev_anchor = workspace.selection.anchor_source_idx;
                         workspace.analytics_cancel_gen.fetch_add(1, Ordering::SeqCst);
                         workspace.filter_result = Some(Arc::new(final_res));
                         workspace.heatmap_data = Some(Arc::new(heatmap));
@@ -610,16 +680,12 @@ impl LogAnalysisWorkspace {
                         }
 
                         // Viewport anchor preservation
-                        if let (Some(anchor), Some(res)) = (prev_anchor, &workspace.filter_result) {
-                            if let Some(new_row) =
-                                find_nearest_anchor_row(&res.visible_indices, anchor)
-                            {
-                                workspace.selection.selected_row = Some(new_row);
-                                workspace
-                                    .scroll_handle
-                                    .scroll_to_item(new_row, ScrollStrategy::Center);
-                            }
-                        }
+                        preserve_selection_after_filter(
+                            &mut workspace.selection,
+                            workspace.filter_result.as_deref(),
+                            &workspace.scroll_handle,
+                        );
+                        workspace.reset_line_detail_scroll_if_line_changed();
 
                         let visible_count = workspace
                             .filter_result
@@ -659,7 +725,7 @@ impl LogAnalysisWorkspace {
     /// Returns `true` if the Escape key was consumed.
     pub fn handle_escape(&mut self, cx: &mut Context<Self>) -> bool {
         let has_selection = self.selection.selected_row.is_some()
-            || self.secondary_selection.selected_row.is_some();
+            || (self.split_view.is_split_view && self.secondary_selection.selected_row.is_some());
         match determine_escape_action(
             self.is_overflow_menu_open,
             self.adb.is_device_selector_open,
@@ -667,6 +733,7 @@ impl LogAnalysisWorkspace {
             self.bookmarks.is_note_modal_open,
             self.bookmarks.is_drawer_open,
             self.is_command_palette_open,
+            self.is_line_detail_open,
             has_selection,
         ) {
             EscapeAction::CloseOverflowMenu => {
@@ -693,6 +760,10 @@ impl LogAnalysisWorkspace {
                 self.close_command_palette(cx);
                 true
             }
+            EscapeAction::CloseLineDetail => {
+                self.close_line_detail(cx);
+                true
+            }
             EscapeAction::ClearSelection => {
                 self.clear_selection(cx);
                 true
@@ -708,8 +779,17 @@ impl LogAnalysisWorkspace {
         }
     }
 
+    /// Returns `true` when any workspace `TextInput` currently holds window focus.
+    pub(crate) fn has_any_text_input_focus(&self, window: &Window, cx: &App) -> bool {
+        self.modal_pattern_input.read(cx).focus_handle.is_focused(window)
+            || self.note_input.read(cx).focus_handle.is_focused(window)
+            || self.find_input.read(cx).focus_handle.is_focused(window)
+            || self.palette_input.read(cx).focus_handle.is_focused(window)
+            || self.filter_rule_input.read(cx).focus_handle.is_focused(window)
+    }
+
     /// Handles keyboard events across application components
-    pub fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    pub fn handle_key_down(&mut self, event: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
 
         // Handle Escape key dismissal using reverse z-order priority
@@ -767,8 +847,9 @@ impl LogAnalysisWorkspace {
             }
         }
 
-        // Navigate log lines with Up and Down arrows
+        // Navigate log lines with Up/Down arrows and scroll horizontally with Left/Right/Home/End
         if self.input_focus == InputFocusTarget::None
+            && !self.has_any_text_input_focus(window, cx)
             && !self.filter_edit_modal.is_open
             && !self.bookmarks.is_note_modal_open
             && !self.bookmarks.is_drawer_open
@@ -822,6 +903,47 @@ impl LogAnalysisWorkspace {
                             self.scroll_handle.scroll_to_item_strict(new_row, ScrollStrategy::Center);
                         }
                     }
+                }
+            } else if self.full_line_display
+                && !event.keystroke.modifiers.control
+                && !event.keystroke.modifiers.platform
+                && !event.keystroke.modifiers.alt
+                && matches!(key, "left" | "right" | "home" | "end")
+            {
+                let handle = if is_sec {
+                    &self.secondary_scroll_handle
+                } else {
+                    &self.scroll_handle
+                };
+                let step = if event.keystroke.modifiers.shift {
+                    H_SCROLL_FAST_STEP_PX
+                } else {
+                    H_SCROLL_STEP_PX
+                };
+                let state = handle.0.borrow();
+                let max_x: f32 = state.base_handle.max_offset().width.into();
+                let cur = state.base_handle.offset();
+                let cur_x: f32 = cur.x.into();
+                let next_x = match key {
+                    "left" => {
+                        crate::components::log_view::clamp_horizontal_scroll_x(cur_x + step, max_x)
+                    }
+                    "right" => {
+                        crate::components::log_view::clamp_horizontal_scroll_x(cur_x - step, max_x)
+                    }
+                    "home" => 0.0,
+                    "end" => {
+                        crate::components::log_view::clamp_horizontal_scroll_x(-max_x, max_x)
+                    }
+                    _ => cur_x,
+                };
+                let changed = (next_x - cur_x).abs() > 0.01;
+                if changed {
+                    state.base_handle.set_offset(point(px(next_x), cur.y));
+                }
+                drop(state);
+                if changed {
+                    cx.notify();
                 }
             }
         }
@@ -918,6 +1040,85 @@ impl LogAnalysisWorkspace {
         }
     }
 
+    /// Scrolls the primary or secondary log viewport horizontally based on pointer X coordinate.
+    pub(crate) fn scroll_h_to_mouse_x(
+        &self,
+        is_primary: bool,
+        mouse_x: Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.full_line_display {
+            return;
+        }
+        let (handle, track_cell) = if is_primary {
+            (&self.scroll_handle, &self.h_scrollbar_track_bounds)
+        } else {
+            (
+                &self.secondary_scroll_handle,
+                &self.secondary_h_scrollbar_track_bounds,
+            )
+        };
+
+        let snapshot = crate::components::log_view::read_h_scroll_render_snapshot(handle, true);
+        let Some(metrics) = crate::components::log_view::compute_horizontal_scrollbar_metrics(
+            snapshot.viewport_width,
+            snapshot.content_width,
+            snapshot.clamped_scroll_x,
+        ) else {
+            return;
+        };
+
+        let captured_bounds = track_cell.get();
+        let state = handle.0.borrow();
+        let effective_bounds = if captured_bounds.size.width > px(0.0) {
+            captured_bounds
+        } else {
+            state.base_handle.bounds()
+        };
+        let track_left: f32 = effective_bounds.origin.x.into();
+        let track_width: f32 = effective_bounds.size.width.into();
+        if track_width <= 0.0 {
+            drop(state);
+            return;
+        }
+
+        let next_x = crate::components::log_view::scroll_x_from_mouse_x(
+            mouse_x.into(),
+            track_left,
+            track_width,
+            metrics.thumb_width,
+            self.h_scrollbar_drag_grab_offset,
+            metrics.max_scroll_x,
+        );
+        let cur = state.base_handle.offset();
+        let cur_x: f32 = cur.x.into();
+        let changed = (next_x - cur_x).abs() > 0.01;
+        if changed {
+            state.base_handle.set_offset(point(px(next_x), cur.y));
+        }
+        drop(state);
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// Clears all active vertical/horizontal scrollbar drag flags, returning `true` if any changed.
+    pub(crate) fn clear_scrollbar_drag_flags(&mut self) -> bool {
+        let had_drag = self.is_dragging_scrollbar
+            || self.is_dragging_secondary_scrollbar
+            || self.is_dragging_h_scrollbar
+            || self.is_dragging_secondary_h_scrollbar
+            || self.h_scrollbar_drag_grab_offset.is_some();
+        if had_drag {
+            self.is_dragging_scrollbar = false;
+            self.is_dragging_secondary_scrollbar = false;
+            self.is_dragging_h_scrollbar = false;
+            self.is_dragging_secondary_h_scrollbar = false;
+            self.h_scrollbar_drag_grab_offset = None;
+        }
+        had_drag
+    }
+
     /// Toggles between Light and Dark theme (Ctrl+U / F10)
     pub fn toggle_theme(&mut self, cx: &mut Context<Self>) {
         self.is_dark_theme = !self.is_dark_theme;
@@ -937,12 +1138,144 @@ impl LogAnalysisWorkspace {
     /// Toggles full line display mode (horizontal scroll / truncate)
     pub fn toggle_full_line_display(&mut self, cx: &mut Context<Self>) {
         self.full_line_display = !self.full_line_display;
+        if !self.full_line_display {
+            reset_horizontal_scroll_offset(&self.scroll_handle);
+            reset_horizontal_scroll_offset(&self.secondary_scroll_handle);
+            self.is_dragging_h_scrollbar = false;
+            self.is_dragging_secondary_h_scrollbar = false;
+            self.h_scrollbar_drag_grab_offset = None;
+        }
         self.status_text = if self.full_line_display {
             "Full Line Display: ON (Horizontal scroll enabled)".into()
         } else {
             "Full Line Display: OFF (Truncated)".into()
         };
         cx.notify();
+    }
+
+    /// Opens the collapsible Line Detail inspector panel (idempotent).
+    pub fn open_line_detail(&mut self, cx: &mut Context<Self>) {
+        if !self.is_line_detail_open {
+            self.is_line_detail_open = true;
+            self.reset_line_detail_scroll_if_line_changed();
+            cx.notify();
+        }
+    }
+
+    /// Closes the collapsible Line Detail inspector panel while preserving selection.
+    pub fn close_line_detail(&mut self, cx: &mut Context<Self>) {
+        if self.is_line_detail_open || self.is_resizing_line_detail {
+            self.is_line_detail_open = false;
+            self.is_resizing_line_detail = false;
+            self.line_detail_drag_start_pos = None;
+            cx.notify();
+        }
+    }
+
+    /// Toggles the collapsible Line Detail inspector panel (`Ctrl+Shift+D`).
+    pub fn toggle_line_detail(&mut self, cx: &mut Context<Self>) {
+        if self.is_line_detail_open {
+            self.close_line_detail(cx);
+            self.status_text = "Line Detail Inspector: Closed".into();
+        } else {
+            self.is_line_detail_open = true;
+            self.reset_line_detail_scroll_if_line_changed();
+            self.status_text = "Line Detail Inspector: Open".into();
+        }
+        cx.notify();
+    }
+
+    /// Toggles JSON pretty-printing inside the Line Detail inspector and resets scroll to top.
+    pub fn toggle_line_detail_json_pretty(&mut self, cx: &mut Context<Self>) {
+        self.is_line_detail_json_pretty = !self.is_line_detail_json_pretty;
+        self.cached_line_detail = None;
+        self.line_detail_scroll_handle.set_offset(Point::default());
+        self.ensure_line_detail_cache();
+        cx.notify();
+    }
+
+    /// Starts interactive height resizing of the Line Detail panel from mouse position.
+    pub fn start_resizing_line_detail(&mut self, pos: Point<Pixels>, cx: &mut Context<Self>) {
+        self.is_resizing_line_detail = true;
+        self.line_detail_drag_start_pos = Some(pos);
+        self.line_detail_drag_start_height = self.line_detail_height;
+        cx.notify();
+    }
+
+    /// Updates Line Detail panel height during vertical splitter mouse drag.
+    pub fn update_resizing_line_detail(
+        &mut self,
+        current_pos: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.is_resizing_line_detail {
+            return;
+        }
+        let Some(start_pos) = self.line_detail_drag_start_pos else {
+            return;
+        };
+        let start_y: f32 = start_pos.y.into();
+        let current_y: f32 = current_pos.y.into();
+        let delta = start_y - current_y;
+        let new_height = clamp_line_detail_height(self.line_detail_drag_start_height, delta);
+        if (self.line_detail_height - new_height).abs() > 0.5 {
+            self.line_detail_height = new_height;
+            cx.notify();
+        }
+    }
+
+    /// Finishes interactive height resizing of the Line Detail panel.
+    pub fn stop_resizing_line_detail(&mut self, cx: &mut Context<Self>) {
+        if self.is_resizing_line_detail {
+            self.is_resizing_line_detail = false;
+            self.line_detail_drag_start_pos = None;
+            cx.notify();
+        }
+    }
+
+    /// Resets the Line Detail panel height to the default `160.0px`.
+    pub fn reset_line_detail_height(&mut self, cx: &mut Context<Self>) {
+        self.line_detail_height = DEFAULT_LINE_DETAIL_HEIGHT;
+        cx.notify();
+    }
+
+    /// Resets the Line Detail scroll position and cache when the inspected physical line changes.
+    pub(crate) fn reset_line_detail_scroll_if_line_changed(&mut self) {
+        let next_key = self
+            .resolve_active_selected_line()
+            .map(|sel| (sel.is_secondary_pane, sel.abs_source_idx));
+        if self.line_detail_inspected_key != next_key {
+            self.line_detail_inspected_key = next_key;
+            self.cached_line_detail = None;
+            self.line_detail_scroll_handle.set_offset(Point::default());
+        }
+    }
+
+    /// Ensures the cached formatted Line Detail payload matches the currently selected line and JSON mode.
+    pub(crate) fn ensure_line_detail_cache(&mut self) {
+        let Some(active) = self.resolve_active_selected_line() else {
+            self.cached_line_detail = None;
+            return;
+        };
+        let key = LineDetailCacheKey {
+            is_secondary: active.is_secondary_pane,
+            abs_source_idx: active.abs_source_idx,
+            pretty_json: self.is_line_detail_json_pretty,
+            line_len: active.line_text.len(),
+        };
+        if self
+            .cached_line_detail
+            .as_ref()
+            .is_some_and(|(cached_key, _)| *cached_key == key)
+        {
+            return;
+        }
+        let formatted = crate::components::log_view::format_line_detail_text(
+            active.line_text.as_ref(),
+            self.is_line_detail_json_pretty,
+            crate::components::log_view::LINE_DETAIL_RENDER_MAX_BYTES,
+        );
+        self.cached_line_detail = Some((key, formatted));
     }
 
     /// Toggles smart auto-scroll for streaming
@@ -1006,6 +1339,17 @@ impl LogAnalysisWorkspace {
         self.heatmap_data = None;
         self.timeline_data = None;
         self.facet_tags.clear();
+        self.scroll_handle
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(Point::default());
+        self.is_dragging_scrollbar = false;
+        self.is_dragging_h_scrollbar = false;
+        self.h_scrollbar_drag_grab_offset = None;
+        self.line_detail_inspected_key = None;
+        self.cached_line_detail = None;
+        self.line_detail_scroll_handle.set_offset(Point::default());
     }
 
     /// Asynchronously recomputes heatmap density and EPS timeline data off the UI thread.
@@ -1170,6 +1514,37 @@ fn scroll_handle_to_mouse_y(
 
     handle.scroll_to_item_strict(target_top_idx, ScrollStrategy::Top);
     true
+}
+
+/// Resets horizontal scroll offset (`offset.x = 0.0`) while preserving vertical scroll offset.
+pub(crate) fn reset_horizontal_scroll_offset(handle: &UniformListScrollHandle) {
+    let state = handle.0.borrow();
+    let cur = state.base_handle.offset();
+    if !cur.x.is_zero() {
+        state.base_handle.set_offset(point(px(0.0), cur.y));
+    }
+    drop(state);
+}
+
+/// Preserves or clears `selection` using nearest-anchor lookup after a background filter pass completes.
+pub(crate) fn preserve_selection_after_filter(
+    selection: &mut SelectionModel,
+    filter_result: Option<&FilterResult>,
+    scroll_handle: &UniformListScrollHandle,
+) {
+    let Some(anchor) = selection.anchor_source_idx else {
+        return;
+    };
+    let Some(res) = filter_result else {
+        selection.clear();
+        return;
+    };
+    if let Some(new_row) = find_nearest_anchor_row(&res.visible_indices, anchor) {
+        selection.selected_row = Some(new_row);
+        scroll_handle.scroll_to_item(new_row, ScrollStrategy::Center);
+    } else {
+        selection.clear();
+    }
 }
 
 /// Advances and returns a monotonic async load generation token.
@@ -1591,5 +1966,80 @@ mod tests {
             format_source_memory_display(Some(&merged_src)),
             (format_byte_size(128), "Merged")
         );
+    }
+
+    #[test]
+    fn test_clamp_line_detail_height_and_secondary_filter_anchor_preservation() {
+        use super::{
+            clamp_line_detail_height, preserve_selection_after_filter,
+            reset_horizontal_scroll_offset, DEFAULT_LINE_DETAIL_HEIGHT, MAX_LINE_DETAIL_HEIGHT,
+            MIN_LINE_DETAIL_HEIGHT, WORKSPACE_DEFAULTS,
+        };
+        use crate::selection::SelectionModel;
+        use gpui::{point, px, UniformListScrollHandle};
+        use loganalysis_core::FilterResult;
+
+        let defaults = std::hint::black_box(WORKSPACE_DEFAULTS);
+        assert!(defaults.full_line_display);
+        assert_eq!(DEFAULT_LINE_DETAIL_HEIGHT, 160.0);
+        assert_eq!(MIN_LINE_DETAIL_HEIGHT, 90.0);
+        assert_eq!(MAX_LINE_DETAIL_HEIGHT, 420.0);
+        assert_eq!(clamp_line_detail_height(160.0, 40.0), 200.0);
+        assert_eq!(clamp_line_detail_height(90.0, 0.0), 90.0);
+        assert_eq!(clamp_line_detail_height(420.0, 0.0), 420.0);
+        assert_eq!(clamp_line_detail_height(160.0, -500.0), 90.0);
+        assert_eq!(clamp_line_detail_height(160.0, 900.0), 420.0);
+        assert_eq!(clamp_line_detail_height(160.0, f32::NAN), 160.0);
+        assert_eq!(clamp_line_detail_height(160.0, f32::INFINITY), 160.0);
+        assert_eq!(clamp_line_detail_height(160.0, f32::NEG_INFINITY), 160.0);
+        assert_eq!(clamp_line_detail_height(f32::NAN, 10.0), 160.0);
+
+        // Anchor preservation when secondary filter narrows visible_indices
+        let handle = UniformListScrollHandle::new();
+        handle
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(-240.0), px(-120.0)));
+        reset_horizontal_scroll_offset(&handle);
+        let reset_off = handle.0.borrow().base_handle.offset();
+        assert_eq!(f32::from(reset_off.x), 0.0);
+        assert_eq!(f32::from(reset_off.y), -120.0);
+
+        // No-op when horizontal offset is already 0.0 preserves vertical offset
+        reset_horizontal_scroll_offset(&handle);
+        let after_noop = handle.0.borrow().base_handle.offset();
+        assert_eq!(f32::from(after_noop.x), 0.0);
+        assert_eq!(f32::from(after_noop.y), -120.0);
+
+        let mut sec_sel = SelectionModel::new();
+        // No anchor -> no-op
+        preserve_selection_after_filter(&mut sec_sel, None, &handle);
+        assert_eq!(sec_sel.selected_row, None);
+
+        sec_sel.select(5, 25);
+
+        let narrowed = FilterResult {
+            visible_indices: vec![10, 20, 30, 40],
+            ..Default::default()
+        };
+        preserve_selection_after_filter(&mut sec_sel, Some(&narrowed), &handle);
+        assert_eq!(sec_sel.selected_row, Some(2)); // 30 is nearest >= 25
+        assert_eq!(sec_sel.anchor_source_idx, Some(25));
+
+        // Empty filter result clears secondary_selection
+        let empty = FilterResult {
+            visible_indices: vec![],
+            ..Default::default()
+        };
+        preserve_selection_after_filter(&mut sec_sel, Some(&empty), &handle);
+        assert_eq!(sec_sel.selected_row, None);
+        assert_eq!(sec_sel.anchor_source_idx, None);
+
+        // None filter result also clears selection
+        sec_sel.select(1, 10);
+        preserve_selection_after_filter(&mut sec_sel, None, &handle);
+        assert_eq!(sec_sel.selected_row, None);
+        assert_eq!(sec_sel.anchor_source_idx, None);
     }
 }

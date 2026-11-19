@@ -69,8 +69,10 @@ impl LogAnalysisWorkspace {
                 find_visible_row_for_source_idx(&res.visible_indices, target_source_idx)
             {
                 self.selection.select(vis_row, target_source_idx);
+                self.split_view.active_pane_is_secondary = false;
                 self.scroll_handle
                     .scroll_to_item(vis_row, ScrollStrategy::Center);
+                self.reset_line_detail_scroll_if_line_changed();
                 self.refresh_status_line(cx);
                 self.status_text =
                     format!("Jumped to bookmark on line {}", target_source_idx + 1).into();
@@ -108,8 +110,10 @@ impl LogAnalysisWorkspace {
                 find_visible_row_for_source_idx(&res.visible_indices, target_source_idx)
             {
                 self.selection.select(vis_row, target_source_idx);
+                self.split_view.active_pane_is_secondary = false;
                 self.scroll_handle
                     .scroll_to_item(vis_row, ScrollStrategy::Center);
+                self.reset_line_detail_scroll_if_line_changed();
                 self.refresh_status_line(cx);
                 self.status_text =
                     format!("Jumped to bookmark on line {}", target_source_idx + 1).into();
@@ -230,8 +234,10 @@ impl LogAnalysisWorkspace {
                 find_visible_row_for_source_idx(&res.visible_indices, target_source_idx)
             {
                 self.selection.select(vis_row, target_source_idx);
+                self.split_view.active_pane_is_secondary = false;
                 self.scroll_handle
                     .scroll_to_item(vis_row, ScrollStrategy::Center);
+                self.reset_line_detail_scroll_if_line_changed();
                 self.refresh_status_line(cx);
                 self.status_text =
                     format!("Jumped to bookmark on line {}", target_source_idx + 1).into();

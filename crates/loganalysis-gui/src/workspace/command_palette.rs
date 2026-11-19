@@ -111,6 +111,7 @@ impl LogAnalysisWorkspace {
             PaletteCommandId::ToggleFilterDock => self.toggle_filter_dock(cx),
             PaletteCommandId::ToggleFacetsBar => self.toggle_facets_bar(cx),
             PaletteCommandId::ToggleFullLineDisplay => self.toggle_full_line_display(cx),
+            PaletteCommandId::ToggleLineDetail => self.toggle_line_detail(cx),
             PaletteCommandId::ToggleTheme => self.toggle_theme(cx),
             PaletteCommandId::ZoomIn => self.zoom(1.0, cx),
             PaletteCommandId::ZoomOut => self.zoom(-1.0, cx),

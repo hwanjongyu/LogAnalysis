@@ -27,7 +27,8 @@ pub fn render_log_viewport(
         let is_vertical = workspace.split_view.is_split_vertical;
         let mut split_container = div()
             .flex_1()
-            .h_full()
+            .w_full()
+            .min_h(px(0.0))
             .flex()
             .overflow_hidden();
 
@@ -48,46 +49,38 @@ pub fn render_log_viewport(
         split_container.into_any_element()
     };
 
-    div()
+    let main_content_wrapper = div()
         .flex_1()
-        .h_full()
+        .w_full()
+        .min_h(px(0.0))
         .relative()
         .flex()
         .flex_col()
-        .bg(theme.bg_dark)
         .overflow_hidden()
-        .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-            if this.is_dragging_scrollbar && event.dragging() {
-                this.scroll_to_ratio_from_mouse_y(event.position.y, cx);
-            } else if this.is_dragging_secondary_scrollbar && event.dragging() {
-                this.scroll_secondary_to_ratio_from_mouse_y(event.position.y, cx);
-            }
-        }))
-        .on_mouse_up(
-            MouseButton::Left,
-            cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                let mut changed = false;
-                if this.is_dragging_scrollbar {
-                    this.is_dragging_scrollbar = false;
-                    changed = true;
-                }
-                if this.is_dragging_secondary_scrollbar {
-                    this.is_dragging_secondary_scrollbar = false;
-                    changed = true;
-                }
-                if changed {
-                    cx.notify();
-                }
-            }),
-        )
-        // Forensic Facets Bar
-        .children(crate::components::facets_bar::render_facets_bar(workspace, cx))
         // Single primary viewport or Dual-Pane Split Container
         .child(main_content)
         // Modern Floating Find Widget (over log content without reflow)
         .children(render_find_bar(workspace, cx))
         // Contextual Floating Selection Mini-Bar
-        .children(render_selection_action_bar(workspace, cx))
+        .children(render_selection_action_bar(workspace, cx));
+
+    div()
+        .flex_1()
+        .min_h(px(0.0))
+        .relative()
+        .flex()
+        .flex_col()
+        .bg(theme.bg_dark)
+        .overflow_hidden()
+        // Forensic Facets Bar
+        .children(crate::components::facets_bar::render_facets_bar(workspace, cx))
+        // Main log viewport + floating bars wrapper
+        .child(main_content_wrapper)
+        // Collapsible Line Detail Inspector
+        .when(workspace.is_line_detail_open, |s| {
+            s.child(render_line_detail_splitter(workspace, cx))
+                .child(render_line_detail_panel(workspace, cx))
+        })
 }
 
 /// Calculates the dynamic vertical position of the floating selection action bar
@@ -107,22 +100,17 @@ pub fn render_selection_action_bar(
     workspace: &LogAnalysisWorkspace,
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> Option<impl IntoElement> {
-    let sel_row = workspace.selection.selected_row?;
+    let active_sel = workspace.resolve_active_selected_line()?;
     let theme = workspace.theme;
 
-    // Smart vertical positioning to avoid collisions with Find bar and Facets bar
-    let is_facets_visible = workspace.is_facets_visible && workspace.log_source.is_some();
-    let top_pos = calculate_selection_bar_top(workspace.search_ctrl.is_visible, is_facets_visible);
+    // Smart vertical positioning to avoid collisions with Find bar (main_content_wrapper sits below facets bar)
+    let top_pos = calculate_selection_bar_top(workspace.search_ctrl.is_visible, false);
 
     // Extract human-friendly line index label (1-based)
-    let line_label = if let Some(res) = &workspace.filter_result {
-        if let Some(&r_idx) = res.visible_indices.get(sel_row) {
-            format!("Line {}", r_idx + 1)
-        } else {
-            format!("Row {}", sel_row + 1)
-        }
+    let line_label = if workspace.split_view.is_split_view && active_sel.is_secondary_pane {
+        format!("Pane B • Line {}", active_sel.source_idx + 1)
     } else {
-        format!("Row {}", sel_row + 1)
+        format!("Line {}", active_sel.source_idx + 1)
     };
 
     Some(
@@ -162,6 +150,37 @@ pub fn render_selection_action_bar(
                     .w(px(1.0))
                     .h(px(14.0))
                     .bg(theme.border_subtle),
+            )
+            // Button: [📄 Detail]
+            .child(
+                div()
+                    .id("btn-selection-detail")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .px(px(7.0))
+                    .py(px(2.5))
+                    .rounded_sm()
+                    .when(workspace.is_line_detail_open, |s| {
+                        s.bg(theme.accent_muted).text_color(theme.accent)
+                    })
+                    .when(!workspace.is_line_detail_open, |s| {
+                        s.text_color(theme.text_primary)
+                    })
+                    .hover(move |s| s.bg(theme.btn_hover))
+                    .cursor_pointer()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .tooltip(render_tooltip(
+                        "Toggle wrapped Line Detail inspector",
+                        Some("Ctrl+Shift+D"),
+                        theme,
+                    ))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.toggle_line_detail(cx);
+                    }))
+                    .child("📄 Detail"),
             )
             // Button: [📋 Copy]
             .child(
@@ -300,7 +319,8 @@ fn render_pane_container(
 
     div()
         .flex_1()
-        .h_full()
+        .min_h(px(0.0))
+        .min_w(px(0.0))
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -311,6 +331,7 @@ fn render_pane_container(
                     let new_sec = !is_primary;
                     if this.split_view.active_pane_is_secondary != new_sec {
                         this.split_view.active_pane_is_secondary = new_sec;
+                        this.reset_line_detail_scroll_if_line_changed();
                         cx.notify();
                     }
                 }
@@ -321,6 +342,7 @@ fn render_pane_container(
             div()
                 .h(px(25.0))
                 .w_full()
+                .flex_shrink_0()
                 .bg(theme.bg_header)
                 .border_b_1()
                 .border_color(header_border_color)
@@ -403,6 +425,7 @@ fn render_vertical_splitter(
         .id("split-divider-v")
         .w(px(32.0))
         .h_full()
+        .flex_shrink_0()
         .bg(theme.bg_panel)
         .border_l_1()
         .border_r_1()
@@ -500,6 +523,7 @@ fn render_horizontal_splitter(
         .id("split-divider-h")
         .h(px(26.0))
         .w_full()
+        .flex_shrink_0()
         .bg(theme.bg_panel)
         .border_t_1()
         .border_b_1()
@@ -741,6 +765,278 @@ pub const COLUMN_HEADER_HEIGHT_PX: f32 = 24.0;
 /// Fixed width in pixels of the custom heatmap scrollbar track and matching column header corner spacer.
 pub const SCROLLBAR_TRACK_WIDTH_PX: f32 = 15.0;
 
+/// Fixed height in logical pixels of the bottom horizontal scrollbar track when H-scroll overflows.
+pub const H_SCROLLBAR_TRACK_HEIGHT_PX: f32 = 12.0;
+
+/// Minimum horizontal scrollbar thumb width in logical pixels for comfortable grabbing.
+pub const H_SCROLLBAR_MIN_THUMB_WIDTH_PX: f32 = 28.0;
+
+/// Sub-pixel hysteresis threshold to prevent showing horizontal scrollbar on 0.0x rounding noise.
+pub const H_SCROLLBAR_OVERFLOW_EPSILON_PX: f32 = 0.5;
+
+/// Maximum byte length rendered inside the Line Detail inspector body to avoid layout stalls on multi-MB lines.
+pub const LINE_DETAIL_RENDER_MAX_BYTES: usize = 65_536;
+
+/// Maximum raw line byte length scanned for embedded JSON payloads in Line Detail.
+pub const LINE_DETAIL_JSON_PARSE_MAX_BYTES: usize = 262_144;
+
+/// Suffix appended when a log line is truncated for display inside the Line Detail inspector.
+pub const LINE_DETAIL_TRUNCATION_SUFFIX: &str =
+    "…\n[Truncated for display — 📋 Copy copies full line]";
+
+/// Computed thumb geometry for a horizontal scrollbar track.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HorizontalScrollbarMetrics {
+    pub thumb_left: f32,
+    pub thumb_width: f32,
+    pub max_scroll_x: f32,
+}
+
+/// Snapshot of horizontal scroll dimensions observed during `render` vs post-`prepaint`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HScrollRenderSnapshot {
+    pub has_h_scrollbar: bool,
+    pub content_width: f32,
+    pub viewport_width: f32,
+    pub clamped_scroll_x: f32,
+}
+
+/// Formatted payload produced by [`format_line_detail_text`] for the Line Detail inspector.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineDetailFormatted {
+    pub display_text: String,
+    pub has_json: bool,
+    pub is_truncated_for_render: bool,
+}
+
+/// Resolves the visible row index of the widest line in `filter_result` for `UniformList::with_width_from_item`.
+/// Uses O(log N) binary search over monotonically sorted `visible_indices`, falling back to `Some(0)`
+/// when `widest_visible_source_idx` is absent or temporarily unmatched, and `None` when empty.
+pub fn resolve_widest_visible_row_idx(
+    filter_result: Option<&loganalysis_core::FilterResult>,
+) -> Option<usize> {
+    let res = filter_result?;
+    if res.visible_indices.is_empty() {
+        return None;
+    }
+    res.widest_visible_source_idx
+        .and_then(|src_idx| res.visible_indices.binary_search(&src_idx).ok())
+        .or(Some(0))
+}
+
+/// Clamps raw GPUI horizontal scroll offset (always <= 0.0) into `[-max_scroll_x, 0.0]`,
+/// guarding non-finite inputs (`NaN`, `Infinity`) and normalizing `-0.0` to `0.0`.
+#[inline]
+pub fn clamp_horizontal_scroll_x(scroll_x: f32, max_scroll_x: f32) -> f32 {
+    if !scroll_x.is_finite() || !max_scroll_x.is_finite() || max_scroll_x <= 0.0 {
+        return 0.0;
+    }
+    let clamped = scroll_x.clamp(-max_scroll_x, 0.0);
+    if clamped == 0.0 {
+        0.0
+    } else {
+        clamped
+    }
+}
+
+/// Computes horizontal scrollbar thumb geometry. Returns `None` when content fits in viewport.
+pub fn compute_horizontal_scrollbar_metrics(
+    viewport_width: f32,
+    content_width: f32,
+    raw_scroll_x: f32,
+) -> Option<HorizontalScrollbarMetrics> {
+    if !viewport_width.is_finite()
+        || !content_width.is_finite()
+        || viewport_width <= 0.0
+        || content_width <= viewport_width + H_SCROLLBAR_OVERFLOW_EPSILON_PX
+    {
+        return None;
+    }
+    let max_scroll_x = (content_width - viewport_width).max(0.0);
+    let visible_ratio = (viewport_width / content_width).clamp(0.04, 1.0);
+    let thumb_width = (viewport_width * visible_ratio)
+        .max(H_SCROLLBAR_MIN_THUMB_WIDTH_PX)
+        .min(viewport_width);
+    let clamped_x = clamp_horizontal_scroll_x(raw_scroll_x, max_scroll_x);
+    let ratio = if max_scroll_x > 0.0 {
+        ((-clamped_x) / max_scroll_x).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let thumb_left = ratio * (viewport_width - thumb_width).max(0.0);
+    Some(HorizontalScrollbarMetrics {
+        thumb_left,
+        thumb_width,
+        max_scroll_x,
+    })
+}
+
+/// Converts a pointer X coordinate into a clamped negative `scroll_offset.x`.
+/// When `grab_offset_in_thumb` is `Some(offset)`, preserves the pointer's relative grab point
+/// inside the thumb; when `None`, centers the thumb at the clicked track position.
+pub fn scroll_x_from_mouse_x(
+    mouse_x: f32,
+    track_left: f32,
+    track_width: f32,
+    thumb_width: f32,
+    grab_offset_in_thumb: Option<f32>,
+    max_scroll_x: f32,
+) -> f32 {
+    if !mouse_x.is_finite()
+        || !track_left.is_finite()
+        || !track_width.is_finite()
+        || !thumb_width.is_finite()
+        || !max_scroll_x.is_finite()
+        || track_width <= thumb_width
+        || max_scroll_x <= 0.0
+    {
+        return 0.0;
+    }
+    let scrollable_track = track_width - thumb_width;
+    let rel_x = (mouse_x - track_left).clamp(0.0, track_width);
+    let anchor = grab_offset_in_thumb.unwrap_or(thumb_width * 0.5);
+    let target_thumb_left = (rel_x - anchor).clamp(0.0, scrollable_track);
+    let ratio = (target_thumb_left / scrollable_track).clamp(0.0, 1.0);
+    clamp_horizontal_scroll_x(-(ratio * max_scroll_x), max_scroll_x)
+}
+
+/// Reads the current horizontal scroll state snapshot from a [`UniformListScrollHandle`].
+pub fn read_h_scroll_render_snapshot(
+    handle: &UniformListScrollHandle,
+    full_line_display: bool,
+) -> HScrollRenderSnapshot {
+    let state = handle.0.borrow();
+    let viewport_width: f32 = state
+        .last_item_size
+        .map(|s| s.item.width.into())
+        .unwrap_or_else(|| state.base_handle.bounds().size.width.into());
+    if !full_line_display {
+        return HScrollRenderSnapshot {
+            has_h_scrollbar: false,
+            content_width: viewport_width,
+            viewport_width,
+            clamped_scroll_x: 0.0,
+        };
+    }
+    let content_width: f32 = state
+        .last_item_size
+        .map(|s| s.contents.width.into())
+        .unwrap_or(viewport_width);
+    let max_scroll_x = (content_width - viewport_width).max(0.0);
+    let raw_scroll_x: f32 = state.base_handle.offset().x.into();
+    let clamped_scroll_x = clamp_horizontal_scroll_x(raw_scroll_x, max_scroll_x);
+    let has_h_scrollbar =
+        viewport_width > 0.0 && content_width > viewport_width + H_SCROLLBAR_OVERFLOW_EPSILON_PX;
+    HScrollRenderSnapshot {
+        has_h_scrollbar,
+        content_width,
+        viewport_width,
+        clamped_scroll_x,
+    }
+}
+
+/// Returns `true` when two horizontal scroll snapshots differ beyond sub-pixel hysteresis (`0.5px`).
+#[inline]
+pub fn h_scroll_snapshots_differ(a: HScrollRenderSnapshot, b: HScrollRenderSnapshot) -> bool {
+    a.has_h_scrollbar != b.has_h_scrollbar
+        || (a.content_width - b.content_width).abs() > H_SCROLLBAR_OVERFLOW_EPSILON_PX
+        || (a.viewport_width - b.viewport_width).abs() > H_SCROLLBAR_OVERFLOW_EPSILON_PX
+        || (a.clamped_scroll_x - b.clamped_scroll_x).abs() > H_SCROLLBAR_OVERFLOW_EPSILON_PX
+}
+
+/// Returns `true` for non-trivial JSON payloads (`Object` with >= 1 key, or `Array` that
+/// contains nested objects/arrays or >= 2 elements), avoiding false positives on `[1234]` / `[]` / `{}`.
+pub fn is_meaningful_json_value(val: &serde_json::Value) -> bool {
+    match val {
+        serde_json::Value::Object(map) => !map.is_empty(),
+        serde_json::Value::Array(arr) => {
+            !arr.is_empty()
+                && (arr.len() >= 2 || arr.iter().any(|v| v.is_object() || v.is_array()))
+        }
+        _ => false,
+    }
+}
+
+/// Formats a raw log line for the Line Detail inspector:
+/// - Strips trailing `\r`/`\n` (e.g. from `StreamLogBuffer::get_line_arc`)
+/// - Skips JSON scanning when input exceeds `LINE_DETAIL_JSON_PARSE_MAX_BYTES` (`256 KiB`)
+/// - Scans up to 32 `{` / `[` candidates using `serde_json::Deserializer::from_str(...).into_iter::<Value>()`
+///   so trailing log suffixes (e.g. `" (12ms)"`) are preserved cleanly
+/// - Safely caps `display_text.len() <= max_render_bytes` on a valid UTF-8 char boundary
+pub fn format_line_detail_text(
+    raw: &str,
+    pretty_json: bool,
+    max_render_bytes: usize,
+) -> LineDetailFormatted {
+    let clean_raw = raw.trim_end_matches(['\r', '\n']);
+
+    let mut found_json: Option<(usize, usize, serde_json::Value)> = None;
+    if clean_raw.len() <= LINE_DETAIL_JSON_PARSE_MAX_BYTES {
+        for (idx, _) in clean_raw.match_indices(['{', '[']).take(32) {
+            let mut stream = serde_json::Deserializer::from_str(&clean_raw[idx..])
+                .into_iter::<serde_json::Value>();
+            if let Some(Ok(val)) = stream.next() {
+                if is_meaningful_json_value(&val) {
+                    let consumed = stream.byte_offset();
+                    found_json = Some((idx, consumed, val));
+                    break;
+                }
+            }
+        }
+    }
+
+    let has_json = found_json.is_some();
+    let formatted = if pretty_json {
+        if let Some((idx, consumed, val)) = found_json {
+            if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+                let prefix = clean_raw[..idx].trim_end();
+                let suffix = clean_raw[idx + consumed..].trim();
+                let mut out =
+                    String::with_capacity(prefix.len() + pretty.len() + suffix.len() + 4);
+                if !prefix.is_empty() {
+                    out.push_str(prefix);
+                    out.push('\n');
+                }
+                out.push_str(&pretty);
+                if !suffix.is_empty() {
+                    out.push('\n');
+                    out.push_str(suffix);
+                }
+                out
+            } else {
+                clean_raw.to_string()
+            }
+        } else {
+            clean_raw.to_string()
+        }
+    } else {
+        clean_raw.to_string()
+    };
+
+    let (display_text, is_truncated_for_render) = if formatted.len() > max_render_bytes {
+        if max_render_bytes >= LINE_DETAIL_TRUNCATION_SUFFIX.len() {
+            let budget = max_render_bytes - LINE_DETAIL_TRUNCATION_SUFFIX.len();
+            let cut = formatted.floor_char_boundary(budget);
+            let mut truncated =
+                String::with_capacity(cut + LINE_DETAIL_TRUNCATION_SUFFIX.len());
+            truncated.push_str(&formatted[..cut]);
+            truncated.push_str(LINE_DETAIL_TRUNCATION_SUFFIX);
+            (truncated, true)
+        } else {
+            let cut = formatted.floor_char_boundary(max_render_bytes);
+            (formatted[..cut].to_string(), true)
+        }
+    } else {
+        (formatted, false)
+    };
+
+    LineDetailFormatted {
+        display_text,
+        has_json,
+        is_truncated_for_render,
+    }
+}
+
 /// Computes the rendered `(list_height_px, scrollbar_track_height_px)` pair for a pane of `viewport_height`.
 /// Because the column header sits above the `[list_el | scrollbar_track]` row, both elements always share identical height.
 #[inline]
@@ -754,14 +1050,356 @@ pub fn aligned_list_and_scrollbar_height(viewport_height: f32, is_column_view: b
     (h, h)
 }
 
-/// Column Header Bar for Structured Column Grid View
-fn render_column_header(theme: crate::theme::Theme) -> impl IntoElement {
+/// Computes the rendered `(list_height_px, scrollbar_track_height_px)` pair for a pane of `viewport_height`,
+/// accounting for both the optional Column View header and the optional bottom horizontal scrollbar track.
+#[inline]
+pub fn aligned_list_and_scrollbar_height_with_hscroll(
+    viewport_height: f32,
+    is_column_view: bool,
+    has_h_scrollbar: bool,
+) -> (f32, f32) {
+    let header_offset = if is_column_view {
+        COLUMN_HEADER_HEIGHT_PX
+    } else {
+        0.0
+    };
+    let hscroll_offset = if has_h_scrollbar {
+        H_SCROLLBAR_TRACK_HEIGHT_PX
+    } else {
+        0.0
+    };
+    let h = (viewport_height - header_offset - hscroll_offset).max(0.0);
+    (h, h)
+}
+
+/// Renders the horizontal resize splitter above the collapsible Line Detail panel.
+fn render_line_detail_splitter(
+    workspace: &LogAnalysisWorkspace,
+    cx: &mut Context<LogAnalysisWorkspace>,
+) -> impl IntoElement {
+    let theme = workspace.theme;
+    let is_resizing = workspace.is_resizing_line_detail;
+
     div()
-        .h(px(COLUMN_HEADER_HEIGHT_PX))
+        .id("line-detail-splitter")
         .w_full()
+        .h(px(4.0))
+        .flex_shrink_0()
+        .cursor_row_resize()
+        .bg(if is_resizing {
+            theme.accent
+        } else {
+            theme.border
+        })
+        .hover(move |s| s.bg(theme.accent))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                if event.click_count == 2 {
+                    this.reset_line_detail_height(cx);
+                } else {
+                    this.start_resizing_line_detail(event.position, cx);
+                }
+            }),
+        )
+}
+
+/// Renders the collapsible bottom Line Detail inspector with word-wrapped monospace text and JSON pretty-printing.
+fn render_line_detail_panel(
+    workspace: &LogAnalysisWorkspace,
+    cx: &mut Context<LogAnalysisWorkspace>,
+) -> impl IntoElement {
+    let theme = workspace.theme;
+    let active_opt = workspace.resolve_active_selected_line();
+
+    let formatted_opt = active_opt.as_ref().map(|active| {
+        if let Some((cached_key, cached_val)) = &workspace.cached_line_detail {
+            if cached_key.is_secondary == active.is_secondary_pane
+                && cached_key.abs_source_idx == active.abs_source_idx
+                && cached_key.pretty_json == workspace.is_line_detail_json_pretty
+                && cached_key.line_len == active.line_text.len()
+            {
+                return cached_val.clone();
+            }
+        }
+        format_line_detail_text(
+            active.line_text.as_ref(),
+            workspace.is_line_detail_json_pretty,
+            LINE_DETAIL_RENDER_MAX_BYTES,
+        )
+    });
+
+    let highlight_fg = if workspace.is_dark_theme {
+        rgb(0xffffff)
+    } else {
+        rgb(0x000000)
+    };
+    let highlight_style = HighlightStyle {
+        background_color: Some(theme.highlight_search.into()),
+        color: Some(highlight_fg.into()),
+        font_weight: Some(FontWeight::BOLD),
+        ..Default::default()
+    };
+
+    let has_json = formatted_opt.as_ref().is_some_and(|f| f.has_json);
+    let is_json_pretty = workspace.is_line_detail_json_pretty;
+
+    let header_el = div()
+        .id("line-detail-header")
+        .w_full()
+        .h(px(28.0))
+        .flex_shrink_0()
         .bg(theme.bg_header)
         .border_b_1()
         .border_color(theme.border_subtle)
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        // Left metadata badges
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.text_primary)
+                        .child("📄 Line Detail"),
+                )
+                .when_some(active_opt.as_ref(), |s, active| {
+                    let char_count = active.line_text.as_ref().chars().count();
+                    let is_truncated = formatted_opt
+                        .as_ref()
+                        .is_some_and(|f| f.is_truncated_for_render);
+                    let line_badge = format!("Line {}", active.source_idx + 1);
+                    let chars_badge = format!("{char_count} chars");
+
+                    s.when(workspace.split_view.is_split_view, |s| {
+                        s.child(
+                            div()
+                                .px(px(5.0))
+                                .py(px(1.0))
+                                .rounded_xs()
+                                .bg(theme.bg_badge)
+                                .text_size(px(9.5))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme.text_muted)
+                                .child(if active.is_secondary_pane {
+                                    "PANE B"
+                                } else {
+                                    "PANE A"
+                                }),
+                        )
+                    })
+                    .child(
+                        div()
+                            .px(px(5.0))
+                            .py(px(1.0))
+                            .rounded_xs()
+                            .bg(theme.accent_muted)
+                            .font_family("monospace")
+                            .text_size(px(10.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme.accent)
+                            .child(line_badge),
+                    )
+                    .child(
+                        div()
+                            .font_family("monospace")
+                            .text_size(px(10.0))
+                            .text_color(theme.text_muted)
+                            .child(chars_badge),
+                    )
+                    .when(is_truncated, |s| {
+                        s.child(
+                            div()
+                                .px(px(5.0))
+                                .py(px(1.0))
+                                .rounded_xs()
+                                .bg(theme.bg_badge)
+                                .text_size(px(9.5))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme.warning_amber)
+                                .child("truncated"),
+                        )
+                    })
+                    .when_some(active.source_badge.as_ref(), |s, (s_id, s_name)| {
+                        let badge_colors = [
+                            (rgb(0x1e3a8a), rgb(0x93c5fd)),
+                            (rgb(0x581c87), rgb(0xd8b4fe)),
+                            (rgb(0x064e3b), rgb(0x6ee7b7)),
+                            (rgb(0x7c2d12), rgb(0xfdba74)),
+                        ];
+                        let (badge_bg, badge_fg) = badge_colors[(*s_id as usize) % badge_colors.len()];
+                        s.child(
+                            div()
+                                .px(px(5.0))
+                                .py(px(1.0))
+                                .rounded_xs()
+                                .bg(badge_bg)
+                                .text_color(badge_fg)
+                                .text_size(px(9.5))
+                                .font_weight(FontWeight::BOLD)
+                                .child(s_name.clone()),
+                        )
+                    })
+                    .when(active.source_badge.is_none(), |s| {
+                        s.when_some(active.parsed_time.as_ref(), |s, time_str| {
+                            s.child(
+                                div()
+                                    .font_family("monospace")
+                                    .text_size(px(10.0))
+                                    .text_color(theme.text_muted)
+                                    .child(time_str.clone()),
+                            )
+                        })
+                    })
+                }),
+        )
+        // Right action buttons
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_1p5()
+                .flex_shrink_0()
+                .when(has_json, |s| {
+                    s.child(
+                        div()
+                            .id("btn-line-detail-json")
+                            .px(px(6.0))
+                            .py(px(2.0))
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .font_family("monospace")
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .when(is_json_pretty, |b| {
+                                b.bg(theme.accent_muted).text_color(theme.accent)
+                            })
+                            .when(!is_json_pretty, |b| {
+                                b.bg(theme.bg_card).text_color(theme.text_muted)
+                            })
+                            .hover(move |b| b.bg(theme.btn_hover))
+                            .tooltip(render_tooltip("Toggle JSON pretty-printing", None, theme))
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.toggle_line_detail_json_pretty(cx);
+                            }))
+                            .child("{ } JSON"),
+                    )
+                })
+                .when(active_opt.is_some(), |s| {
+                    s.child(
+                        div()
+                            .id("btn-line-detail-copy")
+                            .px(px(6.0))
+                            .py(px(2.0))
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .bg(theme.bg_card)
+                            .hover(move |b| b.bg(theme.btn_hover))
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .tooltip(render_tooltip(
+                                "Copy full raw line to clipboard",
+                                Some("Ctrl+C"),
+                                theme,
+                            ))
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.copy_selection(cx);
+                            }))
+                            .child("📋 Copy"),
+                    )
+                })
+                .child(
+                    div()
+                        .id("btn-line-detail-close")
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .hover(move |b| b.bg(theme.btn_hover).text_color(theme.error_red))
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.text_muted)
+                        .tooltip(render_tooltip("Close Line Detail inspector", Some("Esc"), theme))
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            this.close_line_detail(cx);
+                        }))
+                        .child("✕"),
+                ),
+        );
+
+    let body_el = if let Some(formatted) = formatted_opt {
+        div()
+            .id("line-detail-scroll-body")
+            .flex_1()
+            .w_full()
+            .min_h(px(0.0))
+            .flex()
+            .flex_col()
+            .overflow_y_scroll()
+            .track_scroll(&workspace.line_detail_scroll_handle)
+            .bg(theme.bg_viewport)
+            .p(px(10.0))
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .font_family("monospace")
+                    .text_size(workspace.font_size)
+                    .line_height(px(f32::from(workspace.font_size) * 1.45))
+                    .text_color(theme.text_primary)
+                    .child(render_highlighted_text(
+                        SharedString::from(formatted.display_text),
+                        &workspace.search_ctrl.cached_matcher,
+                        highlight_style,
+                    )),
+            )
+            .into_any_element()
+    } else {
+        div()
+            .id("line-detail-scroll-body")
+            .flex_1()
+            .w_full()
+            .min_h(px(0.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(theme.bg_viewport)
+            .p(px(10.0))
+            .text_size(px(11.5))
+            .text_color(theme.text_muted)
+            .child("Select any log line to inspect its full wrapped contents")
+            .into_any_element()
+    };
+
+    div()
+        .id("line-detail-panel")
+        .w_full()
+        .h(px(workspace.line_detail_height))
+        .max_h(relative(0.55))
+        .flex_shrink_0()
+        .bg(theme.bg_panel)
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .child(header_el)
+        .child(body_el)
+}
+
+/// Column Header Bar for Structured Column Grid View
+fn render_column_header(theme: crate::theme::Theme, scroll_x: f32) -> impl IntoElement {
+    div()
+        .h_full()
+        .min_w_full()
+        .when(scroll_x < 0.0, |s| s.ml(px(scroll_x)))
         .flex()
         .flex_row()
         .items_center()
@@ -887,6 +1525,7 @@ fn render_log_list(
     };
 
     let is_dark_theme = workspace.is_dark_theme;
+    let full_line_display_fallback = workspace.full_line_display;
     let weak_handle = weak_self.clone();
     let list_id = if is_primary { "log-view" } else { "secondary-log-view" };
 
@@ -915,6 +1554,9 @@ fn render_log_list(
         let search_matcher = ws.and_then(|w| w.search_ctrl.cached_matcher.clone());
         let row_theme = ws.map(|w| w.theme).unwrap_or(theme);
         let is_col_view = ws.map(|w| w.is_column_view).unwrap_or(false);
+        let full_line_display = ws
+            .map(|w| w.full_line_display)
+            .unwrap_or(full_line_display_fallback);
 
         range
             .map(|idx| {
@@ -1031,7 +1673,8 @@ fn render_log_list(
                     .h(row_height)
                     .min_h(row_height)
                     .max_h(row_height)
-                    .w_full()
+                    .when(!full_line_display, |s| s.w_full().overflow_hidden())
+                    .when(full_line_display, |s| s.min_w_full())
                     .bg(final_bg)
                     .hover(move |s| {
                         if !is_selected && !has_custom_bg {
@@ -1047,15 +1690,17 @@ fn render_log_list(
                     .flex()
                     .items_center()
                     .flex_shrink_0()
-                    .overflow_hidden()
                     .cursor_pointer()
-                    .on_click(move |_, _window, cx| {
+                    .on_click(move |event: &ClickEvent, _window, cx| {
                         if let Some(real_idx) = real_idx {
                             let _ = entity_handle.update(cx, |this, cx| {
                                 if is_primary {
                                     this.select_log_row(idx, real_idx, cx);
                                 } else {
                                     this.select_secondary_log_row(idx, real_idx, cx);
+                                }
+                                if event.standard_click() && event.click_count() == 2 {
+                                    this.open_line_detail(cx);
                                 }
                             });
                         }
@@ -1198,7 +1843,7 @@ fn render_log_list(
                                     .flex_1()
                                     .px(px(8.0))
                                     .whitespace_nowrap()
-                                    .overflow_hidden()
+                                    .when(!full_line_display, |s| s.overflow_hidden())
                                     .child(render_highlighted_text(
                                         SharedString::new(msg_text),
                                         &search_matcher,
@@ -1214,7 +1859,7 @@ fn render_log_list(
                             row_theme.border_subtle,
                             24.0,
                             12.0,
-                            true,
+                            !full_line_display,
                         ));
                     }
                 } else {
@@ -1236,8 +1881,44 @@ fn render_log_list(
     });
 
     if workspace.full_line_display {
-        list = list.with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained);
+        let widest_filter = if is_primary {
+            workspace.filter_result.as_deref()
+        } else {
+            workspace.split_view.secondary_filter_result.as_deref()
+        };
+        let widest_row_idx = resolve_widest_visible_row_idx(widest_filter);
+        list = list
+            .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+            .with_width_from_item(widest_row_idx);
     }
+
+    list = list.on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, window, cx| {
+        if !this.full_line_display || !event.modifiers.shift {
+            return;
+        }
+        let pixel_delta = event.delta.pixel_delta(window.line_height());
+        if pixel_delta.x.is_zero() && !pixel_delta.y.is_zero() {
+            let handle = if is_primary {
+                &this.scroll_handle
+            } else {
+                &this.secondary_scroll_handle
+            };
+            let state = handle.0.borrow();
+            let max_offset = state.base_handle.max_offset();
+            let max_x: f32 = max_offset.width.into();
+            let max_y: f32 = max_offset.height.into();
+            let cur = state.base_handle.offset();
+            let restored_y = (f32::from(cur.y) - f32::from(pixel_delta.y)).clamp(-max_y, 0.0);
+            let next_x = clamp_horizontal_scroll_x(
+                f32::from(cur.x) + f32::from(pixel_delta.y),
+                max_x,
+            );
+            state.base_handle.set_offset(point(px(next_x), px(restored_y)));
+            drop(state);
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }));
 
     let scroll_handle = if is_primary {
         workspace.scroll_handle.clone()
@@ -1304,47 +1985,23 @@ fn render_log_list(
         .cursor_pointer();
 
     if is_primary {
-        scrollbar_track = scrollbar_track
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                    this.is_dragging_scrollbar = true;
-                    this.scroll_to_ratio_from_mouse_y(event.position.y, cx);
-                }),
-            )
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                if this.is_dragging_scrollbar && event.dragging() {
-                    this.scroll_to_ratio_from_mouse_y(event.position.y, cx);
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.is_dragging_scrollbar = false;
-                    cx.notify();
-                }),
-            );
+        scrollbar_track = scrollbar_track.on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                this.is_dragging_scrollbar = true;
+                this.scroll_to_ratio_from_mouse_y(event.position.y, cx);
+                cx.notify();
+            }),
+        );
     } else {
-        scrollbar_track = scrollbar_track
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                    this.is_dragging_secondary_scrollbar = true;
-                    this.scroll_secondary_to_ratio_from_mouse_y(event.position.y, cx);
-                }),
-            )
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                if this.is_dragging_secondary_scrollbar && event.dragging() {
-                    this.scroll_secondary_to_ratio_from_mouse_y(event.position.y, cx);
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.is_dragging_secondary_scrollbar = false;
-                    cx.notify();
-                }),
-            );
+        scrollbar_track = scrollbar_track.on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                this.is_dragging_secondary_scrollbar = true;
+                this.scroll_secondary_to_ratio_from_mouse_y(event.position.y, cx);
+                cx.notify();
+            }),
+        );
     }
 
     scrollbar_track = scrollbar_track
@@ -1362,6 +2019,12 @@ fn render_log_list(
                 .hover(move |s| s.bg(theme.accent)),
         );
 
+    let rendered_snapshot =
+        read_h_scroll_render_snapshot(&scroll_handle, workspace.full_line_display);
+    let scroll_handle_for_prepaint = scroll_handle.clone();
+    let weak_for_prepaint = weak_self.clone();
+    let full_line_for_prepaint = workspace.full_line_display;
+
     let list_and_scrollbar = div()
         .flex_1()
         .w_full()
@@ -1369,12 +2032,141 @@ fn render_log_list(
         .flex()
         .flex_row()
         .overflow_hidden()
+        .on_children_prepainted(move |_, window, _cx| {
+            let latest = read_h_scroll_render_snapshot(
+                &scroll_handle_for_prepaint,
+                full_line_for_prepaint,
+            );
+            if h_scroll_snapshots_differ(rendered_snapshot, latest) {
+                let weak = weak_for_prepaint.clone();
+                window.on_next_frame(move |_, cx| {
+                    let _ = weak.update(cx, |_, cx| cx.notify());
+                });
+            }
+        })
         .child(list_el)
         .child(scrollbar_track);
 
+    let h_scrollbar_row = if rendered_snapshot.has_h_scrollbar {
+        compute_horizontal_scrollbar_metrics(
+            rendered_snapshot.viewport_width,
+            rendered_snapshot.content_width,
+            rendered_snapshot.clamped_scroll_x,
+        )
+        .map(|metrics| {
+            let h_track_id = if is_primary {
+                "log-h-scrollbar-track"
+            } else {
+                "secondary-h-scrollbar-track"
+            };
+            let h_thumb_id = if is_primary {
+                "log-h-scrollbar-thumb"
+            } else {
+                "secondary-h-scrollbar-thumb"
+            };
+            let is_h_dragging = if is_primary {
+                workspace.is_dragging_h_scrollbar
+            } else {
+                workspace.is_dragging_secondary_h_scrollbar
+            };
+            let h_thumb_color = if is_h_dragging {
+                theme.accent
+            } else if workspace.is_dark_theme {
+                rgba(0xffffff38)
+            } else {
+                rgba(0x00000038)
+            };
+            let track_bounds_cell = if is_primary {
+                workspace.h_scrollbar_track_bounds.clone()
+            } else {
+                workspace.secondary_h_scrollbar_track_bounds.clone()
+            };
+            let track_bounds_for_prepaint = track_bounds_cell.clone();
+            let track_bounds_for_click = track_bounds_cell;
+            let handle_for_click = scroll_handle.clone();
+            let thumb_left = metrics.thumb_left;
+            let thumb_width = metrics.thumb_width;
+
+            div()
+                .w_full()
+                .h(px(H_SCROLLBAR_TRACK_HEIGHT_PX))
+                .flex()
+                .flex_row()
+                .flex_shrink_0()
+                .on_children_prepainted(move |children_bounds, _window, _cx| {
+                    if let Some(&first_bounds) = children_bounds.first() {
+                        track_bounds_for_prepaint.set(first_bounds);
+                    }
+                })
+                .child(
+                    div()
+                        .id(h_track_id)
+                        .flex_1()
+                        .h_full()
+                        .relative()
+                        .bg(theme.bg_gutter)
+                        .border_t_1()
+                        .border_color(theme.border_subtle)
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                                let captured = track_bounds_for_click.get();
+                                let effective = if captured.size.width > px(0.0) {
+                                    captured
+                                } else {
+                                    handle_for_click.0.borrow().base_handle.bounds()
+                                };
+                                let track_left: f32 = effective.origin.x.into();
+                                let rel_x = f32::from(event.position.x) - track_left;
+                                let grab_offset = if rel_x >= thumb_left
+                                    && rel_x <= thumb_left + thumb_width
+                                {
+                                    rel_x - thumb_left
+                                } else {
+                                    thumb_width * 0.5
+                                };
+                                this.h_scrollbar_drag_grab_offset = Some(grab_offset);
+                                if is_primary {
+                                    this.is_dragging_h_scrollbar = true;
+                                } else {
+                                    this.is_dragging_secondary_h_scrollbar = true;
+                                }
+                                this.scroll_h_to_mouse_x(is_primary, event.position.x, cx);
+                                cx.notify();
+                            }),
+                        )
+                        .child(
+                            div()
+                                .id(h_thumb_id)
+                                .absolute()
+                                .top(px(2.0))
+                                .bottom(px(2.0))
+                                .left(px(metrics.thumb_left))
+                                .w(px(metrics.thumb_width))
+                                .rounded_full()
+                                .bg(h_thumb_color)
+                                .hover(move |s| s.bg(theme.accent)),
+                        ),
+                )
+                .child(
+                    div()
+                        .w(px(SCROLLBAR_TRACK_WIDTH_PX))
+                        .h_full()
+                        .flex_shrink_0()
+                        .bg(theme.bg_gutter)
+                        .border_t_1()
+                        .border_l_1()
+                        .border_color(theme.border_subtle),
+                )
+        })
+    } else {
+        None
+    };
+
     div()
         .flex_1()
-        .h_full()
+        .min_h(px(0.0))
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -1383,19 +2175,27 @@ fn render_log_list(
                 div()
                     .w_full()
                     .h(px(COLUMN_HEADER_HEIGHT_PX))
+                    .flex_shrink_0()
                     .flex()
                     .flex_row()
                     .child(
                         div()
                             .flex_1()
                             .h_full()
+                            .bg(theme.bg_header)
+                            .border_b_1()
+                            .border_color(theme.border_subtle)
                             .overflow_hidden()
-                            .child(render_column_header(theme)),
+                            .child(render_column_header(
+                                theme,
+                                rendered_snapshot.clamped_scroll_x,
+                            )),
                     )
                     .child(
                         div()
                             .w(px(SCROLLBAR_TRACK_WIDTH_PX))
                             .h_full()
+                            .flex_shrink_0()
                             .bg(theme.bg_header)
                             .border_b_1()
                             .border_l_1()
@@ -1404,6 +2204,7 @@ fn render_log_list(
             )
         })
         .child(list_and_scrollbar)
+        .children(h_scrollbar_row)
 }
 
 /// Secondary pane empty state when no file is loaded in Pane B
@@ -1415,7 +2216,8 @@ fn render_secondary_empty_state(
 
     div()
         .flex_1()
-        .h_full()
+        .w_full()
+        .min_h(px(0.0))
         .flex()
         .flex_col()
         .items_center()
@@ -1510,7 +2312,8 @@ fn render_onboarding_empty_state(
     div()
         .id("onboarding-scroll-container")
         .flex_1()
-        .h_full()
+        .w_full()
+        .min_h(px(0.0))
         .overflow_y_scroll()
         .flex()
         .flex_col()
@@ -2126,11 +2929,20 @@ fn render_onboarding_empty_state(
 #[cfg(test)]
 mod tests {
     use super::{
-        aligned_list_and_scrollbar_height, build_heatmap_ticks, compute_highlight_ranges,
-        log_row_height_px, COLUMN_HEADER_HEIGHT_PX, LOG_ROW_HEIGHT_MULTIPLIER,
-        SCROLLBAR_TRACK_WIDTH_PX,
+        aligned_list_and_scrollbar_height, aligned_list_and_scrollbar_height_with_hscroll,
+        build_heatmap_ticks, clamp_horizontal_scroll_x, compute_highlight_ranges,
+        compute_horizontal_scrollbar_metrics, format_line_detail_text, h_scroll_snapshots_differ,
+        is_meaningful_json_value, log_row_height_px, read_h_scroll_render_snapshot,
+        resolve_widest_visible_row_idx, scroll_x_from_mouse_x, HScrollRenderSnapshot,
+        HorizontalScrollbarMetrics, COLUMN_HEADER_HEIGHT_PX, H_SCROLLBAR_MIN_THUMB_WIDTH_PX,
+        H_SCROLLBAR_TRACK_HEIGHT_PX, LINE_DETAIL_JSON_PARSE_MAX_BYTES,
+        LINE_DETAIL_TRUNCATION_SUFFIX, LOG_ROW_HEIGHT_MULTIPLIER, SCROLLBAR_TRACK_WIDTH_PX,
     };
-    use loganalysis_core::{CompiledMatcher, HeatmapBucket, HeatmapData};
+    use gpui::{point, px, UniformListScrollHandle};
+    use loganalysis_core::{
+        execute_filtering, ActiveLogSource, CompiledMatcher, CompiledStreamFilters, FilterResult,
+        FilterRule, HeatmapBucket, HeatmapData, LogSource, StreamLogBuffer,
+    };
     use std::sync::Arc;
 
     #[test]
@@ -2139,6 +2951,348 @@ mod tests {
         assert_eq!(SCROLLBAR_TRACK_WIDTH_PX, 15.0);
         assert_eq!(aligned_list_and_scrollbar_height(600.0, false), (600.0, 600.0));
         assert_eq!(aligned_list_and_scrollbar_height(600.0, true), (576.0, 576.0));
+    }
+
+    #[test]
+    fn test_hscroll_alignment_constants_and_heights() {
+        assert_eq!(H_SCROLLBAR_TRACK_HEIGHT_PX, 12.0);
+        assert_eq!(
+            aligned_list_and_scrollbar_height_with_hscroll(600.0, false, false),
+            (600.0, 600.0)
+        );
+        assert_eq!(
+            aligned_list_and_scrollbar_height_with_hscroll(600.0, false, true),
+            (588.0, 588.0)
+        );
+        assert_eq!(
+            aligned_list_and_scrollbar_height_with_hscroll(600.0, true, true),
+            (564.0, 564.0)
+        );
+        assert_eq!(
+            aligned_list_and_scrollbar_height_with_hscroll(10.0, true, true),
+            (0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn test_resolve_widest_visible_row_idx() {
+        assert_eq!(resolve_widest_visible_row_idx(None), None);
+
+        let empty = FilterResult::default();
+        assert_eq!(resolve_widest_visible_row_idx(Some(&empty)), None);
+
+        // Widest line in the middle of visible_indices
+        let mid = FilterResult {
+            visible_indices: vec![10, 25, 42, 99],
+            widest_visible_source_idx: Some(42),
+            ..Default::default()
+        };
+        assert_eq!(resolve_widest_visible_row_idx(Some(&mid)), Some(2));
+
+        // Widest line at the last visible index (simulating post-trim shift)
+        let last = FilterResult {
+            visible_indices: vec![5, 12, 30],
+            widest_visible_source_idx: Some(30),
+            ..Default::default()
+        };
+        assert_eq!(resolve_widest_visible_row_idx(Some(&last)), Some(2));
+
+        // Fallback to Some(0) when widest_visible_source_idx is None or temporarily unmatched
+        let missing_idx = FilterResult {
+            visible_indices: vec![5, 12, 30],
+            widest_visible_source_idx: None,
+            ..Default::default()
+        };
+        assert_eq!(resolve_widest_visible_row_idx(Some(&missing_idx)), Some(0));
+
+        let unmatched_idx = FilterResult {
+            visible_indices: vec![5, 12, 30],
+            widest_visible_source_idx: Some(13),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_widest_visible_row_idx(Some(&unmatched_idx)),
+            Some(0)
+        );
+
+        // End-to-end ring-buffer trim reconciliation with StreamLogBuffer + append_streaming_batch
+        let mut stream = StreamLogBuffer::new(4, 2);
+        stream.append_chunk(vec![
+            "01-01 00:00:00.000 I Tag: short_0".to_string(),
+            format!("01-01 00:00:01.000 E Tag: widest_old_{}", "X".repeat(120)),
+            "01-01 00:00:02.000 E Tag: mid_2_abcdef".to_string(),
+            "01-01 00:00:03.000 I Tag: short_3".to_string(),
+        ]);
+        let rules = vec![FilterRule {
+            text: "E Tag:".to_string(),
+            active: true,
+            ..Default::default()
+        }];
+        let compiled = CompiledStreamFilters::new(&rules);
+        let mut res = execute_filtering(&stream, &rules, true, None, 1).unwrap();
+        // Visible: [1 (widest_old), 2 (mid_2)] -> widest is visible row 0
+        assert_eq!(res.visible_indices, vec![1, 2]);
+        assert_eq!(resolve_widest_visible_row_idx(Some(&res)), Some(0));
+
+        // Append 2 more lines and trim 2 leading lines (widest_old evicted, mid_2 shifts to source_idx 0)
+        stream.append_chunk(vec![
+            "01-01 00:00:04.000 I Tag: short_4".to_string(),
+            format!("01-01 00:00:05.000 E Tag: new_widest_{}", "Y".repeat(40)),
+        ]);
+        let trimmed = stream.trim_if_needed().expect("ring buffer should trim");
+        assert_eq!(trimmed, 2);
+        let live_src = ActiveLogSource::Stream(stream);
+        compiled.append_streaming_batch(&mut res, &live_src, 2..live_src.line_count(), trimmed, true);
+        // Surviving visible: [0 (mid_2), 3 (new_widest)] -> widest is visible row 1
+        assert_eq!(res.visible_indices, vec![0, 3]);
+        assert_eq!(resolve_widest_visible_row_idx(Some(&res)), Some(1));
+    }
+
+    #[test]
+    fn test_horizontal_scrollbar_math_and_snapshots() {
+        // Non-finite and -0.0 normalization
+        assert_eq!(clamp_horizontal_scroll_x(f32::NAN, 100.0).to_bits(), 0.0f32.to_bits());
+        assert_eq!(
+            clamp_horizontal_scroll_x(f32::INFINITY, 100.0).to_bits(),
+            0.0f32.to_bits()
+        );
+        assert_eq!(
+            clamp_horizontal_scroll_x(f32::NEG_INFINITY, 100.0).to_bits(),
+            0.0f32.to_bits()
+        );
+        assert_eq!(clamp_horizontal_scroll_x(-50.0, f32::NAN).to_bits(), 0.0f32.to_bits());
+        assert_eq!(
+            clamp_horizontal_scroll_x(-50.0, f32::INFINITY).to_bits(),
+            0.0f32.to_bits()
+        );
+        assert_eq!(
+            clamp_horizontal_scroll_x(-50.0, f32::NEG_INFINITY).to_bits(),
+            0.0f32.to_bits()
+        );
+        assert_eq!(clamp_horizontal_scroll_x(-0.0, 100.0).to_bits(), 0.0f32.to_bits());
+        assert_eq!(clamp_horizontal_scroll_x(-50.0, 0.0), 0.0);
+        assert_eq!(clamp_horizontal_scroll_x(25.0, 100.0), 0.0);
+        assert_eq!(clamp_horizontal_scroll_x(-250.0, 100.0), -100.0);
+
+        // No overflow within 0.5px hysteresis (including exact 0.5px boundary) -> None
+        assert_eq!(compute_horizontal_scrollbar_metrics(400.0, 400.0, 0.0), None);
+        assert_eq!(compute_horizontal_scrollbar_metrics(400.0, 400.4, 0.0), None);
+        assert_eq!(compute_horizontal_scrollbar_metrics(400.0, 400.5, 0.0), None);
+        assert!(compute_horizontal_scrollbar_metrics(400.0, 400.6, 0.0).is_some());
+        assert_eq!(compute_horizontal_scrollbar_metrics(0.0, 400.0, 0.0), None);
+        assert_eq!(compute_horizontal_scrollbar_metrics(f32::NAN, 400.0, 0.0), None);
+        assert_eq!(compute_horizontal_scrollbar_metrics(400.0, f32::INFINITY, 0.0), None);
+
+        // Narrow viewport (< 28.0px) clamps thumb width to viewport_width
+        let narrow = compute_horizontal_scrollbar_metrics(20.0, 200.0, 0.0).unwrap();
+        assert_eq!(narrow.thumb_width, 20.0);
+        assert_eq!(narrow.thumb_left, 0.0);
+
+        // Minimum thumb width of 28.0px on huge content
+        let huge = compute_horizontal_scrollbar_metrics(300.0, 50_000.0, -999_999.0).unwrap();
+        assert_eq!(huge.thumb_width, H_SCROLLBAR_MIN_THUMB_WIDTH_PX);
+        assert_eq!(huge.max_scroll_x, 49_700.0);
+        assert!((huge.thumb_left - (300.0 - 28.0)).abs() < 1e-4);
+
+        // Proportional thumb and over-scroll clamping
+        let mid = compute_horizontal_scrollbar_metrics(400.0, 800.0, -200.0).unwrap();
+        assert_eq!(
+            mid,
+            HorizontalScrollbarMetrics {
+                thumb_left: 100.0,
+                thumb_width: 200.0,
+                max_scroll_x: 400.0,
+            }
+        );
+
+        // Mouse X -> scroll X: invalid / degenerate cases
+        assert_eq!(scroll_x_from_mouse_x(150.0, 0.0, 200.0, 200.0, None, 100.0), 0.0);
+        assert_eq!(scroll_x_from_mouse_x(150.0, 0.0, 20.0, 28.0, None, 100.0), 0.0);
+        assert_eq!(scroll_x_from_mouse_x(150.0, 0.0, 400.0, 200.0, None, 0.0), 0.0);
+        assert_eq!(scroll_x_from_mouse_x(f32::NAN, 0.0, 400.0, 200.0, None, 400.0), 0.0);
+        assert_eq!(scroll_x_from_mouse_x(f32::INFINITY, 0.0, 400.0, 200.0, None, 400.0), 0.0);
+        assert_eq!(scroll_x_from_mouse_x(150.0, 0.0, 400.0, 200.0, None, f32::NEG_INFINITY), 0.0);
+
+        // Track click (centered): track spans [100, 500] -> center is 300 -> thumb_left 100 -> -200px
+        assert!((scroll_x_from_mouse_x(300.0, 100.0, 400.0, 200.0, None, 400.0) - (-200.0)).abs() < 1e-4);
+        assert_eq!(
+            scroll_x_from_mouse_x(200.0, 100.0, 400.0, 200.0, None, 400.0).to_bits(),
+            0.0f32.to_bits()
+        );
+        // Out-of-bounds mouse X clamps cleanly to [0.0, -max_scroll_x]
+        assert_eq!(
+            scroll_x_from_mouse_x(0.0, 100.0, 400.0, 200.0, None, 400.0).to_bits(),
+            0.0f32.to_bits()
+        );
+        assert_eq!(scroll_x_from_mouse_x(900.0, 100.0, 400.0, 200.0, None, 400.0), -400.0);
+        // Clicking at exact grab offset inside thumb keeps current scroll offset unchanged
+        let grab_offset = 40.0;
+        let click_x = 100.0 + mid.thumb_left + grab_offset;
+        assert!(
+            (scroll_x_from_mouse_x(click_x, 100.0, 400.0, mid.thumb_width, Some(grab_offset), mid.max_scroll_x)
+                - (-200.0))
+                .abs()
+                < 1e-4
+        );
+
+        // Snapshot hysteresis check (0.5px threshold)
+        let base = HScrollRenderSnapshot {
+            has_h_scrollbar: true,
+            content_width: 800.0,
+            viewport_width: 400.0,
+            clamped_scroll_x: -50.0,
+        };
+        let within_eps = HScrollRenderSnapshot {
+            content_width: 800.3,
+            viewport_width: 400.4,
+            clamped_scroll_x: -50.2,
+            ..base
+        };
+        assert!(!h_scroll_snapshots_differ(base, within_eps));
+        let at_exact_eps = HScrollRenderSnapshot {
+            content_width: 800.5,
+            ..base
+        };
+        assert!(!h_scroll_snapshots_differ(base, at_exact_eps));
+        let beyond_eps = HScrollRenderSnapshot {
+            content_width: 800.6,
+            ..base
+        };
+        assert!(h_scroll_snapshots_differ(base, beyond_eps));
+        assert!(h_scroll_snapshots_differ(
+            base,
+            HScrollRenderSnapshot {
+                viewport_width: 400.6,
+                ..base
+            }
+        ));
+        assert!(h_scroll_snapshots_differ(
+            base,
+            HScrollRenderSnapshot {
+                clamped_scroll_x: -50.6,
+                ..base
+            }
+        ));
+        let toggled = HScrollRenderSnapshot {
+            has_h_scrollbar: false,
+            ..base
+        };
+        assert!(h_scroll_snapshots_differ(base, toggled));
+
+        // read_h_scroll_render_snapshot normalizes when full_line_display is false
+        let handle = UniformListScrollHandle::new();
+        handle.0.borrow().base_handle.set_offset(point(px(-75.0), px(-30.0)));
+        let disabled_snap = read_h_scroll_render_snapshot(&handle, false);
+        assert!(!disabled_snap.has_h_scrollbar);
+        assert_eq!(disabled_snap.clamped_scroll_x, 0.0);
+        let enabled_snap = read_h_scroll_render_snapshot(&handle, true);
+        assert!(!enabled_snap.has_h_scrollbar);
+        assert_eq!(enabled_snap.clamped_scroll_x, 0.0);
+    }
+
+    #[test]
+    fn test_format_line_detail_text_and_json_detection() {
+        // 1. Plain text preserves body and strips trailing \r\n
+        let plain = format_line_detail_text("11-06 18:00:00.000 I Tag: hello\r\n", true, 4096);
+        assert_eq!(plain.display_text, "11-06 18:00:00.000 I Tag: hello");
+        assert!(!plain.has_json);
+        assert!(!plain.is_truncated_for_render);
+
+        // 2. False positives must be rejected: [1234], [], {}, [1]
+        assert!(!is_meaningful_json_value(&serde_json::json!({})));
+        assert!(!is_meaningful_json_value(&serde_json::json!([])));
+        assert!(!is_meaningful_json_value(&serde_json::json!([1234])));
+        assert!(is_meaningful_json_value(&serde_json::json!([1, 2])));
+        assert!(is_meaningful_json_value(&serde_json::json!([{"k": 1}])));
+        assert!(is_meaningful_json_value(&serde_json::json!({"k": 1})));
+
+        for fp in [
+            "Process killed [1234]",
+            "Pending queue: []",
+            "Empty payload {}",
+        ] {
+            let res = format_line_detail_text(fp, true, 4096);
+            assert!(!res.has_json, "Must reject false positive JSON in '{fp}'");
+            assert_eq!(res.display_text, fp);
+        }
+
+        // 3. Pure JSON object & array formatting
+        let pure_obj = format_line_detail_text("{\"b\":2,\"a\":1}\n", true, 4096);
+        assert!(pure_obj.has_json);
+        assert!(pure_obj.display_text.contains('\n'));
+        assert!(pure_obj.display_text.contains("\"a\": 1"));
+
+        let pure_raw = format_line_detail_text("{\"b\":2,\"a\":1}\n", false, 4096);
+        assert!(pure_raw.has_json);
+        assert_eq!(pure_raw.display_text, "{\"b\":2,\"a\":1}");
+
+        let pure_arr = format_line_detail_text("[{\"id\":1},{\"id\":2}]\r\n", true, 4096);
+        assert!(pure_arr.has_json);
+        assert!(pure_arr.display_text.starts_with("[\n"));
+        assert!(pure_arr.display_text.contains("\"id\": 1"));
+        assert!(pure_arr.display_text.contains("\"id\": 2"));
+
+        let pure_arr_raw = format_line_detail_text("[10,20,30]\n", false, 4096);
+        assert!(pure_arr_raw.has_json);
+        assert_eq!(pure_arr_raw.display_text, "[10,20,30]");
+
+        // 4. Logcat line with >= 8 bracketed tags before JSON + trailing " (12ms)" suffix
+        let complex = "11-06 18:00:00.123 100 100 I Net: [1] [2] [3] [4] [5] [6] [7] [8] [9] payload={\"status\":200,\"ok\":true} (12ms)\n";
+        let complex_pretty = format_line_detail_text(complex, true, 4096);
+        assert!(complex_pretty.has_json);
+        assert!(complex_pretty.display_text.starts_with(
+            "11-06 18:00:00.123 100 100 I Net: [1] [2] [3] [4] [5] [6] [7] [8] [9] payload=\n{"
+        ));
+        assert!(complex_pretty.display_text.ends_with("\n(12ms)"));
+
+        // 5. Inputs <= 256 KiB parse JSON; inputs > 256 KiB skip JSON parsing
+        let prefix = "{\"k\":\"";
+        let suffix = "\"}";
+        let exact_limit_payload = format!(
+            "{prefix}{}{suffix}",
+            "x".repeat(LINE_DETAIL_JSON_PARSE_MAX_BYTES - prefix.len() - suffix.len())
+        );
+        assert_eq!(exact_limit_payload.len(), LINE_DETAIL_JSON_PARSE_MAX_BYTES);
+        let at_limit = format_line_detail_text(&exact_limit_payload, true, 4096);
+        assert!(at_limit.has_json);
+        assert!(at_limit.is_truncated_for_render);
+
+        let huge_json = format!("{{\"k\":\"{}\"}}", "x".repeat(LINE_DETAIL_JSON_PARSE_MAX_BYTES));
+        assert!(huge_json.len() > LINE_DETAIL_JSON_PARSE_MAX_BYTES);
+        let skipped = format_line_detail_text(&huge_json, true, 4096);
+        assert!(!skipped.has_json);
+        assert!(skipped.is_truncated_for_render);
+        assert!(skipped.display_text.len() <= 4096);
+        assert!(skipped.display_text.ends_with(LINE_DETAIL_TRUNCATION_SUFFIX));
+
+        // 6. 500+ char spaceless token & multibyte Korean UTF-8 truncation boundary safety
+        let token = "A".repeat(600);
+        let token_res = format_line_detail_text(&token, true, 256);
+        assert!(token_res.is_truncated_for_render);
+        assert!(token_res.display_text.len() <= 256);
+        assert!(token_res.display_text.ends_with(LINE_DETAIL_TRUNCATION_SUFFIX));
+
+        let korean = "가나다라마바사아자차카타파하".repeat(20); // 3 bytes per char
+        for max_bytes in [
+            0,
+            1,
+            2,
+            5,
+            LINE_DETAIL_TRUNCATION_SUFFIX.len(),
+            LINE_DETAIL_TRUNCATION_SUFFIX.len() + 1,
+            LINE_DETAIL_TRUNCATION_SUFFIX.len() + 2,
+            LINE_DETAIL_TRUNCATION_SUFFIX.len() + 4,
+            128,
+        ] {
+            let res = format_line_detail_text(&korean, true, max_bytes);
+            assert!(res.is_truncated_for_render);
+            assert!(
+                res.display_text.len() <= max_bytes,
+                "display_text len {} exceeded max_bytes {}",
+                res.display_text.len(),
+                max_bytes
+            );
+        }
     }
 
     #[test]

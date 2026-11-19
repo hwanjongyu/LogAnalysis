@@ -25,6 +25,7 @@ pub enum PaletteCommandId {
     ToggleFilterDock,
     ToggleFacetsBar,
     ToggleFullLineDisplay,
+    ToggleLineDetail,
     ToggleTheme,
     ZoomIn,
     ZoomOut,
@@ -72,6 +73,7 @@ pub fn palette_command_action_name(id: PaletteCommandId) -> &'static str {
         PaletteCommandId::ToggleFilterDock => gpui::Action::name(&ToggleFilterDock),
         PaletteCommandId::ToggleFacetsBar => gpui::Action::name(&ToggleFacetsBar),
         PaletteCommandId::ToggleFullLineDisplay => gpui::Action::name(&ToggleFullLineDisplay),
+        PaletteCommandId::ToggleLineDetail => gpui::Action::name(&ToggleLineDetail),
         PaletteCommandId::ToggleTheme => gpui::Action::name(&ToggleTheme),
         PaletteCommandId::ZoomIn => gpui::Action::name(&ZoomIn),
         PaletteCommandId::ZoomOut => gpui::Action::name(&ZoomOut),
@@ -220,9 +222,15 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
         },
         PaletteCommand {
             id: PaletteCommandId::ToggleFullLineDisplay,
-            title: "View: Toggle Full Line Wrap Mode",
+            title: "View: Toggle Full Line Horizontal Scroll",
             category: "VIEW",
             shortcut: Some("Alt+Z"),
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ToggleLineDetail,
+            title: "View: Toggle Line Detail Inspector (Word Wrap)",
+            category: "VIEW",
+            shortcut: Some("Ctrl+Shift+D"),
         },
         PaletteCommand {
             id: PaletteCommandId::ToggleTheme,

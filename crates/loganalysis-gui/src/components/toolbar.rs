@@ -799,6 +799,35 @@ pub fn render_overflow_menu(
                     )
                     .child(render_kbd_badge("Alt+Z", theme)),
             )
+            // Item 5b: Toggle Line Detail Inspector (Ctrl+Shift+D)
+            .child(
+                div()
+                    .id("menu-item-toggle-line-detail")
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .rounded_md()
+                    .hover(move |s| s.bg(theme.btn_hover))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.close_overflow_menu(cx);
+                        this.toggle_line_detail(cx);
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .child(if workspace.is_line_detail_open {
+                                "Line Detail: On"
+                            } else {
+                                "Line Detail: Off"
+                            }),
+                    )
+                    .child(render_kbd_badge("Ctrl+Shift+D", theme)),
+            )
             // Item 6: Toggle Theme (Ctrl+U)
             .child(
                 div()

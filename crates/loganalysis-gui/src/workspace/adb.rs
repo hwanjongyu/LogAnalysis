@@ -312,6 +312,11 @@ impl LogAnalysisWorkspace {
                                                 workspace
                                                     .selection
                                                     .shift_on_trim(dropped_visible, trimmed);
+                                                if workspace.filter_result.is_none()
+                                                    || workspace.selection.selected_row.is_none()
+                                                {
+                                                    workspace.reset_line_detail_scroll_if_line_changed();
+                                                }
                                             }
 
                                             // Incremental filtering: evaluate only newly arrived lines without full buffer Rayon pass
@@ -338,6 +343,9 @@ impl LogAnalysisWorkspace {
                                                     new_total_len,
                                                     total_matched
                                                 ).into();
+                                            }
+                                            if trimmed > 0 && has_filter_result {
+                                                workspace.reset_line_detail_scroll_if_line_changed();
                                             }
                                             if has_filter_result {
                                                 // Offload heavy Rayon HeatmapData & EpsTimelineData computation to background executor
@@ -587,6 +595,9 @@ impl LogAnalysisWorkspace {
                                 });
                             self.bookmarks.shift_on_trim(trimmed);
                             self.selection.shift_on_trim(dropped_visible, trimmed);
+                            if self.selection.selected_row.is_none() {
+                                self.reset_line_detail_scroll_if_line_changed();
+                            }
                         }
                         self.reapply_filters(cx);
                     }

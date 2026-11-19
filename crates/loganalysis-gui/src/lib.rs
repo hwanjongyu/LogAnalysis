@@ -120,6 +120,8 @@ define_default_keybindings!(
     ("cmd-u", ToggleTheme),
     ("f10", ToggleTheme),
     ("alt-z", ToggleFullLineDisplay),
+    ("ctrl-shift-d", ToggleLineDetail),
+    ("cmd-shift-d", ToggleLineDetail),
 );
 
 impl Render for LogAnalysisWorkspace {
@@ -129,6 +131,9 @@ impl Render for LogAnalysisWorkspace {
                 || self.filter_drag_drop_target.is_some())
         {
             self.clear_filter_drag_state_fields();
+        }
+        if self.is_line_detail_open {
+            self.ensure_line_detail_cache();
         }
 
         let modal_pattern_focused = self.modal_pattern_input.read(cx).focus_handle.is_focused(window);
@@ -234,15 +239,43 @@ impl Render for LogAnalysisWorkspace {
         div()
             .id("workspace-container")
             .track_focus(&self.focus_handle)
+            .when(self.is_resizing_line_detail, |s| s.cursor_row_resize())
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                if this.is_resizing_filter_dock && event.dragging() {
-                    this.update_resizing_filter_dock(event.position, cx);
-                }
-                if this.dragging_filter_rule_index.is_some() && !event.dragging() {
-                    if cx.has_active_drag() {
-                        cx.stop_active_drag(window);
+                if event.dragging() {
+                    if this.is_resizing_filter_dock {
+                        this.update_resizing_filter_dock(event.position, cx);
                     }
-                    this.clear_filter_drag_state(cx);
+                    if this.is_resizing_line_detail {
+                        this.update_resizing_line_detail(event.position, cx);
+                    }
+                    if this.is_dragging_scrollbar {
+                        this.scroll_to_ratio_from_mouse_y(event.position.y, cx);
+                    }
+                    if this.is_dragging_secondary_scrollbar {
+                        this.scroll_secondary_to_ratio_from_mouse_y(event.position.y, cx);
+                    }
+                    if this.is_dragging_h_scrollbar {
+                        this.scroll_h_to_mouse_x(true, event.position.x, cx);
+                    }
+                    if this.is_dragging_secondary_h_scrollbar {
+                        this.scroll_h_to_mouse_x(false, event.position.x, cx);
+                    }
+                } else {
+                    if this.dragging_filter_rule_index.is_some() {
+                        if cx.has_active_drag() {
+                            cx.stop_active_drag(window);
+                        }
+                        this.clear_filter_drag_state(cx);
+                    }
+                    if this.is_resizing_filter_dock {
+                        this.stop_resizing_filter_dock(cx);
+                    }
+                    if this.is_resizing_line_detail {
+                        this.stop_resizing_line_detail(cx);
+                    }
+                    if this.clear_scrollbar_drag_flags() {
+                        cx.notify();
+                    }
                 }
             }))
             .on_mouse_up(
@@ -250,6 +283,12 @@ impl Render for LogAnalysisWorkspace {
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
                     if this.is_resizing_filter_dock {
                         this.stop_resizing_filter_dock(cx);
+                    }
+                    if this.is_resizing_line_detail {
+                        this.stop_resizing_line_detail(cx);
+                    }
+                    if this.clear_scrollbar_drag_flags() {
+                        cx.notify();
                     }
                     this.clear_filter_drag_state(cx);
                 }),
@@ -259,6 +298,12 @@ impl Render for LogAnalysisWorkspace {
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
                     if this.is_resizing_filter_dock {
                         this.stop_resizing_filter_dock(cx);
+                    }
+                    if this.is_resizing_line_detail {
+                        this.stop_resizing_line_detail(cx);
+                    }
+                    if this.clear_scrollbar_drag_flags() {
+                        cx.notify();
                     }
                     this.clear_filter_drag_state(cx);
                 }),
@@ -278,7 +323,7 @@ impl Render for LogAnalysisWorkspace {
                         return;
                     }
                 }
-                this.handle_key_down(event, cx);
+                this.handle_key_down(event, window, cx);
             }))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
                 if let Some(path) = paths.paths().first() {
@@ -356,6 +401,15 @@ impl Render for LogAnalysisWorkspace {
             }))
             .on_action(cx.listener(|this, _: &ToggleFullLineDisplay, _window, cx| {
                 this.toggle_full_line_display(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleLineDetail, _window, cx| {
+                if this.filter_edit_modal.is_open
+                    || this.bookmarks.is_note_modal_open
+                    || this.is_command_palette_open
+                {
+                    return;
+                }
+                this.toggle_line_detail(cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleAutoScroll, _window, cx| {
                 this.toggle_auto_scroll(cx);

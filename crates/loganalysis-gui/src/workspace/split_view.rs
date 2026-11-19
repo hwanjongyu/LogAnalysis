@@ -37,6 +37,12 @@ impl LogAnalysisWorkspace {
             )
             .into();
         } else {
+            self.split_view.active_pane_is_secondary = false;
+            self.secondary_selection.clear();
+            self.is_dragging_secondary_scrollbar = false;
+            self.is_dragging_secondary_h_scrollbar = false;
+            self.h_scrollbar_drag_grab_offset = None;
+            self.reset_line_detail_scroll_if_line_changed();
             self.status_text = "Split View disabled".into();
         }
         cx.notify();
@@ -99,6 +105,15 @@ impl LogAnalysisWorkspace {
         self.split_view.secondary_file_name = None;
         self.split_view.secondary_filter_result = None;
         self.secondary_selection.clear();
+        self.secondary_scroll_handle
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(Point::default());
+        self.is_dragging_secondary_scrollbar = false;
+        self.is_dragging_secondary_h_scrollbar = false;
+        self.h_scrollbar_drag_grab_offset = None;
+        self.reset_line_detail_scroll_if_line_changed();
         self.split_view.is_split_view = true;
 
         let path_buf = path.to_path_buf();
@@ -191,6 +206,12 @@ impl LogAnalysisWorkspace {
                             == generation
                         {
                             workspace.split_view.secondary_filter_result = Some(Arc::new(res));
+                            super::preserve_selection_after_filter(
+                                &mut workspace.secondary_selection,
+                                workspace.split_view.secondary_filter_result.as_deref(),
+                                &workspace.secondary_scroll_handle,
+                            );
+                            workspace.reset_line_detail_scroll_if_line_changed();
                             cx.notify();
                         }
                     });

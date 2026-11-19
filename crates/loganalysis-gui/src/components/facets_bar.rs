@@ -117,6 +117,7 @@ pub fn render_facets_bar(
             .id("forensic-facets-bar")
             .w_full()
             .h(px(28.0))
+            .flex_shrink_0()
             .bg(theme.bg_header)
             .border_b_1()
             .border_color(theme.border_subtle)

@@ -66,8 +66,10 @@ impl LogAnalysisWorkspace {
         let outcome = format_search_outcome(search_res);
         if let Some((visible_row, real_idx)) = outcome.matched_location {
             self.selection.select(visible_row, real_idx);
+            self.split_view.active_pane_is_secondary = false;
             self.scroll_handle
                 .scroll_to_item(visible_row, ScrollStrategy::Center);
+            self.reset_line_detail_scroll_if_line_changed();
         }
         self.status_text = outcome.status_text.into();
         self.search_ctrl.match_status = Some(outcome.match_status);

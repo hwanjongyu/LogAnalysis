@@ -623,6 +623,9 @@ fn render_filter_rule_slot(
         .child(grip_el)
         .child(checkbox_el);
 
+    let (warn_bg, warn_fg) =
+        crate::theme::severity_badge_colors(Some('W'), workspace.is_dark_theme);
+
     let pattern_strip_el = div()
         .id(strip_id)
         .flex_1()
@@ -630,7 +633,10 @@ fn render_filter_rule_slot(
         .overflow_hidden()
         .flex()
         .items_center()
-        .px(px(if is_compact { 4.0 } else { 8.0 }))
+        .justify_between()
+        .gap_1()
+        .pl(px(if is_compact { 4.0 } else { 8.0 }))
+        .pr(px(if is_compact { 4.0 } else { 6.0 }))
         .py(px(5.0))
         .bg(style.strip_bg)
         .border_l_1()
@@ -648,6 +654,7 @@ fn render_filter_rule_slot(
         })
         .child(
             div()
+                .flex_1()
                 .min_w_0()
                 .overflow_hidden()
                 .whitespace_nowrap()
@@ -655,75 +662,95 @@ fn render_filter_rule_slot(
                 .text_size(px(11.5))
                 .text_color(style.strip_fg)
                 .child(rule.text.clone()),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .gap(px(if is_compact { 2.0 } else { 4.0 }))
+                .when(!is_compact && style.show_low_contrast_hint, |s| {
+                    s.child(
+                        div()
+                            .id(contrast_warn_id)
+                            .flex_shrink_0()
+                            .px(px(3.5))
+                            .py(px(0.5))
+                            .rounded_sm()
+                            .bg(warn_bg)
+                            .border_1()
+                            .border_color(theme.warning_amber)
+                            .text_size(px(9.5))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(warn_fg)
+                            .tooltip(render_tooltip(
+                                format!(
+                                    "Low text contrast ({:.1}:1) — double-click to edit",
+                                    style.contrast_ratio
+                                ),
+                                None,
+                                theme,
+                            ))
+                            .child("⚠"),
+                    )
+                })
+                .when(is_regex, |s| {
+                    s.child(
+                        div()
+                            .px(px(if is_compact { 2.5 } else { 4.0 }))
+                            .py(px(1.0))
+                            .rounded_sm()
+                            .bg(theme.bg_badge)
+                            .border_1()
+                            .border_color(theme.border)
+                            .text_size(px(9.0))
+                            .text_color(theme.accent)
+                            .child(".*"),
+                    )
+                })
+                .when(is_exclude, |s| {
+                    s.child(
+                        div()
+                            .px(px(if is_compact { 3.0 } else { 4.0 }))
+                            .py(px(1.0))
+                            .rounded_sm()
+                            .bg(theme.bg_badge)
+                            .border_1()
+                            .border_color(theme.border)
+                            .text_size(px(9.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme.error_red)
+                            .child(if is_compact { "!" } else { "NOT" }),
+                    )
+                })
+                .child(
+                    div()
+                        .px(px(if is_compact { 4.0 } else { 6.0 }))
+                        .py(px(1.0))
+                        .rounded_full()
+                        .bg(theme.bg_badge)
+                        .border_1()
+                        .border_color(theme.border)
+                        .font_family("monospace")
+                        .text_size(px(if is_compact { 9.5 } else { 10.0 }))
+                        .text_color(if count > 0 {
+                            theme.text_primary
+                        } else {
+                            theme.text_muted
+                        })
+                        .child(format!("{}", count)),
+                ),
         );
 
     let right_controls_el = div()
         .flex()
         .items_center()
         .flex_shrink_0()
-        .when(!is_compact, |s| s.pl(px(4.0)).pr(px(6.0)).gap_1())
-        .when(is_compact, |s| s.pl(px(4.0)).pr(px(2.0)).gap(px(2.0)))
+        .when(!is_compact, |s| s.px(px(4.0)).gap_1())
+        .when(is_compact, |s| s.px(px(3.0)))
         .bg(theme.bg_panel)
         .when(!style.has_custom_bg, |s| {
             s.group_hover(row_group.clone(), move |h| h.bg(theme.btn_hover))
-        })
-        .when(is_regex, |s| {
-            s.child(
-                div()
-                    .px(px(if is_compact { 2.5 } else { 4.0 }))
-                    .py(px(1.0))
-                    .rounded_sm()
-                    .bg(theme.bg_badge)
-                    .text_size(px(9.0))
-                    .text_color(theme.accent)
-                    .child(".*"),
-            )
-        })
-        .when(is_exclude, |s| {
-            s.child(
-                div()
-                    .px(px(if is_compact { 3.0 } else { 4.0 }))
-                    .py(px(1.0))
-                    .rounded_sm()
-                    .bg(theme.bg_badge)
-                    .text_size(px(9.0))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(theme.error_red)
-                    .child(if is_compact { "!" } else { "NOT" }),
-            )
-        })
-        .child(
-            div()
-                .px(px(if is_compact { 4.0 } else { 6.0 }))
-                .py(px(1.0))
-                .rounded_full()
-                .bg(theme.bg_badge)
-                .font_family("monospace")
-                .text_size(px(if is_compact { 9.5 } else { 10.0 }))
-                .text_color(if count > 0 {
-                    theme.text_primary
-                } else {
-                    theme.text_muted
-                })
-                .child(format!("{}", count)),
-        )
-        .when(!is_compact && style.show_low_contrast_hint, |s| {
-            s.child(
-                div()
-                    .id(contrast_warn_id)
-                    .px(px(2.0))
-                    .text_size(px(10.5))
-                    .text_color(theme.warning_amber)
-                    .tooltip(render_tooltip(
-                        format!(
-                            "Low text contrast ({:.1}:1) — double-click to edit",
-                            style.contrast_ratio
-                        ),
-                        None,
-                        theme,
-                    ))
-                    .child("⚠"),
-            )
         })
         .when(show_edit_btn, |s| {
             s.child(
@@ -884,6 +911,7 @@ pub fn render_filter_dock_splitter(
         .when(is_bottom_dock, |s| {
             s.w_full()
                 .h(px(4.0))
+                .flex_shrink_0()
                 .cursor_row_resize()
                 .bg(if is_resizing {
                     theme.accent
@@ -929,7 +957,7 @@ pub fn render_filter_dock(
             s.w(px(workspace.filter_dock_width)).h_full()
         })
         .when(is_bottom_dock, |s| {
-            s.w_full().h(px(workspace.filter_dock_height))
+            s.w_full().h(px(workspace.filter_dock_height)).flex_shrink_0()
         })
         // Tab Bar Header
         .child(
