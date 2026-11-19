@@ -327,12 +327,7 @@ impl Render for LogAnalysisWorkspace {
             }))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
                 if let Some(path) = paths.paths().first() {
-                    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-                    if ext.eq_ignore_ascii_case("json") {
-                        this.load_filters_from_path(path, cx);
-                    } else {
-                        this.open_file(path, cx);
-                    }
+                    this.open_file(path, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenFile, window, cx| {

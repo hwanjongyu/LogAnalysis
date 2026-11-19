@@ -125,6 +125,7 @@ pub fn run_command_with_timeout(
     let start_time = Instant::now();
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
+    super::configure_no_console_window(&mut cmd);
 
     #[cfg(target_os = "linux")]
     super::configure_linux_pdeathsig(&mut cmd);

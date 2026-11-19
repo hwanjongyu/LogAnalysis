@@ -324,6 +324,17 @@ fn render_pane_container(
         .flex()
         .flex_col()
         .overflow_hidden()
+        // Dropping a log file onto Pane B opens it in the secondary pane (the workspace-level
+        // handler would otherwise replace Pane A). Filter profiles are loaded only via the
+        // "Load Filters" menu, so every dropped file is read as a log file.
+        // GPUI stops propagation after a handled drop, so the root handler is not also invoked.
+        .when(!is_primary, |s| {
+            s.on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
+                if let Some(path) = paths.paths().first() {
+                    this.open_secondary_file(path, cx);
+                }
+            }))
+        })
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {

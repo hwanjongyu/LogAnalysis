@@ -9,6 +9,19 @@ pub use device::{
 };
 pub use logcat::{start_logcat_stream, stream_log_lines, LogcatStreamHandle};
 
+/// Prevents a console window from flashing/staying open when a console subprocess
+/// (e.g. `adb.exe`) is spawned from the GUI-subsystem process on Windows (`CREATE_NO_WINDOW`).
+#[cfg(windows)]
+pub(crate) fn configure_no_console_window(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+/// No-op on non-Windows platforms.
+#[cfg(not(windows))]
+pub(crate) fn configure_no_console_window(_cmd: &mut std::process::Command) {}
+
 /// Configures Linux `PR_SET_PDEATHSIG` (`SIGKILL`) on `cmd` with a post-fork `getppid()`
 /// race guard (`[INV-12]`) so child ADB processes never survive unexpected parent exit.
 #[cfg(target_os = "linux")]

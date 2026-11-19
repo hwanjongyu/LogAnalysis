@@ -109,6 +109,7 @@ pub fn start_logcat_stream(
     cmd.args(["logcat", "-v", "threadtime"]);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
+    super::configure_no_console_window(&mut cmd);
 
     #[cfg(target_os = "linux")]
     super::configure_linux_pdeathsig(&mut cmd);
