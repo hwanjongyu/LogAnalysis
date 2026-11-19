@@ -116,6 +116,20 @@ pub fn validate_filter_pattern(
     Ok(())
 }
 
+/// Validates a modal custom `#RRGGBB` hex input field before saving a filter rule.
+/// Empty strings are valid (representing theme default `"None"` / `"Default"`).
+pub fn validate_modal_hex_field(raw: &str, is_bg: bool) -> Result<(), String> {
+    match crate::modals::filter_edit_modal::parse_custom_hex_input(raw) {
+        crate::modals::filter_edit_modal::HexInputParse::Empty
+        | crate::modals::filter_edit_modal::HexInputParse::Valid { .. } => Ok(()),
+        crate::modals::filter_edit_modal::HexInputParse::Invalid => Err(if is_bg {
+            "Invalid background hex color (expected #RRGGBB)".to_string()
+        } else {
+            "Invalid text hex color (expected #RRGGBB)".to_string()
+        }),
+    }
+}
+
 /// Validates that imported filter tabs are non-empty so `active_tab_index` stays in bounds.
 pub(crate) fn apply_imported_filter_tabs(
     tabs: Vec<FilterTabData>,
@@ -231,6 +245,10 @@ pub fn remap_editing_index_on_delete(modal: &mut FilterEditState, deleted_idx: u
         Some(ed) if ed == deleted_idx => {
             modal.is_open = false;
             modal.editing_index = None;
+            modal.bg_hex_invalid = false;
+            modal.fg_hex_invalid = false;
+            modal.programmatic_bg_hex = None;
+            modal.programmatic_fg_hex = None;
             true
         }
         Some(ed) if ed > deleted_idx => {
@@ -268,7 +286,142 @@ pub(crate) fn reorder_filter_rule_in_tab(
     true
 }
 
+/// Synchronizes a modal hex `TextInput` with `color_name` using `programmatic_hex`
+/// to prevent `TextInputEvent::Change` from overwriting named colors.
+fn sync_modal_hex_field(
+    input: &Entity<crate::components::text_input::TextInput>,
+    color_name: &str,
+    is_bg: bool,
+    hex_invalid: &mut bool,
+    programmatic_hex: &mut Option<String>,
+    cx: &mut Context<LogAnalysisWorkspace>,
+) {
+    let desired =
+        crate::modals::filter_edit_modal::format_hex_input_for_color_spec(color_name, is_bg);
+    *hex_invalid = false;
+    if input.read(cx).text() != desired {
+        *programmatic_hex = Some(desired.clone());
+        input.update(cx, |inp, cx| inp.set_text(&desired, cx));
+    } else {
+        *programmatic_hex = None;
+    }
+}
+
+/// Applies a text update on one of the modal hex inputs to `modal`, guarding against
+/// programmatic sync loops and preserving prior valid colors across intermediate invalid keystrokes.
+fn apply_modal_hex_change(modal: &mut FilterEditState, text: &str, is_bg: bool) -> bool {
+    if !modal.is_open {
+        return false;
+    }
+    let (programmatic_hex, color_name, hex_invalid, empty_fallback) = if is_bg {
+        (
+            &mut modal.programmatic_bg_hex,
+            &mut modal.bg_color_name,
+            &mut modal.bg_hex_invalid,
+            "None",
+        )
+    } else {
+        (
+            &mut modal.programmatic_fg_hex,
+            &mut modal.fg_color_name,
+            &mut modal.fg_hex_invalid,
+            "Default",
+        )
+    };
+    if programmatic_hex.as_deref() == Some(text) {
+        *programmatic_hex = None;
+        return false;
+    }
+    *programmatic_hex = None;
+    modal.suggestions_open = false;
+    modal.suggestion_index = None;
+    match crate::modals::filter_edit_modal::parse_custom_hex_input(text) {
+        crate::modals::filter_edit_modal::HexInputParse::Empty => {
+            *color_name = empty_fallback.to_string();
+            *hex_invalid = false;
+        }
+        crate::modals::filter_edit_modal::HexInputParse::Valid { normalized, .. } => {
+            *color_name = normalized;
+            *hex_invalid = false;
+        }
+        crate::modals::filter_edit_modal::HexInputParse::Invalid => {
+            *hex_invalid = true;
+        }
+    }
+    true
+}
+
+/// Processes a `TextInputEvent::Change` on one of the modal hex inputs, returning `true`
+/// when workspace state changed and needs a UI refresh.
+fn handle_modal_hex_changed(
+    modal: &mut FilterEditState,
+    input: &Entity<crate::components::text_input::TextInput>,
+    is_bg: bool,
+    cx: &App,
+) -> bool {
+    if !modal.is_open {
+        return false;
+    }
+    let text = input.read(cx).text();
+    apply_modal_hex_change(modal, &text, is_bg)
+}
+
+fn normalize_modal_hex_color_spec(spec: &str) -> String {
+    match crate::modals::filter_edit_modal::parse_custom_hex_input(spec) {
+        crate::modals::filter_edit_modal::HexInputParse::Valid { normalized, .. } => normalized,
+        _ => spec.to_string(),
+    }
+}
+
 impl LogAnalysisWorkspace {
+    /// Synchronizes `modal_bg_hex_input` with `filter_edit_modal.bg_color_name`.
+    pub(crate) fn sync_modal_bg_hex_input(&mut self, cx: &mut Context<Self>) {
+        sync_modal_hex_field(
+            &self.modal_bg_hex_input,
+            &self.filter_edit_modal.bg_color_name,
+            true,
+            &mut self.filter_edit_modal.bg_hex_invalid,
+            &mut self.filter_edit_modal.programmatic_bg_hex,
+            cx,
+        );
+    }
+
+    /// Synchronizes `modal_fg_hex_input` with `filter_edit_modal.fg_color_name`.
+    pub(crate) fn sync_modal_fg_hex_input(&mut self, cx: &mut Context<Self>) {
+        sync_modal_hex_field(
+            &self.modal_fg_hex_input,
+            &self.filter_edit_modal.fg_color_name,
+            false,
+            &mut self.filter_edit_modal.fg_hex_invalid,
+            &mut self.filter_edit_modal.programmatic_fg_hex,
+            cx,
+        );
+    }
+
+    /// Handles user edits in the modal background `#RRGGBB` hex input.
+    pub(crate) fn on_modal_bg_hex_changed(&mut self, cx: &mut Context<Self>) {
+        if handle_modal_hex_changed(
+            &mut self.filter_edit_modal,
+            &self.modal_bg_hex_input,
+            true,
+            cx,
+        ) {
+            cx.notify();
+        }
+    }
+
+    /// Handles user edits in the modal foreground `#RRGGBB` hex input.
+    pub(crate) fn on_modal_fg_hex_changed(&mut self, cx: &mut Context<Self>) {
+        if handle_modal_hex_changed(
+            &mut self.filter_edit_modal,
+            &self.modal_fg_hex_input,
+            false,
+            cx,
+        ) {
+            cx.notify();
+        }
+    }
+
     /// Clears transient filter rule drag-and-drop fields without scheduling a UI refresh.
     pub(crate) fn clear_filter_drag_state_fields(&mut self) {
         self.filter_drag_drop_target = None;
@@ -453,6 +606,8 @@ impl LogAnalysisWorkspace {
             programmatic_text: Some(String::new()),
             ..Default::default()
         };
+        self.sync_modal_bg_hex_input(cx);
+        self.sync_modal_fg_hex_input(cx);
         self.input_focus = InputFocusTarget::ModalPattern;
         cx.notify();
     }
@@ -463,6 +618,8 @@ impl LogAnalysisWorkspace {
         if let Some(tab) = self.filter_tabs.get(self.active_tab_index) {
             if let Some(rule) = tab.filters.get(rule_idx) {
                 let pattern = rule.text.clone();
+                let bg_color_name = rule.bg_color.clone();
+                let fg_color_name = rule.text_color.clone();
                 self.modal_pattern_input.update(cx, |input, cx| {
                     input.set_text(&pattern, cx);
                 });
@@ -472,11 +629,13 @@ impl LogAnalysisWorkspace {
                     is_regex: rule.regex,
                     is_case_sensitive: rule.case_sensitive,
                     is_exclude: rule.exclude,
-                    bg_color_name: rule.bg_color.clone(),
-                    fg_color_name: rule.text_color.clone(),
+                    bg_color_name,
+                    fg_color_name,
                     programmatic_text: Some(pattern.clone()),
                     ..Default::default()
                 };
+                self.sync_modal_bg_hex_input(cx);
+                self.sync_modal_fg_hex_input(cx);
                 self.input_focus = InputFocusTarget::ModalPattern;
                 cx.notify();
             }
@@ -486,6 +645,10 @@ impl LogAnalysisWorkspace {
     /// Closes filter edit modal
     pub fn close_filter_modal(&mut self, cx: &mut Context<Self>) {
         self.filter_edit_modal.is_open = false;
+        self.filter_edit_modal.bg_hex_invalid = false;
+        self.filter_edit_modal.fg_hex_invalid = false;
+        self.filter_edit_modal.programmatic_bg_hex = None;
+        self.filter_edit_modal.programmatic_fg_hex = None;
         self.filter_edit_modal.suggestions_open = false;
         self.filter_edit_modal.suggestion_index = None;
         self.input_focus = InputFocusTarget::None;
@@ -506,6 +669,45 @@ impl LogAnalysisWorkspace {
             return;
         }
 
+        let bg_hex_text = self.modal_bg_hex_input.read(cx).text();
+        let bg_hex_err = validate_modal_hex_field(&bg_hex_text, true)
+            .err()
+            .or_else(|| {
+                self.filter_edit_modal
+                    .bg_hex_invalid
+                    .then(|| "Invalid background hex color (expected #RRGGBB)".to_string())
+            });
+        if let Some(err) = bg_hex_err {
+            self.filter_edit_modal.bg_hex_invalid = true;
+            self.filter_edit_modal.suggestions_open = false;
+            self.filter_edit_modal.suggestion_index = None;
+            self.status_text = err.into();
+            self.input_focus = InputFocusTarget::ModalBgHex;
+            cx.notify();
+            return;
+        }
+
+        let fg_hex_text = self.modal_fg_hex_input.read(cx).text();
+        let fg_hex_err = validate_modal_hex_field(&fg_hex_text, false)
+            .err()
+            .or_else(|| {
+                self.filter_edit_modal
+                    .fg_hex_invalid
+                    .then(|| "Invalid text hex color (expected #RRGGBB)".to_string())
+            });
+        if let Some(err) = fg_hex_err {
+            self.filter_edit_modal.fg_hex_invalid = true;
+            self.filter_edit_modal.suggestions_open = false;
+            self.filter_edit_modal.suggestion_index = None;
+            self.status_text = err.into();
+            self.input_focus = InputFocusTarget::ModalFgHex;
+            cx.notify();
+            return;
+        }
+
+        let bg_color = normalize_modal_hex_color_spec(&self.filter_edit_modal.bg_color_name);
+        let fg_color = normalize_modal_hex_color_spec(&self.filter_edit_modal.fg_color_name);
+
         let (hist_regex, hist_case) = (
             self.filter_edit_modal.is_regex,
             self.filter_edit_modal.is_case_sensitive,
@@ -518,8 +720,8 @@ impl LogAnalysisWorkspace {
                     existing.regex = self.filter_edit_modal.is_regex;
                     existing.case_sensitive = self.filter_edit_modal.is_case_sensitive;
                     existing.exclude = self.filter_edit_modal.is_exclude;
-                    existing.bg_color = self.filter_edit_modal.bg_color_name.clone();
-                    existing.text_color = self.filter_edit_modal.fg_color_name.clone();
+                    existing.bg_color = bg_color;
+                    existing.text_color = fg_color;
                 }
             } else {
                 let new_rule = FilterRule {
@@ -527,14 +729,18 @@ impl LogAnalysisWorkspace {
                     regex: self.filter_edit_modal.is_regex,
                     case_sensitive: self.filter_edit_modal.is_case_sensitive,
                     exclude: self.filter_edit_modal.is_exclude,
-                    bg_color: self.filter_edit_modal.bg_color_name.clone(),
-                    text_color: self.filter_edit_modal.fg_color_name.clone(),
+                    bg_color,
+                    text_color: fg_color,
                     active: true,
                     ..Default::default()
                 };
                 tab.filters.push(new_rule);
             }
             self.filter_edit_modal.is_open = false;
+            self.filter_edit_modal.bg_hex_invalid = false;
+            self.filter_edit_modal.fg_hex_invalid = false;
+            self.filter_edit_modal.programmatic_bg_hex = None;
+            self.filter_edit_modal.programmatic_fg_hex = None;
             self.filter_edit_modal.suggestions_open = false;
             self.filter_edit_modal.suggestion_index = None;
             self.input_focus = InputFocusTarget::None;
@@ -802,7 +1008,7 @@ impl LogAnalysisWorkspace {
 mod tests {
     use super::{
         atomic_replace_file, build_unique_temp_path, read_filter_profile_bounded,
-        validate_filter_pattern, MAX_FILTER_PROFILE_BYTES,
+        validate_filter_pattern, validate_modal_hex_field, MAX_FILTER_PROFILE_BYTES,
     };
 
     #[test]
@@ -1149,15 +1355,23 @@ mod tests {
         use super::remap_editing_index_on_delete;
         use crate::types::FilterEditState;
 
-        // 1. Deleted the rule currently being edited -> closes modal, clears editing_index, returns true
+        // 1. Deleted the rule currently being edited -> closes modal, clears editing_index and hex state, returns true
         let mut modal_same = FilterEditState {
             is_open: true,
             editing_index: Some(2),
+            bg_hex_invalid: true,
+            fg_hex_invalid: true,
+            programmatic_bg_hex: Some("#112233".into()),
+            programmatic_fg_hex: Some("#445566".into()),
             ..Default::default()
         };
         assert!(remap_editing_index_on_delete(&mut modal_same, 2));
         assert!(!modal_same.is_open);
         assert_eq!(modal_same.editing_index, None);
+        assert!(!modal_same.bg_hex_invalid);
+        assert!(!modal_same.fg_hex_invalid);
+        assert_eq!(modal_same.programmatic_bg_hex, None);
+        assert_eq!(modal_same.programmatic_fg_hex, None);
 
         // 2. Deleted an earlier rule -> shifts editing_index down by 1, keeps open
         let mut modal_after = FilterEditState {
@@ -1289,5 +1503,105 @@ mod tests {
         assert!(!reorder_filter_rule_in_tab(&mut single_tab, 0, 0));
         assert!(!reorder_filter_rule_in_tab(&mut single_tab, 0, 1));
         assert!(!single_tab.modified);
+    }
+
+    #[test]
+    fn test_validate_modal_hex_field() {
+        assert_eq!(validate_modal_hex_field("", true), Ok(()));
+        assert_eq!(validate_modal_hex_field("   ", false), Ok(()));
+        assert_eq!(validate_modal_hex_field("#1A2B3C", true), Ok(()));
+        assert_eq!(validate_modal_hex_field("1a2b3c", false), Ok(()));
+        assert_eq!(validate_modal_hex_field("  #00ffaa  ", true), Ok(()));
+        assert_eq!(validate_modal_hex_field("#000000", false), Ok(()));
+        assert_eq!(validate_modal_hex_field("FFFFFF", true), Ok(()));
+
+        for invalid in [
+            "#", "#123", "#12345", "#1234567", "#12345G", "#12Z", "+12345", "#+12345", "-12345",
+            "Red",
+        ] {
+            let bg_err = validate_modal_hex_field(invalid, true)
+                .expect_err("Invalid BG hex should be rejected");
+            assert!(
+                bg_err.contains("background hex color"),
+                "Unexpected BG hex error for '{invalid}': {bg_err}"
+            );
+            let fg_err = validate_modal_hex_field(invalid, false)
+                .expect_err("Invalid FG hex should be rejected");
+            assert!(
+                fg_err.contains("text hex color"),
+                "Unexpected FG hex error for '{invalid}': {fg_err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_apply_modal_hex_change_loop_guard_and_state_transitions() {
+        use super::{apply_modal_hex_change, normalize_modal_hex_color_spec};
+        use crate::types::FilterEditState;
+
+        // Closed modal ignores hex input events
+        let mut closed = FilterEditState {
+            is_open: false,
+            bg_color_name: "Yellow".into(),
+            ..Default::default()
+        };
+        assert!(!apply_modal_hex_change(&mut closed, "#112233", true));
+        assert_eq!(closed.bg_color_name, "Yellow");
+
+        // Programmatic sync loop guard preserves named colors and legacy names
+        let mut modal = FilterEditState {
+            is_open: true,
+            bg_color_name: "Yellow".into(),
+            fg_color_name: "Magenta".into(),
+            programmatic_bg_hex: Some("#FFFF00".into()),
+            programmatic_fg_hex: Some(String::new()),
+            suggestions_open: true,
+            suggestion_index: Some(0),
+            ..Default::default()
+        };
+        assert!(!apply_modal_hex_change(&mut modal, "#FFFF00", true));
+        assert_eq!(modal.bg_color_name, "Yellow");
+        assert_eq!(modal.programmatic_bg_hex, None);
+        assert!(modal.suggestions_open);
+
+        assert!(!apply_modal_hex_change(&mut modal, "", false));
+        assert_eq!(modal.fg_color_name, "Magenta");
+        assert_eq!(modal.programmatic_fg_hex, None);
+
+        // User typing valid hex normalizes uppercase, clears invalid flag, dismisses suggestions
+        assert!(apply_modal_hex_change(&mut modal, "1a2b3c", true));
+        assert_eq!(modal.bg_color_name, "#1A2B3C");
+        assert!(!modal.bg_hex_invalid);
+        assert!(!modal.suggestions_open);
+        assert_eq!(modal.suggestion_index, None);
+
+        assert!(apply_modal_hex_change(&mut modal, "  #fde68a ", false));
+        assert_eq!(modal.fg_color_name, "#FDE68A");
+        assert!(!modal.fg_hex_invalid);
+
+        // Partial/invalid hex sets invalid flag while preserving prior valid color (no preview flicker)
+        assert!(apply_modal_hex_change(&mut modal, "#12Z", true));
+        assert!(modal.bg_hex_invalid);
+        assert_eq!(modal.bg_color_name, "#1A2B3C");
+
+        assert!(apply_modal_hex_change(&mut modal, "#", false));
+        assert!(modal.fg_hex_invalid);
+        assert_eq!(modal.fg_color_name, "#FDE68A");
+
+        // Clearing hex text reverts to None / Default and clears invalid flag
+        assert!(apply_modal_hex_change(&mut modal, "", true));
+        assert_eq!(modal.bg_color_name, "None");
+        assert!(!modal.bg_hex_invalid);
+
+        assert!(apply_modal_hex_change(&mut modal, "   ", false));
+        assert_eq!(modal.fg_color_name, "Default");
+        assert!(!modal.fg_hex_invalid);
+
+        // Normalization preserves named/legacy specs and canonicalizes hex literals
+        assert_eq!(normalize_modal_hex_color_spec("#1a2b3c"), "#1A2B3C");
+        assert_eq!(normalize_modal_hex_color_spec("abcdef"), "#ABCDEF");
+        assert_eq!(normalize_modal_hex_color_spec("Yellow"), "Yellow");
+        assert_eq!(normalize_modal_hex_color_spec("None"), "None");
+        assert_eq!(normalize_modal_hex_color_spec("Magenta"), "Magenta");
     }
 }

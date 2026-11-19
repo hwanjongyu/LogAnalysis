@@ -13,12 +13,12 @@ mod split_view;
 pub use dock::{
     apply_facet_filter_to_tab, clamp_filter_dock_height, clamp_filter_dock_width,
     compute_facet_tags, default_filter_dock_size, DEFAULT_FILTER_DOCK_HEIGHT,
-    DEFAULT_FILTER_DOCK_WIDTH, MAX_FILTER_DOCK_HEIGHT, MAX_FILTER_DOCK_WIDTH,
+    DEFAULT_FILTER_DOCK_WIDTH, FACET_FILTER_PALETTE, MAX_FILTER_DOCK_HEIGHT, MAX_FILTER_DOCK_WIDTH,
     MIN_FILTER_DOCK_HEIGHT, MIN_FILTER_DOCK_WIDTH,
 };
 pub use filters::{
     compute_drop_target_index, remap_editing_index_on_delete, remap_editing_index_on_duplicate,
-    remap_index_after_move,
+    remap_index_after_move, validate_modal_hex_field,
 };
 pub use pattern_history::{PatternHistory, PatternHistoryEntry};
 pub use recent_files::{load_recent_files_from_path, push_recent_path, save_recent_files_to_path};
@@ -108,6 +108,8 @@ pub struct LogAnalysisWorkspace {
     pub(crate) cached_stream_filters: Option<Arc<CompiledStreamFilters>>,
     pub(crate) filter_edit_modal: FilterEditState,
     pub(crate) modal_pattern_input: Entity<TextInput>,
+    pub(crate) modal_bg_hex_input: Entity<TextInput>,
+    pub(crate) modal_fg_hex_input: Entity<TextInput>,
     pub(crate) filter_search_query: String,
     pub(crate) filter_rule_input: Entity<TextInput>,
     pub(crate) filter_rules_scroll_handle: ScrollHandle,
@@ -283,6 +285,38 @@ impl LogAnalysisWorkspace {
         )
         .detach();
 
+        let modal_bg_hex_input = cx.new(|cx| TextInput::new("#RRGGBB", cx));
+
+        cx.subscribe(
+            &modal_bg_hex_input,
+            |this, _input, event: &TextInputEvent, cx| match event {
+                TextInputEvent::Submit => {
+                    this.save_modal_filter(cx);
+                }
+                TextInputEvent::Cancel => {
+                    this.close_filter_modal(cx);
+                }
+                TextInputEvent::Change => this.on_modal_bg_hex_changed(cx),
+            },
+        )
+        .detach();
+
+        let modal_fg_hex_input = cx.new(|cx| TextInput::new("#RRGGBB", cx));
+
+        cx.subscribe(
+            &modal_fg_hex_input,
+            |this, _input, event: &TextInputEvent, cx| match event {
+                TextInputEvent::Submit => {
+                    this.save_modal_filter(cx);
+                }
+                TextInputEvent::Cancel => {
+                    this.close_filter_modal(cx);
+                }
+                TextInputEvent::Change => this.on_modal_fg_hex_changed(cx),
+            },
+        )
+        .detach();
+
         let find_input = cx.new(|cx| TextInput::new("Type search query & press Enter...", cx));
 
         cx.subscribe(
@@ -395,6 +429,8 @@ impl LogAnalysisWorkspace {
             cached_stream_filters: None,
             filter_edit_modal: FilterEditState::default(),
             modal_pattern_input,
+            modal_bg_hex_input,
+            modal_fg_hex_input,
             filter_search_query: String::new(),
             filter_rule_input,
             filter_rules_scroll_handle: ScrollHandle::new(),
@@ -802,6 +838,16 @@ impl LogAnalysisWorkspace {
             .read(cx)
             .focus_handle
             .is_focused(window)
+            || self
+                .modal_bg_hex_input
+                .read(cx)
+                .focus_handle
+                .is_focused(window)
+            || self
+                .modal_fg_hex_input
+                .read(cx)
+                .focus_handle
+                .is_focused(window)
             || self.note_input.read(cx).focus_handle.is_focused(window)
             || self.find_input.read(cx).focus_handle.is_focused(window)
             || self.palette_input.read(cx).focus_handle.is_focused(window)
@@ -816,7 +862,7 @@ impl LogAnalysisWorkspace {
     pub fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
@@ -826,10 +872,41 @@ impl LogAnalysisWorkspace {
             return;
         }
 
-        // Suggestion dropdown gets first claim on navigation/selection keys.
+        // Suggestion dropdown gets first claim on navigation/selection keys only while pattern input is focused.
         if self.filter_edit_modal.is_open
+            && self.input_focus == InputFocusTarget::ModalPattern
             && self.handle_suggestion_key(key, event.keystroke.modifiers.shift, cx)
         {
+            return;
+        }
+
+        // Cycle focus between modal Pattern / BG Hex / FG Hex inputs on Tab / Shift+Tab.
+        if self.filter_edit_modal.is_open
+            && key == "tab"
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.platform
+        {
+            self.filter_edit_modal.suggestions_open = false;
+            self.filter_edit_modal.suggestion_index = None;
+            let next_target = crate::modals::filter_edit_modal::cycle_modal_focus_target(
+                self.input_focus,
+                event.keystroke.modifiers.shift,
+            );
+            self.input_focus = next_target;
+            match next_target {
+                InputFocusTarget::ModalPattern => {
+                    window.focus(&self.modal_pattern_input.read(cx).focus_handle);
+                }
+                InputFocusTarget::ModalBgHex => {
+                    window.focus(&self.modal_bg_hex_input.read(cx).focus_handle);
+                }
+                InputFocusTarget::ModalFgHex => {
+                    window.focus(&self.modal_fg_hex_input.read(cx).focus_handle);
+                }
+                _ => {}
+            }
+            cx.notify();
             return;
         }
 

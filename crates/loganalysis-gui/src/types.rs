@@ -13,6 +13,8 @@ pub enum InputFocusTarget {
     None,
     SearchBar,
     ModalPattern,
+    ModalBgHex,
+    ModalFgHex,
     CommandPalette,
     BookmarkNote,
 }
@@ -27,6 +29,14 @@ pub struct FilterEditState {
     pub is_exclude: bool,
     pub bg_color_name: String,
     pub fg_color_name: String,
+    /// Whether the inline custom background `#RRGGBB` input currently holds an invalid non-empty value.
+    pub bg_hex_invalid: bool,
+    /// Whether the inline custom foreground `#RRGGBB` input currently holds an invalid non-empty value.
+    pub fg_hex_invalid: bool,
+    /// Hex text last set programmatically in the BG hex input so `Change` handlers preserve named colors.
+    pub programmatic_bg_hex: Option<String>,
+    /// Hex text last set programmatically in the FG hex input so `Change` handlers preserve named colors.
+    pub programmatic_fg_hex: Option<String>,
     /// Whether the pattern history suggestion dropdown is visible.
     pub suggestions_open: bool,
     /// Highlighted dropdown row, if any.

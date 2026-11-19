@@ -140,6 +140,16 @@ impl Render for LogAnalysisWorkspace {
             .read(cx)
             .focus_handle
             .is_focused(window);
+        let modal_bg_hex_focused = self
+            .modal_bg_hex_input
+            .read(cx)
+            .focus_handle
+            .is_focused(window);
+        let modal_fg_hex_focused = self
+            .modal_fg_hex_input
+            .read(cx)
+            .focus_handle
+            .is_focused(window);
         let note_input_focused = self.note_input.read(cx).focus_handle.is_focused(window);
         let find_input_focused = self.find_input.read(cx).focus_handle.is_focused(window);
         let palette_input_focused = self.palette_input.read(cx).focus_handle.is_focused(window);
@@ -150,8 +160,17 @@ impl Render for LogAnalysisWorkspace {
             .is_focused(window);
 
         if self.filter_edit_modal.is_open {
-            if self.input_focus == InputFocusTarget::ModalPattern && !modal_pattern_focused {
-                window.focus(&self.modal_pattern_input.read(cx).focus_handle);
+            match self.input_focus {
+                InputFocusTarget::ModalPattern if !modal_pattern_focused => {
+                    window.focus(&self.modal_pattern_input.read(cx).focus_handle);
+                }
+                InputFocusTarget::ModalBgHex if !modal_bg_hex_focused => {
+                    window.focus(&self.modal_bg_hex_input.read(cx).focus_handle);
+                }
+                InputFocusTarget::ModalFgHex if !modal_fg_hex_focused => {
+                    window.focus(&self.modal_fg_hex_input.read(cx).focus_handle);
+                }
+                _ => {}
             }
         } else if self.bookmarks.is_note_modal_open {
             if self.input_focus == InputFocusTarget::BookmarkNote && !note_input_focused {
@@ -166,6 +185,8 @@ impl Render for LogAnalysisWorkspace {
                 window.focus(&self.find_input.read(cx).focus_handle);
             }
         } else if !modal_pattern_focused
+            && !modal_bg_hex_focused
+            && !modal_fg_hex_focused
             && !note_input_focused
             && !find_input_focused
             && !palette_input_focused

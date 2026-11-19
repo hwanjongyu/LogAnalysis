@@ -82,7 +82,10 @@ fn test_command_palette_catalog_and_fuzzy_search() {
     use loganalysis_gui::modals::command_palette::{get_palette_commands, PaletteCommandId};
 
     let commands = get_palette_commands();
-    assert!(commands.len() >= 20, "Should have at least 20 registered commands");
+    assert!(
+        commands.len() >= 20,
+        "Should have at least 20 registered commands"
+    );
 
     // Category sanity check
     let categories: Vec<&str> = commands.iter().map(|c| c.category).collect();
@@ -133,9 +136,16 @@ fn test_command_palette_catalog_and_fuzzy_search() {
         .iter()
         .filter_map(|c| fuzzy_match("bookmark", c.title).map(|score| (c, score)))
         .collect();
-    assert!(bookmark_matches.len() >= 6, "Expected at least 6 bookmark commands");
-    assert!(commands.iter().any(|c| c.id == PaletteCommandId::ToggleBookmarkDrawer));
-    assert!(commands.iter().any(|c| c.id == PaletteCommandId::EditBookmarkNote));
+    assert!(
+        bookmark_matches.len() >= 6,
+        "Expected at least 6 bookmark commands"
+    );
+    assert!(commands
+        .iter()
+        .any(|c| c.id == PaletteCommandId::ToggleBookmarkDrawer));
+    assert!(commands
+        .iter()
+        .any(|c| c.id == PaletteCommandId::EditBookmarkNote));
 
     // Fuzzy search for "export" -> should find export command
     let export_matches: Vec<_> = commands
@@ -151,26 +161,43 @@ fn test_command_palette_catalog_and_fuzzy_search() {
         .filter_map(|c| fuzzy_match("timeline", c.title).map(|score| (c, score)))
         .collect();
     assert!(!timeline_matches.is_empty());
-    assert_eq!(timeline_matches[0].0.id, PaletteCommandId::ToggleEpsTimeline);
+    assert_eq!(
+        timeline_matches[0].0.id,
+        PaletteCommandId::ToggleEpsTimeline
+    );
 
     // Fuzzy search for "zen" -> should find Zen Focus Mode command
     let zen_matches: Vec<_> = commands
         .iter()
         .filter_map(|c| fuzzy_match("zen", c.title).map(|score| (c, score)))
         .collect();
-    assert!(!zen_matches.is_empty(), "Expected command palette to match 'zen'");
+    assert!(
+        !zen_matches.is_empty(),
+        "Expected command palette to match 'zen'"
+    );
     assert_eq!(zen_matches[0].0.id, PaletteCommandId::ToggleZenMode);
-    assert!(commands.iter().any(|c| c.id == PaletteCommandId::ToggleZenMode));
+    assert!(commands
+        .iter()
+        .any(|c| c.id == PaletteCommandId::ToggleZenMode));
 
     // Fuzzy search for "split" -> should find split view commands
     let split_matches: Vec<_> = commands
         .iter()
         .filter_map(|c| fuzzy_match("split", c.title).map(|score| (c, score)))
         .collect();
-    assert!(split_matches.len() >= 3, "Expected at least 3 split view commands");
-    assert!(commands.iter().any(|c| c.id == PaletteCommandId::ToggleSplitView));
-    assert!(commands.iter().any(|c| c.id == PaletteCommandId::ToggleSplitOrientation));
-    assert!(commands.iter().any(|c| c.id == PaletteCommandId::OpenSecondaryLog));
+    assert!(
+        split_matches.len() >= 3,
+        "Expected at least 3 split view commands"
+    );
+    assert!(commands
+        .iter()
+        .any(|c| c.id == PaletteCommandId::ToggleSplitView));
+    assert!(commands
+        .iter()
+        .any(|c| c.id == PaletteCommandId::ToggleSplitOrientation));
+    assert!(commands
+        .iter()
+        .any(|c| c.id == PaletteCommandId::OpenSecondaryLog));
 
     // Fuzzy search for "synced" -> should find timestamp sync command
     let sync_matches: Vec<_> = commands
@@ -205,12 +232,27 @@ fn test_bookmark_and_html_report_pipeline() {
     assert!(manager.is_empty());
 
     // Add bookmarks
-    assert!(manager.toggle(10, "11-06 18:00:00 I Tag: System init".into(), LineSeverity::Normal));
-    assert!(manager.toggle(50, "11-06 18:00:05 W Tag: Memory warning".into(), LineSeverity::Warning));
-    assert!(manager.toggle(100, "11-06 18:00:10 E Tag: Fatal crash occurred".into(), LineSeverity::Error));
+    assert!(manager.toggle(
+        10,
+        "11-06 18:00:00 I Tag: System init".into(),
+        LineSeverity::Normal
+    ));
+    assert!(manager.toggle(
+        50,
+        "11-06 18:00:05 W Tag: Memory warning".into(),
+        LineSeverity::Warning
+    ));
+    assert!(manager.toggle(
+        100,
+        "11-06 18:00:10 E Tag: Fatal crash occurred".into(),
+        LineSeverity::Error
+    ));
 
     // Set triage notes
-    assert!(manager.set_note(100, Some("Root cause null pointer exception in binder IPC".into())));
+    assert!(manager.set_note(
+        100,
+        Some("Root cause null pointer exception in binder IPC".into())
+    ));
     assert!(manager.set_note(50, Some("Heap usage crossed 85% threshold".into())));
 
     assert_eq!(manager.len(), 3);
@@ -396,25 +438,44 @@ fn test_chronological_multi_file_merge_view_and_filtering() {
         f2.write_all(server_content.as_bytes()).unwrap();
     }
 
-    let merged_buf = MergedLogBuffer::open_multiple(&[client_path.clone(), server_path.clone()]).unwrap();
+    let merged_buf =
+        MergedLogBuffer::open_multiple(&[client_path.clone(), server_path.clone()]).unwrap();
     assert_eq!(merged_buf.line_count(), 6);
 
     // Verify origin badges and names
-    assert_eq!(merged_buf.source_names(), &["test_merge_client.log", "test_merge_server.log"]);
+    assert_eq!(
+        merged_buf.source_names(),
+        &["test_merge_client.log", "test_merge_server.log"]
+    );
 
     // Line 0: Client sends request (12:00:01.000)
     assert_eq!(merged_buf.get_line_source_id(0), Some(0));
-    assert_eq!(merged_buf.get_line_source_name(0), Some("test_merge_client.log"));
-    assert!(merged_buf.get_line(0).unwrap().contains("Client sends request"));
+    assert_eq!(
+        merged_buf.get_line_source_name(0),
+        Some("test_merge_client.log")
+    );
+    assert!(merged_buf
+        .get_line(0)
+        .unwrap()
+        .contains("Client sends request"));
 
     // Line 1: Server receives request (12:00:02.000)
     assert_eq!(merged_buf.get_line_source_id(1), Some(1));
-    assert_eq!(merged_buf.get_line_source_name(1), Some("test_merge_server.log"));
-    assert!(merged_buf.get_line(1).unwrap().contains("Server receives request"));
+    assert_eq!(
+        merged_buf.get_line_source_name(1),
+        Some("test_merge_server.log")
+    );
+    assert!(merged_buf
+        .get_line(1)
+        .unwrap()
+        .contains("Server receives request"));
 
     // Line 2: Server database deadlock (12:00:02.500)
     assert_eq!(merged_buf.get_line_source_id(2), Some(1));
-    assert!(merged_buf.get_line(2).unwrap().contains("Server database deadlock"));
+    assert!(merged_buf
+        .get_line(2)
+        .unwrap()
+        .contains("Server database deadlock"));
 
     // Line 3: Client timeout waiting for reply (12:00:03.000)
     assert_eq!(merged_buf.get_line_source_id(3), Some(0));
@@ -431,7 +492,10 @@ fn test_chronological_multi_file_merge_view_and_filtering() {
     // Verify ActiveLogSource dispatch and execute_filtering
     let active_source = ActiveLogSource::Merged(merged_buf);
     assert_eq!(active_source.line_count(), 6);
-    assert_eq!(active_source.get_line_source_info(1), Some((1, "test_merge_server.log")));
+    assert_eq!(
+        active_source.get_line_source_info(1),
+        Some((1, "test_merge_server.log"))
+    );
 
     let rule = FilterRule {
         text: "deadlock".to_string(),
@@ -453,7 +517,9 @@ fn test_chronological_multi_file_merge_view_and_filtering() {
 fn test_render_highlighted_text_zero_allocation() {
     use gpui::{HighlightStyle, SharedString};
     use loganalysis_core::CompiledMatcher;
-    use loganalysis_gui::components::log_view::{compute_highlight_ranges, render_highlighted_text};
+    use loganalysis_gui::components::log_view::{
+        compute_highlight_ranges, render_highlighted_text,
+    };
     use std::ops::Range;
 
     let text = SharedString::from("2026-11-06 12:00:00 Normal log line");
@@ -669,14 +735,32 @@ fn test_resizable_filter_dock_clamping_and_reset() {
     };
 
     // 1. Left dock width clamping [180.0, 800.0]
-    assert_eq!(clamp_filter_dock_width(DEFAULT_FILTER_DOCK_WIDTH, 100.0), 410.0);
-    assert_eq!(clamp_filter_dock_width(DEFAULT_FILTER_DOCK_WIDTH, 999.0), 800.0);
-    assert_eq!(clamp_filter_dock_width(DEFAULT_FILTER_DOCK_WIDTH, -500.0), 180.0);
+    assert_eq!(
+        clamp_filter_dock_width(DEFAULT_FILTER_DOCK_WIDTH, 100.0),
+        410.0
+    );
+    assert_eq!(
+        clamp_filter_dock_width(DEFAULT_FILTER_DOCK_WIDTH, 999.0),
+        800.0
+    );
+    assert_eq!(
+        clamp_filter_dock_width(DEFAULT_FILTER_DOCK_WIDTH, -500.0),
+        180.0
+    );
 
     // 2. Bottom dock height clamping [100.0, 700.0]
-    assert_eq!(clamp_filter_dock_height(DEFAULT_FILTER_DOCK_HEIGHT, 80.0), 300.0);
-    assert_eq!(clamp_filter_dock_height(DEFAULT_FILTER_DOCK_HEIGHT, 1000.0), 700.0);
-    assert_eq!(clamp_filter_dock_height(DEFAULT_FILTER_DOCK_HEIGHT, -300.0), 100.0);
+    assert_eq!(
+        clamp_filter_dock_height(DEFAULT_FILTER_DOCK_HEIGHT, 80.0),
+        300.0
+    );
+    assert_eq!(
+        clamp_filter_dock_height(DEFAULT_FILTER_DOCK_HEIGHT, 1000.0),
+        700.0
+    );
+    assert_eq!(
+        clamp_filter_dock_height(DEFAULT_FILTER_DOCK_HEIGHT, -300.0),
+        100.0
+    );
 
     // 3. Preset defaults
     assert_eq!(DEFAULT_FILTER_DOCK_WIDTH, 310.0);
@@ -973,7 +1057,11 @@ fn test_unified_compact_header_spec_and_dom_ids() {
     );
     assert!(all_ids.iter().all(|id| !id.is_empty()));
     let unique_ids: HashSet<&str> = all_ids.iter().copied().collect();
-    assert_eq!(unique_ids.len(), 20, "All 20 contract DOM IDs must be unique");
+    assert_eq!(
+        unique_ids.len(),
+        20,
+        "All 20 contract DOM IDs must be unique"
+    );
 }
 
 #[test]
@@ -1129,7 +1217,10 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
         .iter()
         .find(|c| c.id == PaletteCommandId::ToggleFullLineDisplay)
         .expect("ToggleFullLineDisplay must exist");
-    assert_eq!(hscroll_cmd.title, "View: Toggle Full Line Horizontal Scroll");
+    assert_eq!(
+        hscroll_cmd.title,
+        "View: Toggle Full Line Horizontal Scroll"
+    );
 
     let dock_pos_cmd = commands
         .iter()
@@ -1158,9 +1249,15 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
 
     // Fuzzy search capability
     let zen_match = fuzzy_match("zen", zen_cmd.title);
-    assert!(zen_match.is_some(), "Fuzzy match for 'zen' must match ToggleZenMode title");
+    assert!(
+        zen_match.is_some(),
+        "Fuzzy match for 'zen' must match ToggleZenMode title"
+    );
     let focus_match = fuzzy_match("focus", zen_cmd.title);
-    assert!(focus_match.is_some(), "Fuzzy match for 'focus' must match ToggleZenMode title");
+    assert!(
+        focus_match.is_some(),
+        "Fuzzy match for 'focus' must match ToggleZenMode title"
+    );
 
     // 4. Verification that timeline sparkline visibility predicate respects is_zen_mode
     assert!(!should_render_timeline_ribbon(false, false));
@@ -1528,4 +1625,155 @@ fn test_escape_priority_with_controllers() {
         ),
         EscapeAction::None
     );
+}
+
+#[test]
+fn test_filter_color_palette_and_hex_validation_integration() {
+    use gpui::rgb;
+    use loganalysis_core::{
+        evaluate_contrast, parse_color_spec, ContrastLevel, FilterRule, FilterTabData, COLOR_MAP,
+        TEXT_COLOR_MAP,
+    };
+    use loganalysis_gui::components::filter_dock::resolve_filter_row_style;
+    use loganalysis_gui::modals::filter_edit_modal::{
+        cycle_modal_focus_target, fg_swatch_backing_rgb, format_hex_input_for_color_spec,
+        format_swatch_tooltip, is_swatch_selected, parse_custom_hex_input, swatch_checkmark_rgb,
+        swatch_element_id, HexInputParse, BG_PALETTE_SWATCHES, FG_PALETTE_SWATCHES,
+        QUICK_FILTER_PRESETS,
+    };
+    use loganalysis_gui::theme::{rgba_to_rgb24, Theme};
+    use loganalysis_gui::types::{FilterEditState, InputFocusTarget};
+    use loganalysis_gui::workspace::{validate_modal_hex_field, FACET_FILTER_PALETTE};
+
+    // 1. Core map invariants + Magenta exclusion
+    assert_eq!(COLOR_MAP.len(), 41);
+    assert_eq!(TEXT_COLOR_MAP.len(), 40);
+    assert_eq!(parse_color_spec("Magenta", true), None);
+
+    // 2. 24 + 24 swatch grid resolution, coverage, and ElementId uniqueness across both grids
+    assert_eq!(BG_PALETTE_SWATCHES.len(), 24);
+    assert_eq!(FG_PALETTE_SWATCHES.len(), 24);
+    let mut all_ids = HashSet::new();
+    for (idx, &(name, val)) in BG_PALETTE_SWATCHES.iter().enumerate() {
+        assert!(all_ids.insert(swatch_element_id("bg-palette-color", idx)));
+        assert_eq!(parse_color_spec(name, true), val);
+    }
+    for (idx, &(name, val)) in FG_PALETTE_SWATCHES.iter().enumerate() {
+        assert!(all_ids.insert(swatch_element_id("fg-palette-color", idx)));
+        if name == "Default" {
+            assert_eq!(val, None);
+        } else {
+            assert_eq!(parse_color_spec(name, false), val);
+        }
+    }
+    assert_eq!(all_ids.len(), 48);
+
+    for &(_label, _pat, bg, fg) in QUICK_FILTER_PRESETS {
+        assert!(BG_PALETTE_SWATCHES.iter().any(|&(name, _)| name == bg));
+        assert!(FG_PALETTE_SWATCHES.iter().any(|&(name, _)| name == fg));
+    }
+    for &facet_bg in &FACET_FILTER_PALETTE {
+        assert!(BG_PALETTE_SWATCHES
+            .iter()
+            .any(|&(name, _)| name == facet_bg));
+    }
+
+    // 3. Pure helpers & modal state defaults
+    let modal_state = FilterEditState::default();
+    assert!(!modal_state.bg_hex_invalid);
+    assert!(!modal_state.fg_hex_invalid);
+    assert_eq!(modal_state.programmatic_bg_hex, None);
+    assert_eq!(modal_state.programmatic_fg_hex, None);
+
+    assert_eq!(swatch_checkmark_rgb(0x450A0A), 0xFFFFFF);
+    assert_eq!(swatch_checkmark_rgb(0xFFFF00), 0x000000);
+    assert_eq!(
+        format_swatch_tooltip("DarkRed", Some(0x450A0A), true),
+        "DarkRed (#450A0A)"
+    );
+    assert_eq!(
+        fg_swatch_backing_rgb(0x000000, rgba_to_rgb24(Theme::dark().bg_card)),
+        0xF8FAFC
+    );
+    assert_eq!(
+        fg_swatch_backing_rgb(0xFCA5A5, rgba_to_rgb24(Theme::light().bg_card)),
+        0x161722
+    );
+
+    // 4. Hex validation, formatting, ADR-2 selection, and focus cycling
+    assert_eq!(validate_modal_hex_field("", true), Ok(()));
+    assert_eq!(validate_modal_hex_field("1a2b3c", false), Ok(()));
+    assert!(validate_modal_hex_field("#12Z", true).is_err());
+    assert!(validate_modal_hex_field("+12345", false).is_err());
+    assert_eq!(
+        parse_custom_hex_input("1a2b3c"),
+        HexInputParse::Valid {
+            rgb: 0x1A2B3C,
+            normalized: "#1A2B3C".into(),
+        }
+    );
+    assert_eq!(format_hex_input_for_color_spec("DarkRed", true), "#450A0A");
+    assert_eq!(format_hex_input_for_color_spec("Magenta", true), "");
+    assert!(is_swatch_selected(
+        "#FFB6B6",
+        "Red",
+        Some(0xFFB6B6),
+        false,
+        false
+    ));
+    assert!(!is_swatch_selected("Magenta", "None", None, false, false));
+
+    assert_eq!(
+        cycle_modal_focus_target(InputFocusTarget::ModalPattern, false),
+        InputFocusTarget::ModalBgHex
+    );
+    assert_eq!(
+        cycle_modal_focus_target(InputFocusTarget::ModalPattern, true),
+        InputFocusTarget::ModalFgHex
+    );
+
+    // 5. End-to-end JSON serialization, core RGB resolution, WCAG check, and Filter Dock styling
+    let tab = FilterTabData {
+        name: "DarkPalette".into(),
+        enabled: true,
+        filters: vec![
+            FilterRule {
+                text: "FATAL".into(),
+                bg_color: "DarkRed".into(),
+                text_color: "CoralRed".into(),
+                active: true,
+                ..Default::default()
+            },
+            FilterRule {
+                text: "CUSTOM".into(),
+                bg_color: "#1A2B3C".into(),
+                text_color: "#FDE68A".into(),
+                active: true,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&vec![tab]).unwrap();
+    let roundtrip: Vec<FilterTabData> = serde_json::from_str(&json).unwrap();
+    let r_named = &roundtrip[0].filters[0];
+    let r_hex = &roundtrip[0].filters[1];
+
+    assert_eq!(r_named.resolved_bg_hex(), Some(0x450A0A));
+    assert_eq!(r_named.resolved_fg_hex(), Some(0xFCA5A5));
+    assert_eq!(r_hex.resolved_bg_hex(), Some(0x1A2B3C));
+    assert_eq!(r_hex.resolved_fg_hex(), Some(0xFDE68A));
+
+    let (_ratio, lvl) = evaluate_contrast(0x450A0A, 0xFCA5A5);
+    assert_eq!(lvl, ContrastLevel::Pass);
+
+    let dock_named = resolve_filter_row_style(r_named, Theme::dark());
+    assert_eq!(dock_named.strip_bg, rgb(0x450A0A));
+    assert_eq!(dock_named.strip_fg, rgb(0xFCA5A5));
+    assert!(!dock_named.show_low_contrast_hint);
+
+    let dock_hex = resolve_filter_row_style(r_hex, Theme::dark());
+    assert_eq!(dock_hex.strip_bg, rgb(0x1A2B3C));
+    assert_eq!(dock_hex.strip_fg, rgb(0xFDE68A));
+    assert!(!dock_hex.show_low_contrast_hint);
 }

@@ -63,7 +63,7 @@ pub struct PatternHistory {
 impl PatternHistory {
     /// Records a use of `entry` at the front (MRU). Deduplicates on
     /// (pattern, regex, case_sensitive), accumulating `use_count`, and caps at
-    /// [`MAX_PATTERN_HISTORY`]. Blank patterns are rejected (returns `false`).
+    /// `MAX_PATTERN_HISTORY`. Blank patterns are rejected (returns `false`).
     pub fn record(&mut self, mut entry: PatternHistoryEntry) -> bool {
         if entry.pattern.trim().is_empty() {
             return false;
@@ -178,6 +178,54 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SuggestionKeyAction {
+    None,
+    OpenAndSelect(usize),
+    Select(Option<usize>),
+    Apply(usize),
+    Close,
+    Delete(usize),
+}
+
+fn resolve_suggestion_key_action(
+    modal_open: bool,
+    suggestions_open: bool,
+    suggestion_count: usize,
+    sel: Option<usize>,
+    key: &str,
+    shift: bool,
+) -> SuggestionKeyAction {
+    if !modal_open {
+        return SuggestionKeyAction::None;
+    }
+    let open = suggestions_open && suggestion_count > 0;
+    match key {
+        "down" => {
+            if suggestion_count == 0 {
+                return SuggestionKeyAction::None;
+            }
+            let next = match (open, sel) {
+                (true, Some(i)) => (i + 1).min(suggestion_count - 1),
+                _ => 0,
+            };
+            SuggestionKeyAction::OpenAndSelect(next)
+        }
+        "up" if open => {
+            let next = match sel {
+                Some(i) if i > 0 => Some(i - 1),
+                _ => None,
+            };
+            SuggestionKeyAction::Select(next)
+        }
+        "enter" if open && sel.is_some() => SuggestionKeyAction::Apply(sel.unwrap_or(0)),
+        "tab" if open && !shift => SuggestionKeyAction::Apply(sel.unwrap_or(0)),
+        "escape" if open => SuggestionKeyAction::Close,
+        "delete" if open && shift && sel.is_some() => SuggestionKeyAction::Delete(sel.unwrap_or(0)),
+        _ => SuggestionKeyAction::None,
+    }
 }
 
 impl LogAnalysisWorkspace {
@@ -321,48 +369,41 @@ impl LogAnalysisWorkspace {
             return false;
         }
         let suggestions = self.current_pattern_suggestions(cx);
-        let open = self.filter_edit_modal.suggestions_open && !suggestions.is_empty();
-        let sel = self.filter_edit_modal.suggestion_index;
-        match key {
-            "down" => {
-                if suggestions.is_empty() {
-                    return false;
-                }
+        let action = resolve_suggestion_key_action(
+            self.filter_edit_modal.is_open,
+            self.filter_edit_modal.suggestions_open,
+            suggestions.len(),
+            self.filter_edit_modal.suggestion_index,
+            key,
+            shift,
+        );
+        match action {
+            SuggestionKeyAction::None => false,
+            SuggestionKeyAction::OpenAndSelect(idx) => {
                 self.filter_edit_modal.suggestions_open = true;
-                self.filter_edit_modal.suggestion_index = Some(match (open, sel) {
-                    (true, Some(i)) => (i + 1).min(suggestions.len() - 1),
-                    _ => 0,
-                });
+                self.filter_edit_modal.suggestion_index = Some(idx);
                 cx.notify();
                 true
             }
-            "up" if open => {
-                self.filter_edit_modal.suggestion_index = match sel {
-                    Some(i) if i > 0 => Some(i - 1),
-                    _ => None,
-                };
+            SuggestionKeyAction::Select(sel) => {
+                self.filter_edit_modal.suggestion_index = sel;
                 cx.notify();
                 true
             }
-            "enter" if open && sel.is_some() => {
-                self.apply_pattern_suggestion(sel.unwrap_or(0), cx);
+            SuggestionKeyAction::Apply(idx) => {
+                self.apply_pattern_suggestion(idx, cx);
                 true
             }
-            "tab" if open => {
-                self.apply_pattern_suggestion(sel.unwrap_or(0), cx);
-                true
-            }
-            "escape" if open => {
+            SuggestionKeyAction::Close => {
                 self.filter_edit_modal.suggestions_open = false;
                 self.filter_edit_modal.suggestion_index = None;
                 cx.notify();
                 true
             }
-            "delete" if open && shift && sel.is_some() => {
-                self.delete_pattern_suggestion(sel.unwrap_or(0), cx);
+            SuggestionKeyAction::Delete(idx) => {
+                self.delete_pattern_suggestion(idx, cx);
                 true
             }
-            _ => false,
         }
     }
 }
@@ -370,7 +411,10 @@ impl LogAnalysisWorkspace {
 #[cfg(test)]
 mod tests {
     // Explicit imports: `super::*` would pull in `gpui::test`, shadowing the std `#[test]` attribute.
-    use super::{PatternHistory, PatternHistoryEntry, PatternHistoryFile, MAX_PATTERN_HISTORY};
+    use super::{
+        resolve_suggestion_key_action, PatternHistory, PatternHistoryEntry, PatternHistoryFile,
+        SuggestionKeyAction, MAX_PATTERN_HISTORY,
+    };
 
     fn e(p: &str, t: u64) -> PatternHistoryEntry {
         PatternHistoryEntry::new(p, false, false, t)
@@ -531,6 +575,91 @@ mod tests {
         assert_eq!(
             h.entries[0].pattern,
             format!("p{}", MAX_PATTERN_HISTORY + 4)
+        );
+    }
+
+    #[test]
+    fn resolve_suggestion_key_action_respects_shift_tab_and_navigation() {
+        // Modal closed -> never consumes keys
+        assert_eq!(
+            resolve_suggestion_key_action(false, true, 3, Some(0), "tab", false),
+            SuggestionKeyAction::None
+        );
+
+        // Plain Tab when suggestions are open consumes and applies highlighted or first suggestion
+        assert_eq!(
+            resolve_suggestion_key_action(true, true, 3, None, "tab", false),
+            SuggestionKeyAction::Apply(0)
+        );
+        assert_eq!(
+            resolve_suggestion_key_action(true, true, 3, Some(2), "tab", false),
+            SuggestionKeyAction::Apply(2)
+        );
+
+        // Shift+Tab must NOT be consumed by suggestion dropdown so modal focus cycles backward
+        assert_eq!(
+            resolve_suggestion_key_action(true, true, 3, None, "tab", true),
+            SuggestionKeyAction::None
+        );
+        assert_eq!(
+            resolve_suggestion_key_action(true, true, 3, Some(1), "tab", true),
+            SuggestionKeyAction::None
+        );
+
+        // Closed or empty dropdown does not consume Tab
+        assert_eq!(
+            resolve_suggestion_key_action(true, false, 3, None, "tab", false),
+            SuggestionKeyAction::None
+        );
+        assert_eq!(
+            resolve_suggestion_key_action(true, true, 0, None, "tab", false),
+            SuggestionKeyAction::None
+        );
+
+        // Down / Up / Enter / Escape / Shift+Delete navigation
+        assert_eq!(
+            resolve_suggestion_key_action(true, false, 0, None, "down", false),
+            SuggestionKeyAction::None
+        );
+        assert_eq!(
+            resolve_suggestion_key_action(true, false, 3, None, "down", false),
+            SuggestionKeyAction::OpenAndSelect(0)
+        );
+        assert_eq!(
+            resolve_suggestion_key_action(true, true, 3, Some(1), "down", false),
+            SuggestionKeyAction::OpenAndSelect(2)
+        );
+        assert_eq!(
+            resolve_suggestion_key_action(true, true, 3, Some(2), "down", false),
+            SuggestionKeyAction::OpenAndSelect(2)
+        );
+        assert_eq!(
+            resolve_suggestion_key_action(true, true, 3, Some(1), "up", false),
+            SuggestionKeyAction::Select(Some(0))
+        );
+        assert_eq!(
+            resolve_suggestion_key_action(true, true, 3, Some(0), "up", false),
+            SuggestionKeyAction::Select(None)
+        );
+        assert_eq!(
+            resolve_suggestion_key_action(true, true, 3, None, "enter", false),
+            SuggestionKeyAction::None
+        );
+        assert_eq!(
+            resolve_suggestion_key_action(true, true, 3, Some(1), "enter", false),
+            SuggestionKeyAction::Apply(1)
+        );
+        assert_eq!(
+            resolve_suggestion_key_action(true, true, 3, Some(1), "escape", false),
+            SuggestionKeyAction::Close
+        );
+        assert_eq!(
+            resolve_suggestion_key_action(true, true, 3, Some(1), "delete", false),
+            SuggestionKeyAction::None
+        );
+        assert_eq!(
+            resolve_suggestion_key_action(true, true, 3, Some(1), "delete", true),
+            SuggestionKeyAction::Delete(1)
         );
     }
 }
