@@ -7,23 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.2.5] - 2026-11-19
 
 ### Added
 - **Extended Filter Color Palette & Custom `#RRGGBB` Hex Inputs**: Expanded the New/Edit Filter Rule modal to a 24+24 Light/Dark WCAG AA-balanced background and text swatch grid (adding 11 dark-surface colors to `COLOR_MAP` and 13 light/dark-optimized colors to `TEXT_COLOR_MAP`), added dynamic BG checkmark contrast, adaptive FG swatch backing plates, hover tooltips (`Name (#RRGGBB)`), and inline custom `#RRGGBB` hex inputs with live preview, `Tab`/`Shift+Tab` focus cycling, and validation.
-- **Filter Pattern History & Suggestions**: The New/Edit Filter Rule modal now remembers saved patterns (MRU, deduplicated by pattern+Regex+Case, capped at 200, persisted atomically to `~/.config/loganalysis/pattern_history.json`) and shows a dropdown of up to 8 matches (prefix before substring) while typing. Selecting restores the Regex/Case toggles (colors are not stored). Keyboard: Up/Down, Enter/Tab select, Esc closes only the dropdown, Shift+Delete or the row ✕ removes an entry. New Command Palette command `filter:clear_pattern_history`.
-- **Root `LICENSE`**: Added standard MIT License file (`Copyright (c) 2026 Drew Yu`).
+- **Filter Pattern History & Autocomplete Suggestions**: The New/Edit Filter Rule modal now remembers saved patterns (MRU, deduplicated by pattern+Regex+Case, capped at 200, persisted atomically to `~/.config/loganalysis/pattern_history.json`) and shows a dropdown of up to 8 matches (prefix before substring) while typing. Selecting restores the Regex/Case toggles (colors are not stored). Keyboard: Up/Down, Enter/Tab select, Esc closes only the dropdown, Shift+Delete or the row ✕ removes an entry. New Command Palette command `filter:clear_pattern_history`.
+- **Filter List UX Redesign & Line Detail Inspector**: Redesigned the filter rules list with double-click editing, toggle checkboxes, full-span color strips, and drag-and-drop rule reordering; added the Line Detail inspector panel and Windows application icon embedding.
+- **Root `LICENSE` & `cliff.toml`**: Added standard MIT License file (`Copyright (c) 2026 Drew Yu`) and `git-cliff` release configuration.
 - **Extracted Production Helpers & Coverage**: Extracted reusable workspace and GUI helpers (`apply_facet_filter_to_tab`, `clamp_filter_dock_width`, `clamp_filter_dock_height`, `default_filter_dock_size`, `compute_highlight_ranges`, `LOG_ROW_HEIGHT_MULTIPLIER`, `log_row_height_px`, `format_byte_size`, `format_source_memory_display`, `QUICK_FILTER_PRESETS`, `push_recent_path`, `load_recent_files_from_path`, `save_recent_files_to_path`, `build_desktop_entry_content`, `write_if_changed`) along with comprehensive `contrast.rs` and `searcher.rs` unit test suites.
 
 ### Changed
-- **Documentation & Configuration Alignment**: Synchronized `README.md`, `PROJECT.md`, `CHANGELOG.md`, `docs/INVARIANTS.md`, `deny.toml`, and `scripts/status_dashboard.sh` with verified codebase behavior, removing unverified benchmark claims and correcting historical symbol/shortcut inaccuracies.
+- **CI & Documentation Alignment**: Upgraded GitHub Actions to Node.js 24 versions, configured YAML `env` for `RUSTDOCFLAGS`, and synchronized `README.md`, `PROJECT.md`, `CHANGELOG.md`, `docs/INVARIANTS.md`, `deny.toml`, and `scripts/status_dashboard.sh` with verified codebase behavior.
 - **Deduplication & Build/Startup Polish**: Unified viewport builders, unstructured line wrappers, heatmap tick coalescing (`build_heatmap_ticks`), scrollbar ratio dragging (`scroll_handle_to_mouse_y`), split-view timestamp correlation (`sync_pane_to_timestamp`), filter dock search boxes (`render_filter_rule_search_box`), atomic file writes (`write_file_atomically`), Linux `PR_SET_PDEATHSIG` configuration (`configure_linux_pdeathsig`), multi-arch `libxkbcommon-x11` discovery in `build.rs`, and conditional non-blocking desktop integration in `ensure_desktop_integration`.
 - **Test Quality Strengthening**: Replaced local simulation tests with calls to real production symbols, migrated temporary file tests to `tempfile`, and replaced `std::thread::sleep` synchronization in tests with deterministic signaling/yield loops.
 
 ### Fixed
+- **Windows ADB Console Popup & Full-Line Horizontal Scroll**: Hidden the console window (`CREATE_NO_WINDOW`) when spawning `adb` subprocesses on Windows and fixed horizontal scrolling in Full Line view mode.
+- **Async Source Races, ADB Timeout/Pause, & Timestamp Rollover (`fix-all-bugs`)**: Remediated async source generation races, ADB timeout/pause bugs, year-end timestamp rollover ordering, and UI/filter defects.
 - **Facet Dirty Flag Parity**: Fixed `add_facet_filter` / `apply_facet_filter_to_tab` so toggling or switching an existing facet rule always marks filter tabs as modified.
 - **Dead Code & Lint Cleanup**: Removed obsolete stubs (`render_titlebar`, `render_toolbar`, `update_analytics_data`, `build_*_dialog`), stale `#[allow(...)]` attributes, and stale doc comments.
-- **`fix-all-bugs` Remediation**: Incorporated upstream bugfixes and regression hardening prior to release cleanup.
 
 ---
 
