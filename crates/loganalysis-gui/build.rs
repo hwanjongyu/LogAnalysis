@@ -5,6 +5,19 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=../../assets/icon.ico");
+
+    // Embed the application icon as resource ID 1 in the Windows executable. GPUI loads the
+    // window-class icon from that resource (`LoadImageW(module, 1, IMAGE_ICON, ..)`), so
+    // without it the taskbar, title bar and Explorer fall back to the default icon.
+    #[cfg(windows)]
+    {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("../../assets/icon.ico");
+        if let Err(e) = res.compile() {
+            println!("cargo:warning=failed to embed Windows icon resource: {e}");
+        }
+    }
 
     #[cfg(target_os = "linux")]
     {
