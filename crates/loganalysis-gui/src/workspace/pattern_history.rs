@@ -7,8 +7,61 @@ use super::LogAnalysisWorkspace;
 pub const MAX_PATTERN_HISTORY: usize = 200;
 /// Maximum number of suggestions shown in the dropdown.
 pub const MAX_PATTERN_SUGGESTIONS: usize = 8;
+/// Maximum on-disk pattern history file size (2 MiB).
+pub const MAX_PATTERN_HISTORY_FILE_BYTES: usize = 2 * 1024 * 1024;
+/// Maximum UTF-8 byte length of a single remembered filter pattern.
+pub const MAX_PATTERN_HISTORY_PATTERN_BYTES: usize = 4_096;
 /// Current on-disk schema version.
 const PATTERN_HISTORY_VERSION: u32 = 1;
+
+static PATTERN_HISTORY_SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static PATTERN_HISTORY_SAVE_GEN: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Reads a UTF-8 file up to `max_bytes` bytes to prevent unbounded allocations on oversized files.
+pub(crate) fn read_to_string_bounded(
+    path: &std::path::Path,
+    max_bytes: usize,
+) -> std::io::Result<String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let meta_len = file.metadata()?.len();
+    if meta_len > max_bytes as u64 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("File exceeds maximum size ({meta_len} > {max_bytes} bytes)"),
+        ));
+    }
+    let mut bytes = Vec::with_capacity((meta_len as usize).min(64 * 1024));
+    file.take(max_bytes as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("File exceeds maximum size ({max_bytes} bytes)"),
+        ));
+    }
+    String::from_utf8(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+#[inline]
+pub(crate) fn is_pattern_history_load_current(current_gen: u64, load_gen: u64) -> bool {
+    current_gen == load_gen
+}
+
+fn save_pattern_history_serialized_with(
+    snapshot: &PatternHistory,
+    path: &std::path::Path,
+    save_gen: u64,
+    lock: &std::sync::Mutex<()>,
+    current_gen: &std::sync::atomic::AtomicU64,
+) -> std::io::Result<bool> {
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    if current_gen.load(std::sync::atomic::Ordering::SeqCst) != save_gen {
+        return Ok(false);
+    }
+    snapshot.save_to_path(path)?;
+    Ok(true)
+}
 
 /// A single remembered filter pattern with the flags it was saved with.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,14 +116,18 @@ pub struct PatternHistory {
 impl PatternHistory {
     /// Records a use of `entry` at the front (MRU). Deduplicates on
     /// (pattern, regex, case_sensitive), accumulating `use_count`, and caps at
-    /// `MAX_PATTERN_HISTORY`. Blank patterns are rejected (returns `false`).
+    /// `MAX_PATTERN_HISTORY`. Blank or oversized patterns are rejected (returns `false`).
     pub fn record(&mut self, mut entry: PatternHistoryEntry) -> bool {
-        if entry.pattern.trim().is_empty() {
+        if entry.pattern.trim().is_empty()
+            || entry.pattern.len() > MAX_PATTERN_HISTORY_PATTERN_BYTES
+        {
             return false;
         }
         if let Some(pos) = self.entries.iter().position(|e| e.same_key(&entry)) {
             let old = self.entries.remove(pos);
             entry.use_count = old.use_count.saturating_add(entry.use_count.max(1));
+        } else {
+            entry.use_count = entry.use_count.max(1);
         }
         self.entries.insert(0, entry);
         self.entries.truncate(MAX_PATTERN_HISTORY);
@@ -137,28 +194,38 @@ impl PatternHistory {
         self.entries.truncate(MAX_PATTERN_HISTORY);
     }
 
-    /// Loads history from `path`; a missing, unreadable or corrupt file yields an empty history.
+    /// Loads history from `path`; a missing, unreadable, oversized or corrupt file yields an empty history.
     pub fn load_from_path(path: &std::path::Path) -> Self {
-        let Ok(data) = std::fs::read_to_string(path) else {
+        let Ok(data) = read_to_string_bounded(path, MAX_PATTERN_HISTORY_FILE_BYTES) else {
             return Self::default();
         };
         let Ok(file) = serde_json::from_str::<PatternHistoryFile>(&data) else {
             return Self::default();
         };
-        let mut entries = file.entries;
-        entries.retain(|e| !e.pattern.trim().is_empty());
-        entries.sort_by_key(|e| std::cmp::Reverse(e.last_used));
-        let mut out = Self::default();
-        for e in entries.into_iter().rev() {
-            // Re-insert oldest first so the newest ends up at the front.
-            let count = e.use_count;
-            if out.record(e.clone()) {
-                if let Some(first) = out.entries.first_mut() {
-                    first.use_count = count.max(1);
+        let mut map: std::collections::HashMap<(String, bool, bool), PatternHistoryEntry> =
+            std::collections::HashMap::new();
+        for mut e in file.entries {
+            if e.pattern.trim().is_empty() || e.pattern.len() > MAX_PATTERN_HISTORY_PATTERN_BYTES {
+                continue;
+            }
+            let count = e.use_count.max(1);
+            let key = (e.pattern.clone(), e.regex, e.case_sensitive);
+            match map.entry(key) {
+                std::collections::hash_map::Entry::Occupied(mut occ) => {
+                    let existing = occ.get_mut();
+                    existing.use_count = existing.use_count.saturating_add(count);
+                    existing.last_used = existing.last_used.max(e.last_used);
+                }
+                std::collections::hash_map::Entry::Vacant(vac) => {
+                    e.use_count = count;
+                    vac.insert(e);
                 }
             }
         }
-        out
+        let mut entries: Vec<PatternHistoryEntry> = map.into_values().collect();
+        entries.sort_by_key(|e| std::cmp::Reverse(e.last_used));
+        entries.truncate(MAX_PATTERN_HISTORY);
+        Self { entries }
     }
 
     /// Atomically persists the history to `path` as pretty JSON.
@@ -231,6 +298,7 @@ fn resolve_suggestion_key_action(
 impl LogAnalysisWorkspace {
     /// Loads persisted pattern history on a background thread and merges it into memory.
     pub fn load_pattern_history_async(&mut self, cx: &mut Context<Self>) {
+        let load_gen = self.pattern_history_gen;
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
@@ -243,8 +311,10 @@ impl LogAnalysisWorkspace {
                     })
                     .await;
                 let _ = this.update(&mut async_cx, |workspace, cx| {
-                    workspace.pattern_history.merge_loaded(loaded);
-                    cx.notify();
+                    if is_pattern_history_load_current(workspace.pattern_history_gen, load_gen) {
+                        workspace.pattern_history.merge_loaded(loaded);
+                        cx.notify();
+                    }
                 });
             }
         })
@@ -254,6 +324,8 @@ impl LogAnalysisWorkspace {
     /// Persists the current history snapshot on a background thread (errors ignored).
     pub(crate) fn save_pattern_history_async(&self, cx: &mut Context<Self>) {
         let snapshot = self.pattern_history.clone();
+        let save_gen =
+            PATTERN_HISTORY_SAVE_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         cx.spawn(move |_this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let bg_executor = cx.background_executor().clone();
             async move {
@@ -262,7 +334,13 @@ impl LogAnalysisWorkspace {
                         if let Some(path) =
                             super::recent_files::config_file_path("pattern_history.json")
                         {
-                            let _ = snapshot.save_to_path(&path);
+                            let _ = save_pattern_history_serialized_with(
+                                &snapshot,
+                                &path,
+                                save_gen,
+                                &PATTERN_HISTORY_SAVE_LOCK,
+                                &PATTERN_HISTORY_SAVE_GEN,
+                            );
                         }
                     })
                     .await;
@@ -281,12 +359,14 @@ impl LogAnalysisWorkspace {
     ) {
         let entry = PatternHistoryEntry::new(pattern, regex, case_sensitive, now_secs());
         if self.pattern_history.record(entry) {
+            self.pattern_history_gen = self.pattern_history_gen.wrapping_add(1);
             self.save_pattern_history_async(cx);
         }
     }
 
     /// Clears all remembered patterns (Command Palette: `filter:clear_pattern_history`).
     pub fn clear_pattern_history(&mut self, cx: &mut Context<Self>) {
+        self.pattern_history_gen = self.pattern_history_gen.wrapping_add(1);
         self.pattern_history.clear();
         self.filter_edit_modal.suggestions_open = false;
         self.filter_edit_modal.suggestion_index = None;
@@ -327,6 +407,7 @@ impl LogAnalysisWorkspace {
         let suggestions = self.current_pattern_suggestions(cx);
         if let Some(entry) = suggestions.get(idx) {
             if self.pattern_history.remove_entry(entry) {
+                self.pattern_history_gen = self.pattern_history_gen.wrapping_add(1);
                 self.save_pattern_history_async(cx);
             }
             let remaining = suggestions.len() - 1;
@@ -661,5 +742,96 @@ mod tests {
             resolve_suggestion_key_action(true, true, 3, Some(1), "delete", true),
             SuggestionKeyAction::Delete(1)
         );
+    }
+
+    #[test]
+    fn load_from_path_accumulates_duplicate_use_count_and_enforces_caps() {
+        use super::{
+            is_pattern_history_load_current, save_pattern_history_serialized_with,
+            MAX_PATTERN_HISTORY_FILE_BYTES, MAX_PATTERN_HISTORY_PATTERN_BYTES,
+        };
+        use std::sync::atomic::AtomicU64;
+        use std::sync::Mutex;
+
+        // 1. Oversized patterns are rejected by record()
+        let mut h = PatternHistory::default();
+        let exact_ok = "a".repeat(MAX_PATTERN_HISTORY_PATTERN_BYTES);
+        let too_long = "b".repeat(MAX_PATTERN_HISTORY_PATTERN_BYTES + 1);
+        assert!(h.record(e(&exact_ok, 10)));
+        assert!(!h.record(e(&too_long, 11)));
+        assert_eq!(h.entries.len(), 1);
+
+        // 2. load_from_path accumulates duplicate use_count, picks max last_used, and skips oversized patterns
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pattern_history.json");
+        let file = PatternHistoryFile {
+            version: 1,
+            entries: vec![
+                PatternHistoryEntry {
+                    pattern: "dup".into(),
+                    regex: false,
+                    case_sensitive: false,
+                    last_used: 10,
+                    use_count: 3,
+                },
+                PatternHistoryEntry {
+                    pattern: "dup".into(),
+                    regex: false,
+                    case_sensitive: false,
+                    last_used: 50,
+                    use_count: 4,
+                },
+                PatternHistoryEntry {
+                    pattern: "dup".into(),
+                    regex: true,
+                    case_sensitive: false,
+                    last_used: 20,
+                    use_count: 2,
+                },
+                PatternHistoryEntry {
+                    pattern: too_long,
+                    regex: false,
+                    case_sensitive: false,
+                    last_used: 99,
+                    use_count: 5,
+                },
+                PatternHistoryEntry {
+                    pattern: "   ".into(),
+                    regex: false,
+                    case_sensitive: false,
+                    last_used: 100,
+                    use_count: 1,
+                },
+            ],
+        };
+        std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+        let loaded = PatternHistory::load_from_path(&path);
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].pattern, "dup");
+        assert!(!loaded.entries[0].regex);
+        assert_eq!(loaded.entries[0].use_count, 7);
+        assert_eq!(loaded.entries[0].last_used, 50);
+        assert!(loaded.entries[1].regex);
+        assert_eq!(loaded.entries[1].use_count, 2);
+
+        // 3. Files exceeding MAX_PATTERN_HISTORY_FILE_BYTES are rejected cleanly
+        let oversized_path = dir.path().join("oversized.json");
+        let oversized_bytes = vec![b' '; MAX_PATTERN_HISTORY_FILE_BYTES + 1];
+        std::fs::write(&oversized_path, &oversized_bytes).unwrap();
+        assert!(PatternHistory::load_from_path(&oversized_path)
+            .entries
+            .is_empty());
+
+        // 4. Stale load_gen & save_gen guards reject outdated operations
+        assert!(is_pattern_history_load_current(0, 0));
+        assert!(!is_pattern_history_load_current(1, 0));
+
+        let lock = Mutex::new(());
+        let gen = AtomicU64::new(2);
+        let save_path = dir.path().join("guarded.json");
+        assert!(!save_pattern_history_serialized_with(&loaded, &save_path, 1, &lock, &gen).unwrap());
+        assert!(!save_path.exists());
+        assert!(save_pattern_history_serialized_with(&loaded, &save_path, 2, &lock, &gen).unwrap());
+        assert!(save_path.exists());
     }
 }

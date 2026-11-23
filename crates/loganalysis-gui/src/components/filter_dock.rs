@@ -10,6 +10,25 @@ use crate::theme::Theme;
 use crate::types::{DraggedFilterRule, DropPosition, FilterDropTarget, FilterPanelPosition};
 use crate::workspace::{compute_drop_target_index, LogAnalysisWorkspace};
 
+/// Filters `rules` by `raw_query` using `.trim().to_lowercase()`, matching the DnD filter gate.
+pub fn filter_matching_rules<'a>(
+    rules: &'a [loganalysis_core::FilterRule],
+    raw_query: &str,
+) -> Vec<(usize, &'a loganalysis_core::FilterRule)> {
+    let search_q = raw_query.trim().to_lowercase();
+    rules
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            if search_q.is_empty() {
+                true
+            } else {
+                r.text.to_lowercase().contains(&search_q)
+            }
+        })
+        .collect()
+}
+
 /// Resolved visual styling and contrast telemetry for a single Filter Dock row.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FilterRowStyle {
@@ -1218,17 +1237,21 @@ pub fn render_filter_dock(
                         let row_limit = rule_count.min(children_count);
                         let mut row_screen_bounds = Vec::with_capacity(row_limit);
                         for ix in 0..row_limit {
-                            if let Some(raw_bounds) =
+                            let Some(raw_bounds) =
                                 this.filter_rules_scroll_handle.bounds_for_item(ix)
-                            {
-                                let extra_top_trim = if ix == 0 { 5.0 } else { 0.0 };
-                                row_screen_bounds.push(normalize_slot_hit_bounds(
-                                    raw_bounds,
-                                    scroll_offset,
-                                    slot_px,
-                                    extra_top_trim,
-                                ));
-                            }
+                            else {
+                                if this.filter_drag_drop_target.take().is_some() {
+                                    cx.notify();
+                                }
+                                return;
+                            };
+                            let extra_top_trim = if ix == 0 { 5.0 } else { 0.0 };
+                            row_screen_bounds.push(normalize_slot_hit_bounds(
+                                raw_bounds,
+                                scroll_offset,
+                                slot_px,
+                                extra_top_trim,
+                            ));
                         }
                         let tail_screen_bounds = if children_count > rule_count {
                             this.filter_rules_scroll_handle
@@ -1335,19 +1358,10 @@ pub fn render_filter_dock(
                             let is_filtering_rules =
                                 !workspace.filter_search_query.trim().is_empty();
                             let total_rules = tab.filters.len();
-                            let search_q = workspace.filter_search_query.to_lowercase();
-                            let matching_rules: Vec<_> = tab
-                                .filters
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, r)| {
-                                    if search_q.is_empty() {
-                                        true
-                                    } else {
-                                        r.text.to_lowercase().contains(&search_q)
-                                    }
-                                })
-                                .collect();
+                            let matching_rules = filter_matching_rules(
+                                &tab.filters,
+                                &workspace.filter_search_query,
+                            );
 
                             if matching_rules.is_empty() {
                                 return vec![div()
@@ -2245,5 +2259,45 @@ mod tests {
             ),
             Some(Point::new(px(0.0), px(-42.0)))
         );
+    }
+
+    #[test]
+    fn test_filter_matching_rules_trims_whitespace_consistently_with_dnd_gate() {
+        use super::filter_matching_rules;
+
+        let rules = vec![
+            FilterRule {
+                text: "FATAL error".into(),
+                ..Default::default()
+            },
+            FilterRule {
+                text: "ActivityManager".into(),
+                ..Default::default()
+            },
+            FilterRule {
+                text: "FatalException".into(),
+                ..Default::default()
+            },
+        ];
+
+        // Empty and whitespace-only queries match all rules with original indices,
+        // consistent with `!query.trim().is_empty()` in the DnD gate.
+        for empty_or_ws in ["", "   ", " \t\n "] {
+            let matched = filter_matching_rules(&rules, empty_or_ws);
+            let indices: Vec<usize> = matched.iter().map(|(i, _)| *i).collect();
+            assert_eq!(indices, vec![0, 1, 2], "query {empty_or_ws:?} must keep all rules");
+        }
+
+        // Surrounding whitespace is trimmed and matched case-insensitively with original indices preserved
+        let matched_fatal = filter_matching_rules(&rules, "  fatal  ");
+        let fatal_indices: Vec<usize> = matched_fatal.iter().map(|(i, _)| *i).collect();
+        assert_eq!(fatal_indices, vec![0, 2]);
+
+        let matched_am = filter_matching_rules(&rules, "\tactivitymanager\n");
+        assert_eq!(matched_am.len(), 1);
+        assert_eq!(matched_am[0].0, 1);
+
+        // Non-matching trimmed query returns empty
+        assert!(filter_matching_rules(&rules, "  nonexistent  ").is_empty());
     }
 }

@@ -7,6 +7,20 @@ use crate::types::{DropPosition, FilterEditState, InputFocusTarget};
 pub const MAX_FILTER_PROFILE_BYTES: u64 = 10 * 1024 * 1024;
 
 static TEMP_FILE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FILTER_PROFILE_SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static FILTER_PROFILE_SAVE_GEN: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Returns `true` only if neither edits nor profile loads occurred since the save snapshot was captured.
+#[inline]
+pub(crate) fn should_mark_profile_clean(
+    current_edit_gen: u64,
+    snapshot_edit_gen: u64,
+    current_load_gen: u64,
+    snapshot_load_gen: u64,
+) -> bool {
+    current_edit_gen == snapshot_edit_gen && current_load_gen == snapshot_load_gen
+}
 
 /// Builds a unique hidden temporary file path adjacent to `target` for crash-safe atomic writes.
 pub fn build_unique_temp_path(target: &std::path::Path) -> std::path::PathBuf {
@@ -130,13 +144,15 @@ pub fn validate_modal_hex_field(raw: &str, is_bg: bool) -> Result<(), String> {
     }
 }
 
-/// Validates that imported filter tabs are non-empty so `active_tab_index` stays in bounds.
+/// Validates that imported filter tabs are non-empty so `active_tab_index` stays in bounds,
+/// and deduplicates any duplicate [`FilterRule::id`] UUIDs across tabs.
 pub(crate) fn apply_imported_filter_tabs(
-    tabs: Vec<FilterTabData>,
+    mut tabs: Vec<FilterTabData>,
 ) -> Result<Vec<FilterTabData>, String> {
     if tabs.is_empty() {
         return Err("Filter profile contains no tabs".to_string());
     }
+    loganalysis_core::deduplicate_filter_tab_ids(&mut tabs);
     Ok(tabs)
 }
 
@@ -437,6 +453,7 @@ impl LogAnalysisWorkspace {
     }
 
     pub(crate) fn mark_filter_tabs_modified(&mut self) {
+        self.filter_profile_edit_gen = self.filter_profile_edit_gen.wrapping_add(1);
         mark_tabs_modified(&mut self.filter_tabs);
     }
 
@@ -446,6 +463,31 @@ impl LogAnalysisWorkspace {
             &mut self.active_filter_profile_path,
             path,
         );
+    }
+
+    /// Dismisses an open filter edit modal when switching tabs or replacing the profile so stale
+    /// `editing_index` values cannot overwrite rules on the new tab/profile.
+    pub(crate) fn dismiss_filter_edit_modal_if_open(&mut self) {
+        if !self.filter_edit_modal.is_open {
+            return;
+        }
+        self.filter_edit_modal.is_open = false;
+        self.filter_edit_modal.editing_index = None;
+        self.filter_edit_modal.bg_hex_invalid = false;
+        self.filter_edit_modal.fg_hex_invalid = false;
+        self.filter_edit_modal.programmatic_bg_hex = None;
+        self.filter_edit_modal.programmatic_fg_hex = None;
+        self.filter_edit_modal.suggestions_open = false;
+        self.filter_edit_modal.suggestion_index = None;
+        if matches!(
+            self.input_focus,
+            InputFocusTarget::ModalPattern
+                | InputFocusTarget::ModalBgHex
+                | InputFocusTarget::ModalFgHex
+        ) {
+            self.input_focus = InputFocusTarget::None;
+        }
+        self.filter_profile_edit_gen = self.filter_profile_edit_gen.wrapping_add(1);
     }
 
     /// Imports filter profile JSON supporting all 3 legacy Python formats
@@ -460,6 +502,8 @@ impl LogAnalysisWorkspace {
         for tab in &mut tabs {
             tab.modified = false;
         }
+        self.dismiss_filter_edit_modal_if_open();
+        self.filter_profile_edit_gen = self.filter_profile_edit_gen.wrapping_add(1);
         self.filter_tabs = tabs;
         self.active_tab_index = 0;
         self.active_filter_profile_path = None;
@@ -657,6 +701,9 @@ impl LogAnalysisWorkspace {
 
     /// Saves filter from modal into tab
     pub fn save_modal_filter(&mut self, cx: &mut Context<Self>) {
+        if !self.filter_edit_modal.is_open {
+            return;
+        }
         self.clear_filter_drag_state(cx);
         let pattern = self.modal_pattern_input.read(cx).text().trim().to_string();
         if let Err(err) = validate_filter_pattern(
@@ -757,6 +804,11 @@ impl LogAnalysisWorkspace {
         json_str: String,
         cx: &mut Context<Self>,
     ) {
+        let edit_gen = self.filter_profile_edit_gen;
+        let load_gen = self.filter_profile_load_gen;
+        let save_gen =
+            FILTER_PROFILE_SAVE_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
@@ -765,14 +817,34 @@ impl LogAnalysisWorkspace {
 
             async move {
                 let write_res = bg_executor
-                    .spawn(async move { write_file_atomically(&path_for_bg, &json_bytes) })
+                    .spawn(async move {
+                        let _guard = FILTER_PROFILE_SAVE_LOCK
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        if FILTER_PROFILE_SAVE_GEN.load(std::sync::atomic::Ordering::SeqCst)
+                            != save_gen
+                        {
+                            return Ok(false);
+                        }
+                        write_file_atomically(&path_for_bg, &json_bytes).map(|()| true)
+                    })
                     .await;
 
                 let _ = this.update(&mut async_cx, |workspace, cx| {
                     match write_res {
-                        Ok(_) => {
-                            workspace.set_filter_profile_saved(&path);
+                        Ok(true) => {
+                            if should_mark_profile_clean(
+                                workspace.filter_profile_edit_gen,
+                                edit_gen,
+                                workspace.filter_profile_load_gen,
+                                load_gen,
+                            ) {
+                                workspace.set_filter_profile_saved(&path);
+                            }
                             workspace.status_text = format!("Saved filters to {:?}", path).into();
+                        }
+                        Ok(false) => {
+                            return;
                         }
                         Err(e) => {
                             workspace.status_text = format!("Save failed: {}", e).into();
@@ -807,12 +879,6 @@ impl LogAnalysisWorkspace {
 
     /// Prompts user to save filter profiles to a JSON file atomically with filters (Save As)
     pub fn prompt_save_filters(&mut self, parent: Option<&Window>, cx: &mut Context<Self>) {
-        let Ok(json_str) = self.export_filters_json() else {
-            self.status_text = "Failed to serialize filters".into();
-            cx.notify();
-            return;
-        };
-
         let dialog = crate::dialogs::prepare_dialog_with_parent(
             crate::dialogs::build_save_filters_dialog_base(),
             parent,
@@ -823,30 +889,22 @@ impl LogAnalysisWorkspace {
             let mut async_cx = cx.clone();
             async move {
                 let dialog = crate::dialogs::resolve_dialog_for_display(dialog, &bg_executor).await;
-                let file = dialog.save_file().await;
+                let Some(handle) = dialog.save_file().await else {
+                    return;
+                };
 
-                if let Some(handle) = file {
-                    let path = handle.path().to_path_buf();
-                    let path_for_bg = path.clone();
-                    let json_bytes = json_str.into_bytes();
-                    let write_res = bg_executor
-                        .spawn(async move { write_file_atomically(&path_for_bg, &json_bytes) })
-                        .await;
-
-                    let _ = this.update(&mut async_cx, |workspace, cx| {
-                        match write_res {
-                            Ok(_) => {
-                                workspace.set_filter_profile_saved(&path);
-                                workspace.status_text =
-                                    format!("Saved filters to {:?}", path).into();
-                            }
-                            Err(e) => {
-                                workspace.status_text = format!("Save failed: {}", e).into();
-                            }
+                let path = handle.path().to_path_buf();
+                let _ = this.update(&mut async_cx, |workspace, cx| {
+                    match workspace.export_filters_json() {
+                        Ok(json_str) => {
+                            workspace.save_filters_to_path_async(path, json_str, cx);
                         }
-                        cx.notify();
-                    });
-                }
+                        Err(_) => {
+                            workspace.status_text = "Failed to serialize filters".into();
+                            cx.notify();
+                        }
+                    }
+                });
             }
         })
         .detach();
@@ -855,6 +913,9 @@ impl LogAnalysisWorkspace {
     /// Loads filter profiles asynchronously from a specific file path on disk
     pub fn load_filters_from_path(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
         let path_buf = path.to_path_buf();
+        self.filter_profile_load_gen = self.filter_profile_load_gen.wrapping_add(1);
+        let load_gen = self.filter_profile_load_gen;
+        let edit_gen = self.filter_profile_edit_gen;
         self.status_text = "Loading filter profile...".into();
         cx.notify();
 
@@ -868,6 +929,11 @@ impl LogAnalysisWorkspace {
                     .await;
 
                 let _ = this.update(&mut async_cx, |workspace, cx| {
+                    if workspace.filter_profile_load_gen != load_gen
+                        || workspace.filter_profile_edit_gen != edit_gen
+                    {
+                        return;
+                    }
                     match read_res {
                         Ok(content) => match workspace.import_filters_json(&content, cx) {
                             Ok(_) => {
@@ -913,6 +979,7 @@ impl LogAnalysisWorkspace {
 
     /// Prompts user to select and load a filter profile JSON file with modal file dialog
     pub fn prompt_load_filters(&mut self, parent: Option<&Window>, cx: &mut Context<Self>) {
+        let dialog_load_gen = self.filter_profile_load_gen;
         let dialog = crate::dialogs::prepare_dialog_with_parent(
             crate::dialogs::build_load_filters_dialog_base(),
             parent,
@@ -928,7 +995,9 @@ impl LogAnalysisWorkspace {
                 if let Some(handle) = file {
                     let path = handle.path().to_path_buf();
                     let _ = this.update(&mut async_cx, |workspace, cx| {
-                        workspace.load_filters_from_path(&path, cx);
+                        if workspace.filter_profile_load_gen == dialog_load_gen {
+                            workspace.load_filters_from_path(&path, cx);
+                        }
                     });
                 }
             }
@@ -939,6 +1008,7 @@ impl LogAnalysisWorkspace {
     /// Adds a new filter tab (Ctrl+T)
     pub fn add_filter_tab(&mut self, cx: &mut Context<Self>) {
         self.clear_filter_drag_state_fields();
+        self.dismiss_filter_edit_modal_if_open();
         let new_tab_name = format!("Tab {}", self.filter_tabs.len() + 1);
         self.filter_tabs.push(FilterTabData {
             name: new_tab_name.clone(),
@@ -962,6 +1032,7 @@ impl LogAnalysisWorkspace {
             return;
         }
 
+        self.dismiss_filter_edit_modal_if_open();
         let removed = self.filter_tabs.remove(self.active_tab_index);
         if self.active_tab_index >= self.filter_tabs.len() {
             self.active_tab_index = self.filter_tabs.len() - 1;
@@ -998,6 +1069,7 @@ impl LogAnalysisWorkspace {
     pub fn select_tab(&mut self, tab_idx: usize, cx: &mut Context<Self>) {
         self.clear_filter_drag_state(cx);
         if tab_idx < self.filter_tabs.len() {
+            self.dismiss_filter_edit_modal_if_open();
             self.active_tab_index = tab_idx;
             cx.notify();
         }
@@ -1603,5 +1675,67 @@ mod tests {
         assert_eq!(normalize_modal_hex_color_spec("Yellow"), "Yellow");
         assert_eq!(normalize_modal_hex_color_spec("None"), "None");
         assert_eq!(normalize_modal_hex_color_spec("Magenta"), "Magenta");
+    }
+
+    #[test]
+    fn test_apply_imported_filter_tabs_deduplicates_duplicate_uuids() {
+        use loganalysis_core::{FilterRule, FilterTabData};
+        use std::collections::HashSet;
+
+        let shared_id = FilterRule::default().id;
+        let unique_id = FilterRule::default().id;
+        let tabs = vec![
+            FilterTabData {
+                name: "Tab1".into(),
+                filters: vec![
+                    FilterRule {
+                        id: shared_id,
+                        text: "first".into(),
+                        ..Default::default()
+                    },
+                    FilterRule {
+                        id: shared_id,
+                        text: "second".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            FilterTabData {
+                name: "Tab2".into(),
+                filters: vec![
+                    FilterRule {
+                        id: shared_id,
+                        text: "third".into(),
+                        ..Default::default()
+                    },
+                    FilterRule {
+                        id: unique_id,
+                        text: "unique".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        ];
+
+        let deduped = super::apply_imported_filter_tabs(tabs).unwrap();
+        assert_eq!(deduped[0].filters[0].id, shared_id);
+        assert_eq!(deduped[1].filters[1].id, unique_id);
+        let all_ids: HashSet<_> = deduped
+            .iter()
+            .flat_map(|t| t.filters.iter().map(|r| r.id))
+            .collect();
+        assert_eq!(all_ids.len(), 4);
+    }
+
+    #[test]
+    fn test_should_mark_profile_clean_rejects_concurrent_edits_or_loads() {
+        use super::should_mark_profile_clean;
+
+        assert!(should_mark_profile_clean(3, 3, 2, 2));
+        assert!(!should_mark_profile_clean(4, 3, 2, 2));
+        assert!(!should_mark_profile_clean(3, 3, 3, 2));
+        assert!(!should_mark_profile_clean(4, 3, 3, 2));
     }
 }

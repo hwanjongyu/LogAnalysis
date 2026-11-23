@@ -102,33 +102,140 @@ impl Default for FilterTabData {
     }
 }
 
+/// Ensures every [`FilterRule::id`] across `tabs` is unique by regenerating
+/// duplicate UUIDs while preserving the first occurrence.
+pub fn deduplicate_filter_tab_ids(tabs: &mut [FilterTabData]) {
+    let mut seen = std::collections::HashSet::new();
+    for tab in tabs {
+        for rule in &mut tab.filters {
+            if !seen.insert(rule.id) {
+                rule.id = Uuid::new_v4();
+                seen.insert(rule.id);
+            }
+        }
+    }
+}
+
 /// Parses a JSON string containing filter data according to the 3 supported formats:
 /// 1. Single tab object: `{"name": "...", "enabled": true, "filters": [...]}`
 /// 2. Array of tab objects: `[{"name": "...", "filters": [...]}, ...]`
 /// 3. Array of raw filter rules: `[{...rule...}, ...]`
 pub fn parse_filters_json(json_str: &str) -> Result<Vec<FilterTabData>, serde_json::Error> {
     let val: serde_json::Value = serde_json::from_str(json_str)?;
-    match val {
+    let mut tabs = match val {
         serde_json::Value::Object(_) => {
             let tab: FilterTabData = serde_json::from_value(val)?;
-            Ok(vec![tab])
+            vec![tab]
         }
         serde_json::Value::Array(arr) => {
-            if let Some(first) = arr.first() {
-                if first.get("filters").is_some() {
-                    let tabs: Vec<FilterTabData> = serde_json::from_value(serde_json::Value::Array(arr))?;
-                    return Ok(tabs);
-                }
+            if arr.first().and_then(|first| first.get("filters")).is_some() {
+                serde_json::from_value(serde_json::Value::Array(arr))?
+            } else {
+                let filters: Vec<FilterRule> =
+                    serde_json::from_value(serde_json::Value::Array(arr))?;
+                vec![FilterTabData {
+                    name: "Imported Filters".to_string(),
+                    enabled: true,
+                    filters,
+                    modified: false,
+                    file_path: None,
+                }]
             }
-            let filters: Vec<FilterRule> = serde_json::from_value(serde_json::Value::Array(arr))?;
-            Ok(vec![FilterTabData {
-                name: "Imported Filters".to_string(),
-                enabled: true,
-                filters,
-                modified: false,
-                file_path: None,
-            }])
         }
-        _ => Err(serde::de::Error::custom("Expected JSON object or array")),
+        _ => return Err(serde::de::Error::custom("Expected JSON object or array")),
+    };
+    deduplicate_filter_tab_ids(&mut tabs);
+    Ok(tabs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_deduplicate_filter_tab_ids_preserves_unique_and_regenerates_duplicates() {
+        let id_a = Uuid::new_v4();
+        let id_b = Uuid::new_v4();
+        let mut tabs = vec![
+            FilterTabData {
+                name: "Tab 1".into(),
+                filters: vec![
+                    FilterRule {
+                        id: id_a,
+                        text: "first".into(),
+                        ..Default::default()
+                    },
+                    FilterRule {
+                        id: id_a,
+                        text: "dup in same tab".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            FilterTabData {
+                name: "Tab 2".into(),
+                filters: vec![
+                    FilterRule {
+                        id: id_b,
+                        text: "unique second".into(),
+                        ..Default::default()
+                    },
+                    FilterRule {
+                        id: id_a,
+                        text: "dup across tabs".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        ];
+
+        deduplicate_filter_tab_ids(&mut tabs);
+
+        assert_eq!(tabs[0].filters[0].id, id_a);
+        assert_ne!(tabs[0].filters[1].id, id_a);
+        assert_eq!(tabs[1].filters[0].id, id_b);
+        assert_ne!(tabs[1].filters[1].id, id_a);
+
+        let unique: HashSet<Uuid> = tabs
+            .iter()
+            .flat_map(|t| t.filters.iter().map(|r| r.id))
+            .collect();
+        assert_eq!(unique.len(), 4);
+    }
+
+    #[test]
+    fn test_parse_filters_json_deduplicates_ids_across_all_formats() {
+        let dup_id = "11111111-1111-4111-8111-111111111111";
+
+        // Format 1: single tab object
+        let json_single = format!(
+            r#"{{"name":"Single","filters":[{{"id":"{dup_id}","text":"a"}},{{"id":"{dup_id}","text":"b"}}]}}"#
+        );
+        let tabs_single = parse_filters_json(&json_single).unwrap();
+        assert_eq!(tabs_single[0].filters.len(), 2);
+        assert_eq!(tabs_single[0].filters[0].id.to_string(), dup_id);
+        assert_ne!(
+            tabs_single[0].filters[0].id,
+            tabs_single[0].filters[1].id
+        );
+
+        // Format 2: array of tab objects
+        let json_multi = format!(
+            r#"[{{"name":"T1","filters":[{{"id":"{dup_id}","text":"a"}}]}},{{"name":"T2","filters":[{{"id":"{dup_id}","text":"b"}}]}}]"#
+        );
+        let tabs_multi = parse_filters_json(&json_multi).unwrap();
+        assert_eq!(tabs_multi[0].filters[0].id.to_string(), dup_id);
+        assert_ne!(tabs_multi[0].filters[0].id, tabs_multi[1].filters[0].id);
+
+        // Format 3: array of raw filter rules
+        let json_rules = format!(
+            r#"[{{"id":"{dup_id}","text":"a"}},{{"id":"{dup_id}","text":"b"}}]"#
+        );
+        let tabs_rules = parse_filters_json(&json_rules).unwrap();
+        assert_eq!(tabs_rules[0].filters[0].id.to_string(), dup_id);
+        assert_ne!(tabs_rules[0].filters[0].id, tabs_rules[0].filters[1].id);
     }
 }

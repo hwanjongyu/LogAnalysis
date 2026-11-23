@@ -12,6 +12,26 @@ pub struct SearchOutcomeUpdate {
     pub match_status: String,
 }
 
+/// Validates that an async search result is still current across search generation,
+/// log source generation, filter generation, and ADB ring-buffer trim offset.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn is_search_result_current(
+    current_search_gen: u64,
+    job_search_gen: u64,
+    current_source_gen: u64,
+    job_source_gen: u64,
+    current_filter_gen: u64,
+    job_filter_gen: u64,
+    current_total_trimmed: Option<usize>,
+    job_total_trimmed: usize,
+) -> bool {
+    current_search_gen == job_search_gen
+        && current_source_gen == job_source_gen
+        && current_filter_gen == job_filter_gen
+        && current_total_trimmed == Some(job_total_trimmed)
+}
+
 pub fn format_search_outcome(
     search_res: Result<Option<SearchResult>, SearchError>,
 ) -> SearchOutcomeUpdate {
@@ -102,51 +122,63 @@ impl LogAnalysisWorkspace {
 
         let start_row = self.selection.selected_row;
 
-        // If dataset is large (> ASYNC_SEARCH_THRESHOLD), dispatch to background executor
+        // Show background search status indicator only for large datasets to avoid flicker on small logs,
+        // while always dispatching asynchronously so every search bumps cancel_gen and stays non-blocking.
         if res.visible_indices.len() > loganalysis_core::ASYNC_SEARCH_THRESHOLD {
             self.status_text = "Searching in background...".into();
             self.search_ctrl.match_status = Some("Searching...".into());
             cx.notify();
-
-            // Advance generation to invalidate and cancel any previous in-flight background searches
-            let generation = self.search_ctrl.cancel_gen.fetch_add(1, Ordering::SeqCst) + 1;
-            let cancel_token = self.search_ctrl.cancel_gen.clone();
-
-            cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-                let bg_executor = cx.background_executor().clone();
-                let mut async_cx = cx.clone();
-
-                async move {
-                    let search_res = bg_executor
-                        .spawn(async move {
-                            search_in_log(
-                                &*source,
-                                &res.visible_indices,
-                                &query,
-                                start_row,
-                                Some(&cancel_token),
-                                generation,
-                                None,
-                            )
-                        })
-                        .await;
-
-                    let _ = this.update(&mut async_cx, |workspace, cx| {
-                        // Discard results if superseded by a newer search
-                        if workspace.search_ctrl.cancel_gen.load(Ordering::SeqCst) != generation {
-                            return;
-                        }
-
-                        workspace.apply_search_result(search_res, cx);
-                    });
-                }
-            })
-            .detach();
-        } else {
-            let search_res =
-                search_in_log(&*source, &res.visible_indices, &query, start_row, None, 0, None);
-            self.apply_search_result(search_res, cx);
         }
+
+        // Advance generation to invalidate and cancel any previous in-flight background searches
+        let generation = self.search_ctrl.cancel_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        let cancel_token = self.search_ctrl.cancel_gen.clone();
+        let snapshot_source_gen = self.primary_source_gen;
+        let snapshot_filter_gen = self.filter_cancel_gen.load(Ordering::SeqCst);
+        let snapshot_total_trimmed = source.total_trimmed();
+
+        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
+            let mut async_cx = cx.clone();
+
+            async move {
+                let search_res = bg_executor
+                    .spawn(async move {
+                        search_in_log(
+                            &*source,
+                            &res.visible_indices,
+                            &query,
+                            start_row,
+                            Some(&cancel_token),
+                            generation,
+                            None,
+                        )
+                    })
+                    .await;
+
+                let _ = this.update(&mut async_cx, |workspace, cx| {
+                    let current_search_gen = workspace.search_ctrl.cancel_gen.load(Ordering::SeqCst);
+                    let current_filter_gen = workspace.filter_cancel_gen.load(Ordering::SeqCst);
+                    let current_total_trimmed =
+                        workspace.log_source.as_ref().map(|s| s.total_trimmed());
+                    if !is_search_result_current(
+                        current_search_gen,
+                        generation,
+                        workspace.primary_source_gen,
+                        snapshot_source_gen,
+                        current_filter_gen,
+                        snapshot_filter_gen,
+                        current_total_trimmed,
+                        snapshot_total_trimmed,
+                    ) {
+                        return;
+                    }
+
+                    workspace.apply_search_result(search_res, cx);
+                });
+            }
+        })
+        .detach();
     }
 
     /// Updates the pre-compiled search matcher cached outside the render loop
@@ -294,5 +326,28 @@ mod tests {
         assert!(ctrl.query.is_empty());
         assert_eq!(ctrl.match_status, None);
         assert!(ctrl.cached_matcher.is_none());
+    }
+
+    #[test]
+    fn test_is_search_result_current_rejects_stale_filter_source_or_trim() {
+        use super::is_search_result_current;
+
+        // All 4 dimensions match -> accepted
+        assert!(is_search_result_current(10, 10, 2, 2, 5, 5, Some(100), 100));
+
+        // Stale search_gen (superseded search or abort_ongoing_searches) -> rejected
+        assert!(!is_search_result_current(11, 10, 2, 2, 5, 5, Some(100), 100));
+
+        // Stale source_gen (file/stream replaced) -> rejected
+        assert!(!is_search_result_current(10, 10, 3, 2, 5, 5, Some(100), 100));
+
+        // Stale filter_gen (filters reapplied) -> rejected
+        assert!(!is_search_result_current(10, 10, 2, 2, 6, 5, Some(100), 100));
+
+        // Stale total_trimmed (ADB ring buffer trimmed) -> rejected
+        assert!(!is_search_result_current(10, 10, 2, 2, 5, 5, Some(150), 100));
+
+        // Missing log_source -> rejected
+        assert!(!is_search_result_current(10, 10, 2, 2, 5, 5, None, 100));
     }
 }

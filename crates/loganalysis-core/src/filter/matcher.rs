@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 
 /// Maximum number of backtracking steps permitted during fancy_regex evaluation
 /// before aborting to prevent catastrophic ReDoS CPU starvation.
-pub const FANCY_REGEX_BACKTRACK_LIMIT: usize = 250;
+pub const FANCY_REGEX_BACKTRACK_LIMIT: usize = 4_096;
 
 /// Maximum compilation size limit for standard regex DFA tables (2MB) to prevent memory exhaustion.
 pub const REGEX_DFA_SIZE_LIMIT: usize = 2 * 1024 * 1024;
@@ -168,6 +168,9 @@ impl CompiledMatcher {
             match builder.build() {
                 Ok(re) => Ok(Self::StandardRegex(re)),
                 Err(std_err) => {
+                    if matches!(std_err, regex::Error::CompiledTooBig(_)) {
+                        return Err(FilterError::InvalidRegex(std_err.to_string()));
+                    }
                     let pattern = if case_sensitive {
                         text.to_string()
                     } else {
@@ -195,6 +198,8 @@ impl CompiledMatcher {
 
                     let mut fancy_builder = fancy_regex::RegexBuilder::new(&pattern);
                     fancy_builder.backtrack_limit(FANCY_REGEX_BACKTRACK_LIMIT);
+                    fancy_builder.delegate_size_limit(REGEX_DFA_SIZE_LIMIT);
+                    fancy_builder.delegate_dfa_size_limit(REGEX_DFA_SIZE_LIMIT);
                     match fancy_builder.build() {
                         Ok(fancy_re) => Ok(Self::FancyRegex {
                             re: fancy_re,
@@ -909,5 +914,43 @@ mod tests {
         let ranges = unicode_fallback.find_match_ranges("at CAFÉ bar", 10);
         assert_eq!(ranges.len(), 1);
         assert_eq!(&"at CAFÉ bar"[ranges[0].clone()], "CAFÉ");
+    }
+
+    #[test]
+    fn test_compiled_too_big_does_not_fallback_to_fancy_regex() {
+        // Oversized standard regex triggering regex::Error::CompiledTooBig must fail immediately
+        // instead of falling back to fancy_regex.
+        let res = CompiledMatcher::new(r"(a{100000})", true, true);
+        assert!(
+            matches!(res, Err(FilterError::InvalidRegex(_))),
+            "Expected Err(FilterError::InvalidRegex) for oversized standard regex"
+        );
+
+        let res_two = CompiledMatcher::new(r"a{50000}b{50000}", true, true);
+        assert!(
+            matches!(res_two, Err(FilterError::InvalidRegex(_))),
+            "Expected Err(FilterError::InvalidRegex) for oversized concatenated repetition"
+        );
+
+        // Oversized delegate inside lookaround must also be rejected via delegate_size_limit
+        let res_lookaround = CompiledMatcher::new(r"(?=\w{100000})b", true, true);
+        assert!(
+            matches!(res_lookaround, Err(FilterError::InvalidRegex(_))),
+            "Expected Err(FilterError::InvalidRegex) for oversized lookaround delegate"
+        );
+    }
+
+    #[test]
+    fn test_fancy_regex_matches_long_line_beyond_250_bytes() {
+        // With FANCY_REGEX_BACKTRACK_LIMIT = 4_096, a legitimate lookahead scanning across
+        // > 250 bytes (which would exceed 250 backtrack steps) must match cleanly.
+        let matcher = CompiledMatcher::new(r"(?=.*?NEEDLE)START", true, true)
+            .expect("lookahead should compile");
+        let padding = "x".repeat(600);
+        let line = format!("START {padding} NEEDLE end");
+        assert!(matcher.matches(line.as_bytes()));
+        let ranges = matcher.find_match_ranges(&line, 10);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(&line[ranges[0].clone()], "START");
     }
 }

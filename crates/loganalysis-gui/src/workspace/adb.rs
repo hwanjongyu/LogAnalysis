@@ -15,6 +15,21 @@ pub(crate) struct StreamAnalyticsJob {
     visible_styles: Vec<ResolvedStyle>,
     include_timeline: bool,
     analytics_gen: u64,
+    source_gen: u64,
+}
+
+/// Returns `true` when an async analytics computation matches the active log source and generation.
+#[inline]
+pub(crate) fn is_stream_analytics_result_current(
+    current_analytics_gen: u64,
+    job_analytics_gen: u64,
+    current_source_gen: u64,
+    job_source_gen: u64,
+    has_log_source: bool,
+) -> bool {
+    has_log_source
+        && current_analytics_gen == job_analytics_gen
+        && current_source_gen == job_source_gen
 }
 
 async fn compute_and_apply_stream_analytics(
@@ -23,12 +38,12 @@ async fn compute_and_apply_stream_analytics(
     bg_executor: &BackgroundExecutor,
     job: StreamAnalyticsJob,
 ) {
-    let src_check = Arc::clone(&job.src);
     let src_for_compute = job.src;
     let indices = job.visible_indices;
     let styles = job.visible_styles;
     let include_timeline = job.include_timeline;
     let analytics_gen = job.analytics_gen;
+    let source_gen = job.source_gen;
 
     let (heatmap, timeline) = bg_executor
         .spawn(async move {
@@ -48,12 +63,13 @@ async fn compute_and_apply_stream_analytics(
         .await;
 
     let _ = this.update(async_cx, |workspace, cx| {
-        if workspace.analytics_cancel_gen.load(Ordering::SeqCst) == analytics_gen
-            && workspace
-                .log_source
-                .as_ref()
-                .is_some_and(|s| Arc::ptr_eq(s, &src_check))
-        {
+        if is_stream_analytics_result_current(
+            workspace.analytics_cancel_gen.load(Ordering::SeqCst),
+            analytics_gen,
+            workspace.primary_source_gen,
+            source_gen,
+            workspace.log_source.is_some(),
+        ) {
             workspace.heatmap_data = Some(heatmap);
             if timeline.is_some() && workspace.is_timeline_visible {
                 workspace.timeline_data = timeline;
@@ -301,6 +317,7 @@ impl LogAnalysisWorkspace {
                                             };
                                             trimmed_count = trimmed;
                                             if trimmed > 0 {
+                                                workspace.search_ctrl.abort_ongoing_searches();
                                                 let dropped_visible = workspace
                                                     .filter_result
                                                     .as_ref()
@@ -525,6 +542,7 @@ impl LogAnalysisWorkspace {
             visible_styles: filter_res.visible_styles.clone(),
             include_timeline: self.is_timeline_visible,
             analytics_gen,
+            source_gen: self.primary_source_gen,
         })
     }
 
@@ -586,6 +604,7 @@ impl LogAnalysisWorkspace {
                             0
                         };
                         if trimmed > 0 {
+                            self.search_ctrl.abort_ongoing_searches();
                             let dropped_visible = self
                                 .filter_result
                                 .as_ref()
@@ -614,7 +633,7 @@ impl LogAnalysisWorkspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{LogAnalysisWorkspace, StreamAnalyticsJob};
+    use super::{is_stream_analytics_result_current, LogAnalysisWorkspace, StreamAnalyticsJob};
     use gpui::Context;
     use loganalysis_core::{ActiveLogSource, ResolvedStyle, StreamLogBuffer};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -634,10 +653,10 @@ mod tests {
         let _: fn(&mut LogAnalysisWorkspace, &mut Context<LogAnalysisWorkspace>) =
             LogAnalysisWorkspace::toggle_pause_stream;
 
-        // Verify generation & source-identity staleness checks on StreamAnalyticsJob
+        // Verify generation & source-generation staleness checks on StreamAnalyticsJob
+        // (CoW Arc clones must remain accepted when source_gen is unchanged)
         let gen_counter = Arc::new(AtomicU64::new(0));
         let src_a = Arc::new(ActiveLogSource::Stream(StreamLogBuffer::default()));
-        let src_b = Arc::new(ActiveLogSource::Stream(StreamLogBuffer::default()));
 
         let gen1 = gen_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let job = StreamAnalyticsJob {
@@ -646,17 +665,52 @@ mod tests {
             visible_styles: vec![ResolvedStyle::default(); 2],
             include_timeline: true,
             analytics_gen: gen1,
+            source_gen: 7,
         };
         assert!(job.include_timeline);
         assert_eq!(job.visible_indices, vec![0, 2]);
         assert_eq!(job.visible_styles.len(), 2);
+        assert_eq!(job.source_gen, 7);
 
-        // Matching generation & source pointer permits apply; bumped generation or replaced source rejects
-        assert_eq!(gen_counter.load(Ordering::SeqCst), job.analytics_gen);
-        assert!(Arc::ptr_eq(&src_a, &job.src));
-        assert!(!Arc::ptr_eq(&src_b, &job.src));
+        // Matching analytics_gen & source_gen with active log source permits apply
+        assert!(is_stream_analytics_result_current(
+            gen_counter.load(Ordering::SeqCst),
+            job.analytics_gen,
+            7,
+            job.source_gen,
+            true,
+        ));
 
+        // Bumped analytics_gen, bumped source_gen, or missing log_source rejects
         let gen2 = gen_counter.fetch_add(1, Ordering::SeqCst) + 1;
-        assert_ne!(gen2, job.analytics_gen);
+        assert!(!is_stream_analytics_result_current(
+            gen2,
+            job.analytics_gen,
+            7,
+            job.source_gen,
+            true,
+        ));
+        assert!(!is_stream_analytics_result_current(
+            job.analytics_gen,
+            job.analytics_gen,
+            8,
+            job.source_gen,
+            true,
+        ));
+        assert!(!is_stream_analytics_result_current(
+            job.analytics_gen,
+            job.analytics_gen,
+            7,
+            job.source_gen,
+            false,
+        ));
+    }
+
+    #[test]
+    fn test_is_stream_analytics_result_current_rejects_stale_states() {
+        assert!(is_stream_analytics_result_current(5, 5, 11, 11, true));
+        assert!(!is_stream_analytics_result_current(6, 5, 11, 11, true));
+        assert!(!is_stream_analytics_result_current(5, 5, 12, 11, true));
+        assert!(!is_stream_analytics_result_current(5, 5, 11, 11, false));
     }
 }

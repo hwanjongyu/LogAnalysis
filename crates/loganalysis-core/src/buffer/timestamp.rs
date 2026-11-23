@@ -10,14 +10,14 @@ pub const NON_LEAP_DAYS_BEFORE_MONTH: [u32; 13] = [
 
 pub const ONE_YEAR_MICROS: i64 = 366 * 86_400 * 1_000_000;
 pub const YEAR_ROLLOVER_THRESHOLD_MICROS: i64 = 300 * 86_400 * 1_000_000;
+pub const EARLY_YEAR_THRESHOLD_MICROS: i64 = 60 * 86_400 * 1_000_000;
 
 /// Normalizes a yearless [`TimestampKind::MonthDayTime`] microsecond value against an anchor
 /// timestamp from the same source, adding [`ONE_YEAR_MICROS`] on Dec 31 -> Jan 01 rollover.
 #[inline]
 pub fn normalize_month_day_rollover(ts_micros: i64, anchor_micros: i64) -> i64 {
     if anchor_micros >= YEAR_ROLLOVER_THRESHOLD_MICROS
-        && ts_micros >= 0
-        && ts_micros < anchor_micros - YEAR_ROLLOVER_THRESHOLD_MICROS
+        && (0..=EARLY_YEAR_THRESHOLD_MICROS).contains(&ts_micros)
     {
         ts_micros.saturating_add(ONE_YEAR_MICROS)
     } else {
@@ -662,5 +662,37 @@ mod tests {
         assert_eq!(format_delta_micros(3_599_950_000), "+1h 0m 0s");
         assert_eq!(format_delta_micros(-999_999), "-1.00s");
         assert_eq!(format_delta_micros(-59_999_999), "-1m 0.0s");
+    }
+
+    #[test]
+    fn test_normalize_month_day_rollover_early_year_threshold_and_late_anchors() {
+        let anchor_nov01 = extract_timestamp(b"11-01 00:00:00.000 start").unwrap().total_micros;
+        let anchor_oct28 = extract_timestamp(b"10-28 00:00:00.000 start").unwrap().total_micros;
+        let anchor_oct20 = extract_timestamp(b"10-20 00:00:00.000 early_anchor").unwrap().total_micros;
+
+        let ts_jan01 = extract_timestamp(b"01-01 00:00:01.000 jan1").unwrap().total_micros;
+        let ts_jan06 = extract_timestamp(b"01-06 00:00:00.000 jan6").unwrap().total_micros;
+        let ts_jan15 = extract_timestamp(b"01-15 12:00:00.000 jan15").unwrap().total_micros;
+        let ts_feb15 = extract_timestamp(b"02-15 12:00:00.000 feb15").unwrap().total_micros;
+        let ts_mar10 = extract_timestamp(b"03-10 12:00:00.000 mar10").unwrap().total_micros;
+
+        assert!(anchor_nov01 >= YEAR_ROLLOVER_THRESHOLD_MICROS);
+        assert!(anchor_oct28 >= YEAR_ROLLOVER_THRESHOLD_MICROS);
+        assert!(anchor_oct20 < YEAR_ROLLOVER_THRESHOLD_MICROS);
+
+        // Both 11-01 and 10-28 anchors must roll 01-01, 01-06, 01-15, and 02-15 (<= 60d)
+        for anchor in [anchor_nov01, anchor_oct28] {
+            assert_eq!(normalize_month_day_rollover(ts_jan01, anchor), ts_jan01 + ONE_YEAR_MICROS);
+            assert_eq!(normalize_month_day_rollover(ts_jan06, anchor), ts_jan06 + ONE_YEAR_MICROS);
+            assert_eq!(normalize_month_day_rollover(ts_jan15, anchor), ts_jan15 + ONE_YEAR_MICROS);
+            assert_eq!(normalize_month_day_rollover(ts_feb15, anchor), ts_feb15 + ONE_YEAR_MICROS);
+            // 03-10 (> 60d) must NOT roll over
+            assert_eq!(normalize_month_day_rollover(ts_mar10, anchor), ts_mar10);
+        }
+
+        // Anchor < 300d must never roll over
+        assert_eq!(normalize_month_day_rollover(ts_jan01, anchor_oct20), ts_jan01);
+        assert_eq!(normalize_month_day_rollover(ts_jan06, anchor_oct20), ts_jan06);
+        assert_eq!(normalize_month_day_rollover(ts_jan15, anchor_oct20), ts_jan15);
     }
 }

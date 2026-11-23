@@ -1,4 +1,6 @@
-use crate::buffer::merged_buffer::{ONE_YEAR_MICROS, YEAR_ROLLOVER_THRESHOLD_MICROS};
+use crate::buffer::timestamp::{
+    extract_timestamp_with_kind, normalize_month_day_rollover, TimestampKind,
+};
 use crate::buffer::LogSource;
 use crate::filter::engine::ResolvedStyle;
 use crate::filter::heatmap::{detect_line_severity, LineSeverity};
@@ -50,19 +52,9 @@ impl EpsTimelineData {
             return Self::default();
         }
 
-        let normalize_rollover = |micros: i64, anchor: i64| -> i64 {
-            if anchor >= YEAR_ROLLOVER_THRESHOLD_MICROS
-                && micros >= 0
-                && micros < anchor - YEAR_ROLLOVER_THRESHOLD_MICROS
-            {
-                micros.saturating_add(ONE_YEAR_MICROS)
-            } else {
-                micros
-            }
-        };
-
-        // Pass 1: Scan all visible rows to find anchor, true min_micros, and true max_micros
-        let mut first_ts: Option<i64> = None;
+        // Pass 1: Scan all visible rows to find MonthDayTime anchor, true min_micros, and true max_micros
+        let mut first_month_day_ts: Option<i64> = None;
+        let mut has_any_ts = false;
         let mut min_micros = i64::MAX;
         let mut max_micros = i64::MIN;
 
@@ -70,8 +62,17 @@ impl EpsTimelineData {
             let Some(raw_micros) = source.get_timestamp_micros(src_idx) else {
                 continue;
             };
-            let anchor = *first_ts.get_or_insert(raw_micros);
-            let micros = normalize_rollover(raw_micros, anchor);
+            let kind = source
+                .get_raw_line(src_idx)
+                .and_then(extract_timestamp_with_kind)
+                .map(|p| p.kind);
+            let micros = if kind == Some(TimestampKind::MonthDayTime) {
+                let anchor = *first_month_day_ts.get_or_insert(raw_micros);
+                normalize_month_day_rollover(raw_micros, anchor)
+            } else {
+                raw_micros
+            };
+            has_any_ts = true;
             if micros < min_micros {
                 min_micros = micros;
             }
@@ -80,9 +81,9 @@ impl EpsTimelineData {
             }
         }
 
-        let Some(anchor_ts) = first_ts else {
+        if !has_any_ts {
             return Self::default();
-        };
+        }
 
         let total_duration_us: u128 = max_micros.abs_diff(min_micros) as u128;
         if total_duration_us == 0 {
@@ -122,7 +123,18 @@ impl EpsTimelineData {
                 continue;
             };
 
-            let micros = normalize_rollover(raw_micros, anchor_ts);
+            let micros = match (
+                first_month_day_ts,
+                source
+                    .get_raw_line(src_idx)
+                    .and_then(extract_timestamp_with_kind)
+                    .map(|p| p.kind),
+            ) {
+                (Some(anchor), Some(TimestampKind::MonthDayTime)) => {
+                    normalize_month_day_rollover(raw_micros, anchor)
+                }
+                _ => raw_micros,
+            };
             let offset = micros.abs_diff(min_micros) as u128;
             let b_idx = ((offset * (actual_buckets as u128)) / total_duration_us)
                 .min((actual_buckets - 1) as u128) as usize;
@@ -389,5 +401,52 @@ mod tests {
         let nano_data = EpsTimelineData::compute(&NanoSpanSource, &[0, 1], &styles[..2], 32);
         assert_eq!(nano_data.buckets.len(), 32);
         assert!(nano_data.buckets.iter().all(|b| b.start_micros <= b.end_micros));
+    }
+
+    #[test]
+    fn test_timeline_iso8601_backward_jump_and_timeonly_not_mutated_by_rollover() {
+        let lines = vec![
+            "2026-11-06 12:00:00.000 1 1 I Tag: later event".into(),
+            "2025-06-01 12:00:00.000 1 1 E Tag: earlier year backward jump".into(),
+        ];
+        let buf = MockLogSource { lines };
+        let vis = vec![0, 1];
+        let styles = vec![ResolvedStyle::default(); 2];
+        let data = EpsTimelineData::compute(&buf, &vis, &styles, 10);
+
+        let expected_min = extract_timestamp_with_kind(b"2025-06-01 12:00:00.000")
+            .unwrap()
+            .timestamp
+            .total_micros;
+        let expected_max = extract_timestamp_with_kind(b"2026-11-06 12:00:00.000")
+            .unwrap()
+            .timestamp
+            .total_micros;
+
+        assert!(data.has_timestamps);
+        assert_eq!(data.min_timestamp, expected_min);
+        assert_eq!(data.max_timestamp, expected_max);
+        assert_eq!(data.buckets.iter().map(|b| b.total_count).sum::<u32>(), 2);
+
+        // Also verify 2026-12-31 + 2026-01-01 and 2026-12-31 + TimeOnly 00:00:01 are never shifted
+        let mixed = MockLogSource {
+            lines: vec![
+                "2026-12-31 23:59:59.000 1 1 I Tag: iso dec31".into(),
+                "2026-01-01 00:00:01.000 1 1 I Tag: iso jan01".into(),
+                "00:00:01.000 TimeOnly event".into(),
+            ],
+        };
+        let mixed_data =
+            EpsTimelineData::compute(&mixed, &[0, 1, 2], &[ResolvedStyle::default(); 3], 10);
+        let time_only_ts = extract_timestamp_with_kind(b"00:00:01.000 TimeOnly event")
+            .unwrap()
+            .timestamp
+            .total_micros;
+        let iso_dec31_ts = extract_timestamp_with_kind(b"2026-12-31 23:59:59.000")
+            .unwrap()
+            .timestamp
+            .total_micros;
+        assert_eq!(mixed_data.min_timestamp, time_only_ts);
+        assert_eq!(mixed_data.max_timestamp, iso_dec31_ts);
     }
 }

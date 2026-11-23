@@ -433,7 +433,7 @@ fn challenge_4_complex_alternations_inside_repeats() {
     );
 
     // 2. Ambiguous alternation in repeat that passes AST check: (?=(a|a)+)b
-    // Must be safely bounded by FANCY_REGEX_BACKTRACK_LIMIT (250 steps)
+    // Must be safely bounded by FANCY_REGEX_BACKTRACK_LIMIT (4,096 steps)
     let pat_ambiguous = r"(?=(a|a)+)b";
     let matcher = CompiledMatcher::new(pat_ambiguous, true, true).expect("should compile with backtrack limit");
 

@@ -6,10 +6,9 @@ use super::file_buffer::FileLogBuffer;
 use super::timestamp::{extract_timestamp_with_kind, TimestampKind};
 use super::LogSource;
 
-pub use super::timestamp::{ONE_YEAR_MICROS, YEAR_ROLLOVER_THRESHOLD_MICROS};
-
-/// Threshold for detecting early-year logs (< 60 days, e.g. January/February).
-pub const EARLY_YEAR_THRESHOLD_MICROS: i64 = 60 * 86_400 * 1_000_000;
+pub use super::timestamp::{
+    EARLY_YEAR_THRESHOLD_MICROS, ONE_YEAR_MICROS, YEAR_ROLLOVER_THRESHOLD_MICROS,
+};
 
 /// Reference to a single log line within a multi-file merged index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,17 +136,27 @@ impl MergedLogBuffer {
         let has_late_year = source_infos.iter().any(|info| {
             info.first_month_day_ts
                 .is_some_and(|ts| ts >= YEAR_ROLLOVER_THRESHOLD_MICROS)
-                || info
-                    .last_month_day_ts
-                    .is_some_and(|ts| ts >= YEAR_ROLLOVER_THRESHOLD_MICROS)
+                || (info
+                    .first_month_day_ts
+                    .is_some_and(|f| f > EARLY_YEAR_THRESHOLD_MICROS)
+                    && info
+                        .last_month_day_ts
+                        .is_some_and(|l| l >= YEAR_ROLLOVER_THRESHOLD_MICROS))
         });
 
         let has_early_year = source_infos.iter().any(|info| {
-            info.first_month_day_ts
-                .is_some_and(|ts| ts <= EARLY_YEAR_THRESHOLD_MICROS)
-                || info
+            (info
+                .first_month_day_ts
+                .is_some_and(|f| f <= EARLY_YEAR_THRESHOLD_MICROS)
+                && info
                     .last_month_day_ts
-                    .is_some_and(|ts| ts <= EARLY_YEAR_THRESHOLD_MICROS)
+                    .is_some_and(|l| l < YEAR_ROLLOVER_THRESHOLD_MICROS))
+                || (info
+                    .first_month_day_ts
+                    .is_some_and(|f| f >= YEAR_ROLLOVER_THRESHOLD_MICROS)
+                    && info
+                        .last_month_day_ts
+                        .is_some_and(|l| l <= EARLY_YEAR_THRESHOLD_MICROS))
         });
 
         let ensemble_rollover = has_late_year && has_early_year;
@@ -155,8 +164,12 @@ impl MergedLogBuffer {
         let mut base_offsets = vec![0i64; sources.len()];
         if ensemble_rollover {
             for (s_id, info) in source_infos.iter().enumerate() {
-                if let Some(first) = info.first_month_day_ts {
-                    if first <= EARLY_YEAR_THRESHOLD_MICROS {
+                if let (Some(first), Some(last)) =
+                    (info.first_month_day_ts, info.last_month_day_ts)
+                {
+                    if first <= EARLY_YEAR_THRESHOLD_MICROS
+                        && last < YEAR_ROLLOVER_THRESHOLD_MICROS
+                    {
                         base_offsets[s_id] = ONE_YEAR_MICROS;
                     }
                 }
@@ -176,7 +189,7 @@ impl MergedLogBuffer {
 
             let first_adjusted_ts = source_infos[s_id].first_any_ts.map(|(_, raw_ts, kind)| {
                 if kind == TimestampKind::MonthDayTime {
-                    raw_ts + base_offsets[s_id]
+                    raw_ts.saturating_add(base_offsets[s_id])
                 } else {
                     raw_ts
                 }
@@ -192,12 +205,13 @@ impl MergedLogBuffer {
                         let raw_micros = p.timestamp.total_micros;
                         if let Some(prev) = prev_month_day_raw_ts {
                             // Intra-file year rollover: e.g. 12-31 23:59:59 -> 01-01 00:00:00
-                            if raw_micros < prev - YEAR_ROLLOVER_THRESHOLD_MICROS {
-                                file_year_offset += ONE_YEAR_MICROS;
+                            if raw_micros < prev.saturating_sub(YEAR_ROLLOVER_THRESHOLD_MICROS) {
+                                file_year_offset =
+                                    file_year_offset.saturating_add(ONE_YEAR_MICROS);
                             }
                         }
                         prev_month_day_raw_ts = Some(raw_micros);
-                        raw_micros + file_year_offset
+                        raw_micros.saturating_add(file_year_offset)
                     } else {
                         p.timestamp.total_micros
                     };
@@ -720,5 +734,71 @@ mod tests {
 
         let err = MergedLogBuffer::from_sources(vec![buf], vec![]).err().unwrap();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_same_year_jan_to_dec_file_and_midyear_merge_no_spurious_year_shift() {
+        let mut full_year_file = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(
+            &mut full_year_file,
+            b"01-15 10:00:00.000 Jan15 start\n12-20 10:00:00.000 Dec20 end\n",
+        )
+        .unwrap();
+        let mut mid_year_file = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(
+            &mut mid_year_file,
+            b"06-01 10:00:00.000 Jun01 mid\n06-02 10:00:00.000 Jun02 mid\n",
+        )
+        .unwrap();
+
+        // Single [01-15..12-20] source via MergedLogBuffer::from_sources
+        let single_src = Arc::new(FileLogBuffer::open(full_year_file.path()).unwrap());
+        let single_merged =
+            MergedLogBuffer::from_sources(vec![single_src], vec!["full.log".into()]).unwrap();
+        let ts_jan_single = single_merged.get_line_timestamp_micros(0).unwrap();
+        let ts_dec_single = single_merged.get_line_timestamp_micros(1).unwrap();
+        assert!(
+            ts_jan_single < ONE_YEAR_MICROS,
+            "01-15 in same-year [01-15..12-20] file must remain in Year 0"
+        );
+        assert!(ts_jan_single < ts_dec_single);
+
+        // Merged [01-15..12-20] + [06-01..06-02]
+        let merged = MergedLogBuffer::open_multiple(&[
+            full_year_file.path().to_path_buf(),
+            mid_year_file.path().to_path_buf(),
+        ])
+        .unwrap();
+        assert_eq!(merged.line_count(), 4);
+        assert!(merged.get_line(0).unwrap().contains("Jan15"));
+        assert!(merged.get_line(1).unwrap().contains("Jun01"));
+        assert!(merged.get_line(2).unwrap().contains("Jun02"));
+        assert!(merged.get_line(3).unwrap().contains("Dec20"));
+
+        let ts0 = merged.get_line_timestamp_micros(0).unwrap();
+        let ts1 = merged.get_line_timestamp_micros(1).unwrap();
+        let ts3 = merged.get_line_timestamp_micros(3).unwrap();
+        assert!(ts0 < ONE_YEAR_MICROS);
+        assert!(ts0 < ts1 && ts1 < ts3);
+    }
+
+    #[test]
+    fn test_oscillating_dec31_jan01_saturates_without_overflow_panic() {
+        // Repeat enough oscillating 12-31 -> 01-01 pairs to exceed i64::MAX / ONE_YEAR_MICROS (~291,672)
+        let pair = b"12-31 23:59:59.000 late\n01-01 00:00:01.000 early\n";
+        let pairs = 300_000usize;
+        let mut payload = Vec::with_capacity(pair.len() * pairs);
+        for _ in 0..pairs {
+            payload.extend_from_slice(pair);
+        }
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut tmp, &payload).unwrap();
+
+        let src = Arc::new(FileLogBuffer::open(tmp.path()).unwrap());
+        let merged = MergedLogBuffer::from_sources(vec![src], vec!["osc.log".into()]).unwrap();
+        assert_eq!(merged.line_count(), pairs * 2);
+        let last_ts = merged.get_line_timestamp_micros(merged.line_count() - 1).unwrap();
+        assert_eq!(last_ts, i64::MAX);
     }
 }

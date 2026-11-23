@@ -13,5 +13,7 @@ pub use engine::{
 };
 pub use heatmap::{detect_line_severity, HeatmapBucket, HeatmapData, LineSeverity};
 pub use matcher::{CompiledMatcher, MultiFilterMatcher, PreparedFilter};
-pub use model::{parse_filters_json, FilterRule, FilterTabData};
+pub use model::{
+    deduplicate_filter_tab_ids, parse_filters_json, FilterRule, FilterTabData,
+};
 pub use timeline::{EpsTimelineBucket, EpsTimelineData};

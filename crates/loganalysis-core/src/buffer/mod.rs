@@ -23,7 +23,7 @@ pub use stream_buffer::{
 pub use timestamp::{
     compute_delta_micros, compute_delta_micros_typed, extract_timestamp,
     extract_timestamp_with_kind, format_delta_micros, format_epoch_utc, LatencyLevel, LogTimestamp,
-    ParsedTimestamp, TimestampKind,
+    ParsedTimestamp, TimestampKind, EARLY_YEAR_THRESHOLD_MICROS,
 };
 
 /// Unified log source enum representing either a file-backed mmap buffer, streaming buffer, or merged multi-file buffer.

@@ -103,6 +103,8 @@ pub struct LogAnalysisWorkspace {
     pub(crate) filter_tabs: Vec<FilterTabData>,
     pub(crate) active_tab_index: usize,
     pub(crate) active_filter_profile_path: Option<std::path::PathBuf>,
+    pub(crate) filter_profile_edit_gen: u64,
+    pub(crate) filter_profile_load_gen: u64,
     pub(crate) show_only_filtered: bool,
     pub(crate) filter_cancel_gen: Arc<AtomicU64>,
     pub(crate) cached_stream_filters: Option<Arc<CompiledStreamFilters>>,
@@ -130,6 +132,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) recent_files: Vec<std::path::PathBuf>,
     pub(crate) recent_files_gen: u64,
     pub(crate) pattern_history: PatternHistory,
+    pub(crate) pattern_history_gen: u64,
     pub(crate) is_dark_theme: bool,
     pub(crate) full_line_display: bool,
     pub(crate) filter_panel_position: FilterPanelPosition,
@@ -454,6 +457,8 @@ impl LogAnalysisWorkspace {
             filter_tabs: vec![default_tab],
             active_tab_index: 0,
             active_filter_profile_path: None,
+            filter_profile_edit_gen: 0,
+            filter_profile_load_gen: 0,
             show_only_filtered: false,
             filter_cancel_gen: Arc::new(AtomicU64::new(0)),
             cached_stream_filters: None,
@@ -478,6 +483,7 @@ impl LogAnalysisWorkspace {
             recent_files: Vec::new(),
             recent_files_gen: 0,
             pattern_history: PatternHistory::default(),
+            pattern_history_gen: 0,
             is_dark_theme: false,
             full_line_display: WORKSPACE_DEFAULTS.full_line_display,
             filter_panel_position: FilterPanelPosition::Bottom,
@@ -676,6 +682,7 @@ impl LogAnalysisWorkspace {
 
     /// Re-evaluates active filters in the background using Rayon
     pub fn reapply_filters(&mut self, cx: &mut Context<Self>) {
+        self.search_ctrl.abort_ongoing_searches();
         if self.split_view.is_split_view && self.split_view.secondary_log_source.is_some() {
             self.reapply_secondary_filters(cx);
         }
@@ -1535,9 +1542,9 @@ impl LogAnalysisWorkspace {
             if let (Some(src_ref), Some(filter_res)) =
                 (self.log_source.clone(), self.filter_result.clone())
             {
-                let filter_gen = self.filter_cancel_gen.load(Ordering::Relaxed);
-                let src_check = src_ref.clone();
-                let filter_check = filter_res.clone();
+                let source_gen = self.primary_source_gen;
+                let filter_gen = self.filter_cancel_gen.load(Ordering::SeqCst);
+                let analytics_gen = self.analytics_cancel_gen.load(Ordering::SeqCst);
 
                 cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                     let bg_executor = cx.background_executor().clone();
@@ -1557,15 +1564,14 @@ impl LogAnalysisWorkspace {
 
                         let _ = this.update(&mut async_cx, |workspace, cx| {
                             if workspace.is_timeline_visible
-                                && workspace.filter_cancel_gen.load(Ordering::Relaxed) == filter_gen
-                                && workspace
-                                    .log_source
-                                    .as_ref()
-                                    .is_some_and(|s| Arc::ptr_eq(s, &src_check))
-                                && workspace
-                                    .filter_result
-                                    .as_ref()
-                                    .is_some_and(|f| Arc::ptr_eq(f, &filter_check))
+                                && workspace.filter_cancel_gen.load(Ordering::SeqCst) == filter_gen
+                                && adb::is_stream_analytics_result_current(
+                                    workspace.analytics_cancel_gen.load(Ordering::SeqCst),
+                                    analytics_gen,
+                                    workspace.primary_source_gen,
+                                    source_gen,
+                                    workspace.log_source.is_some(),
+                                )
                             {
                                 workspace.timeline_data = Some(timeline);
                                 cx.notify();

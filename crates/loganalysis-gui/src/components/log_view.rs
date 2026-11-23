@@ -795,6 +795,28 @@ pub const LINE_DETAIL_JSON_PARSE_MAX_BYTES: usize = 262_144;
 pub const LINE_DETAIL_TRUNCATION_SUFFIX: &str =
     "…\n[Truncated for display — 📋 Copy copies full line]";
 
+/// Maximum UTF-8 byte length rendered inline per row in `UniformList` to prevent text-shaping stalls.
+pub const LOG_ROW_INLINE_MAX_BYTES: usize = 4_096;
+
+/// Suffix appended to truncated inline `UniformList` rows directing users to Line Detail.
+pub const LOG_ROW_INLINE_TRUNCATED_SUFFIX: &str = " … (double-click for full Line Detail)";
+
+/// Truncates an inline `UniformList` row string to at most [`LOG_ROW_INLINE_MAX_BYTES`] bytes
+/// on a valid UTF-8 character boundary, appending [`LOG_ROW_INLINE_TRUNCATED_SUFFIX`].
+/// Returns `text` without allocation when `text.len() <= LOG_ROW_INLINE_MAX_BYTES`.
+pub fn truncate_inline_row_text(text: SharedString) -> SharedString {
+    let s = text.as_ref();
+    if s.len() <= LOG_ROW_INLINE_MAX_BYTES {
+        return text;
+    }
+    let budget = LOG_ROW_INLINE_MAX_BYTES.saturating_sub(LOG_ROW_INLINE_TRUNCATED_SUFFIX.len());
+    let cut = s.floor_char_boundary(budget);
+    let mut out = String::with_capacity(cut + LOG_ROW_INLINE_TRUNCATED_SUFFIX.len());
+    out.push_str(&s[..cut]);
+    out.push_str(LOG_ROW_INLINE_TRUNCATED_SUFFIX);
+    SharedString::from(out)
+}
+
 /// Computed thumb geometry for a horizontal scrollbar track.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HorizontalScrollbarMetrics {
@@ -803,13 +825,15 @@ pub struct HorizontalScrollbarMetrics {
     pub max_scroll_x: f32,
 }
 
-/// Snapshot of horizontal scroll dimensions observed during `render` vs post-`prepaint`.
+/// Snapshot of scroll dimensions observed during `render` vs post-`prepaint`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HScrollRenderSnapshot {
     pub has_h_scrollbar: bool,
     pub content_width: f32,
     pub viewport_width: f32,
     pub clamped_scroll_x: f32,
+    pub scroll_y: f32,
+    pub track_height: f32,
 }
 
 /// Formatted payload produced by [`format_line_detail_text`] for the Line Detail inspector.
@@ -911,12 +935,24 @@ pub fn scroll_x_from_mouse_x(
     clamp_horizontal_scroll_x(-(ratio * max_scroll_x), max_scroll_x)
 }
 
-/// Reads the current horizontal scroll state snapshot from a [`UniformListScrollHandle`].
+/// Reads the current scroll state snapshot from a [`UniformListScrollHandle`].
 pub fn read_h_scroll_render_snapshot(
     handle: &UniformListScrollHandle,
     full_line_display: bool,
 ) -> HScrollRenderSnapshot {
     let state = handle.0.borrow();
+    let raw_track_height: f32 = state.base_handle.bounds().size.height.into();
+    let track_height = if raw_track_height.is_finite() {
+        raw_track_height.max(0.0)
+    } else {
+        0.0
+    };
+    let raw_scroll_y: f32 = (-state.base_handle.offset().y).into();
+    let scroll_y = if raw_scroll_y.is_finite() && raw_scroll_y != 0.0 {
+        raw_scroll_y
+    } else {
+        0.0
+    };
     let viewport_width: f32 = state
         .last_item_size
         .map(|s| s.item.width.into())
@@ -927,6 +963,8 @@ pub fn read_h_scroll_render_snapshot(
             content_width: viewport_width,
             viewport_width,
             clamped_scroll_x: 0.0,
+            scroll_y,
+            track_height,
         };
     }
     let content_width: f32 = state
@@ -943,16 +981,20 @@ pub fn read_h_scroll_render_snapshot(
         content_width,
         viewport_width,
         clamped_scroll_x,
+        scroll_y,
+        track_height,
     }
 }
 
-/// Returns `true` when two horizontal scroll snapshots differ beyond sub-pixel hysteresis (`0.5px`).
+/// Returns `true` when two scroll snapshots differ beyond sub-pixel hysteresis (`0.5px`).
 #[inline]
 pub fn h_scroll_snapshots_differ(a: HScrollRenderSnapshot, b: HScrollRenderSnapshot) -> bool {
     a.has_h_scrollbar != b.has_h_scrollbar
         || (a.content_width - b.content_width).abs() > H_SCROLLBAR_OVERFLOW_EPSILON_PX
         || (a.viewport_width - b.viewport_width).abs() > H_SCROLLBAR_OVERFLOW_EPSILON_PX
         || (a.clamped_scroll_x - b.clamped_scroll_x).abs() > H_SCROLLBAR_OVERFLOW_EPSILON_PX
+        || (a.scroll_y - b.scroll_y).abs() > H_SCROLLBAR_OVERFLOW_EPSILON_PX
+        || (a.track_height - b.track_height).abs() > H_SCROLLBAR_OVERFLOW_EPSILON_PX
 }
 
 /// Returns `true` for non-trivial JSON payloads (`Object` with >= 1 key, or `Array` that
@@ -1580,6 +1622,7 @@ fn render_log_list(
                             let t: SharedString = src
                                 .get_line_arc(r_idx)
                                 .map(SharedString::new)
+                                .map(truncate_inline_row_text)
                                 .unwrap_or_default();
                             (Some(r_idx), t)
                         } else {
@@ -2944,12 +2987,14 @@ mod tests {
         build_heatmap_ticks, clamp_horizontal_scroll_x, compute_highlight_ranges,
         compute_horizontal_scrollbar_metrics, format_line_detail_text, h_scroll_snapshots_differ,
         is_meaningful_json_value, log_row_height_px, read_h_scroll_render_snapshot,
-        resolve_widest_visible_row_idx, scroll_x_from_mouse_x, HScrollRenderSnapshot,
-        HorizontalScrollbarMetrics, COLUMN_HEADER_HEIGHT_PX, H_SCROLLBAR_MIN_THUMB_WIDTH_PX,
-        H_SCROLLBAR_TRACK_HEIGHT_PX, LINE_DETAIL_JSON_PARSE_MAX_BYTES,
-        LINE_DETAIL_TRUNCATION_SUFFIX, LOG_ROW_HEIGHT_MULTIPLIER, SCROLLBAR_TRACK_WIDTH_PX,
+        resolve_widest_visible_row_idx, scroll_x_from_mouse_x, truncate_inline_row_text,
+        HScrollRenderSnapshot, HorizontalScrollbarMetrics, COLUMN_HEADER_HEIGHT_PX,
+        H_SCROLLBAR_MIN_THUMB_WIDTH_PX, H_SCROLLBAR_TRACK_HEIGHT_PX,
+        LINE_DETAIL_JSON_PARSE_MAX_BYTES, LINE_DETAIL_TRUNCATION_SUFFIX,
+        LOG_ROW_HEIGHT_MULTIPLIER, LOG_ROW_INLINE_MAX_BYTES, LOG_ROW_INLINE_TRUNCATED_SUFFIX,
+        SCROLLBAR_TRACK_WIDTH_PX,
     };
-    use gpui::{point, px, UniformListScrollHandle};
+    use gpui::{point, px, SharedString, UniformListScrollHandle};
     use loganalysis_core::{
         execute_filtering, ActiveLogSource, CompiledMatcher, CompiledStreamFilters, FilterResult,
         FilterRule, HeatmapBucket, HeatmapData, LogSource, StreamLogBuffer,
@@ -3152,11 +3197,15 @@ mod tests {
             content_width: 800.0,
             viewport_width: 400.0,
             clamped_scroll_x: -50.0,
+            scroll_y: 0.0,
+            track_height: 500.0,
         };
         let within_eps = HScrollRenderSnapshot {
             content_width: 800.3,
             viewport_width: 400.4,
             clamped_scroll_x: -50.2,
+            scroll_y: 0.4,
+            track_height: 500.5,
             ..base
         };
         assert!(!h_scroll_snapshots_differ(base, within_eps));
@@ -3184,21 +3233,85 @@ mod tests {
                 ..base
             }
         ));
+        assert!(h_scroll_snapshots_differ(
+            base,
+            HScrollRenderSnapshot {
+                scroll_y: 0.6,
+                ..base
+            }
+        ));
+        assert!(h_scroll_snapshots_differ(
+            base,
+            HScrollRenderSnapshot {
+                track_height: 500.6,
+                ..base
+            }
+        ));
         let toggled = HScrollRenderSnapshot {
             has_h_scrollbar: false,
             ..base
         };
         assert!(h_scroll_snapshots_differ(base, toggled));
 
-        // read_h_scroll_render_snapshot normalizes when full_line_display is false
+        // read_h_scroll_render_snapshot normalizes horizontal fields when full_line_display is false
+        // while always tracking vertical scroll_y and track_height across both modes.
         let handle = UniformListScrollHandle::new();
         handle.0.borrow().base_handle.set_offset(point(px(-75.0), px(-30.0)));
         let disabled_snap = read_h_scroll_render_snapshot(&handle, false);
         assert!(!disabled_snap.has_h_scrollbar);
         assert_eq!(disabled_snap.clamped_scroll_x, 0.0);
+        assert_eq!(disabled_snap.scroll_y, 30.0);
+        assert_eq!(disabled_snap.track_height, 0.0);
+
         let enabled_snap = read_h_scroll_render_snapshot(&handle, true);
         assert!(!enabled_snap.has_h_scrollbar);
         assert_eq!(enabled_snap.clamped_scroll_x, 0.0);
+        assert_eq!(enabled_snap.scroll_y, 30.0);
+        assert_eq!(enabled_snap.track_height, 0.0);
+
+        // Vertical scroll divergence must be detected even when full_line_display == false
+        handle.0.borrow().base_handle.set_offset(point(px(-75.0), px(-31.0)));
+        let disabled_moved = read_h_scroll_render_snapshot(&handle, false);
+        assert_eq!(disabled_moved.scroll_y, 31.0);
+        assert!(h_scroll_snapshots_differ(disabled_snap, disabled_moved));
+    }
+
+    #[test]
+    fn test_truncate_inline_row_text_bounds_and_utf8_safety() {
+        // Short and exact-limit strings are returned unchanged without appending suffix
+        let short = SharedString::from("11-06 18:00:00.000 I Tag: short line");
+        assert_eq!(truncate_inline_row_text(short.clone()), short);
+
+        let exact = SharedString::from("A".repeat(LOG_ROW_INLINE_MAX_BYTES));
+        let exact_out = truncate_inline_row_text(exact.clone());
+        assert_eq!(exact_out.len(), LOG_ROW_INLINE_MAX_BYTES);
+        assert_eq!(exact_out, exact);
+
+        // ASCII > 4096 bytes truncates to exact max bytes with suffix
+        let ascii_over = SharedString::from("B".repeat(LOG_ROW_INLINE_MAX_BYTES + 500));
+        let ascii_out = truncate_inline_row_text(ascii_over);
+        assert!(ascii_out.len() <= LOG_ROW_INLINE_MAX_BYTES);
+        assert!(ascii_out.ends_with(LOG_ROW_INLINE_TRUNCATED_SUFFIX));
+
+        // 3-byte Hangul UTF-8 boundary alignment across multiple prefix offsets
+        for pad in 0..4 {
+            let hangul = format!("{}{}", "x".repeat(pad), "가".repeat(2_000));
+            assert!(hangul.len() > LOG_ROW_INLINE_MAX_BYTES);
+            let out = truncate_inline_row_text(SharedString::from(hangul));
+            assert!(out.len() <= LOG_ROW_INLINE_MAX_BYTES);
+            assert!(out.ends_with(LOG_ROW_INLINE_TRUNCATED_SUFFIX));
+            assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+        }
+
+        // 4-byte Emoji UTF-8 boundary alignment across multiple prefix offsets
+        for pad in 0..4 {
+            let emojis = format!("{}{}", "y".repeat(pad), "🚀".repeat(1_500));
+            assert!(emojis.len() > LOG_ROW_INLINE_MAX_BYTES);
+            let out = truncate_inline_row_text(SharedString::from(emojis));
+            assert!(out.len() <= LOG_ROW_INLINE_MAX_BYTES);
+            assert!(out.ends_with(LOG_ROW_INLINE_TRUNCATED_SUFFIX));
+            assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+        }
     }
 
     #[test]

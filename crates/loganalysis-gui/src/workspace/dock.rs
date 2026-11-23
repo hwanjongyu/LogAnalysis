@@ -211,7 +211,7 @@ impl LogAnalysisWorkspace {
             return;
         };
 
-        let source_for_check = source.clone();
+        let source_gen = self.primary_source_gen;
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let bg_executor = cx.background_executor().clone();
             let mut async_cx = cx.clone();
@@ -222,11 +222,10 @@ impl LogAnalysisWorkspace {
                     .await;
 
                 let _ = this.update(&mut async_cx, |workspace, cx| {
-                    if let Some(current) = &workspace.log_source {
-                        if std::sync::Arc::ptr_eq(current, &source_for_check) {
-                            workspace.facet_tags = computed;
-                            cx.notify();
-                        }
+                    if workspace.log_source.is_some() && workspace.primary_source_gen == source_gen
+                    {
+                        workspace.facet_tags = computed;
+                        cx.notify();
                     }
                 });
             }

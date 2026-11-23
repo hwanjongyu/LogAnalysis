@@ -107,7 +107,7 @@ fn test_find_match_ranges_zero_width_matches_do_not_infinite_loop() {
 
 #[test]
 fn test_find_match_ranges_backtrack_limit_exhaustion_safety() {
-    assert_eq!(FANCY_REGEX_BACKTRACK_LIMIT, 250);
+    assert_eq!(FANCY_REGEX_BACKTRACK_LIMIT, 4_096);
 
     // Patterns with semantic backtracking that bypass AST check
     let non_matching_100k = "abababababab".repeat(5000); // 60,000 characters
