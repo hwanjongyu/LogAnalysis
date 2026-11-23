@@ -3,7 +3,7 @@
 [![Rust](https://img.shields.io/badge/Rust-1.80+-orange.svg)](https://www.rust-lang.org/)
 [![UI: GPUI](https://img.shields.io/badge/UI-GPUI%20(Zed)-blueviolet.svg)](https://gpui.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests: Passing](https://img.shields.io/badge/Tests-351%2F351%20Passing-brightgreen.svg)](docs/qa-docs-tests-cleanup.md)
+[![Tests: Passing](https://img.shields.io/badge/Tests-441%2F441%20Passing-brightgreen.svg)](#running-tests)
 
 **LogAnalysis** is a surgical, ultra-fast desktop log analysis and real-time Android `adb logcat` exploration tool. Inspired by the classic [TextAnalysisTool](https://textanalysistool.github.io/) and evolved from [loganalysis_gui](https://github.com/hwanjongyu/loganalysis_gui), it is re-engineered from the ground up in **pure Rust** using Zed Industries' GPU-accelerated **GPUI** framework.
 
@@ -57,10 +57,11 @@ loganalysis/
 ├── Cargo.toml
 ├── LICENSE
 ├── deny.toml
-├── docs/
-│   ├── INVARIANTS.md                     # Binding system invariants & quality gates
-│   ├── spec-docs-tests-cleanup.md        # Documentation, test & deduplication spec
-│   └── qa-docs-tests-cleanup.md          # Automated QA verification report
+├── .github/
+│   └── workflows/                        # CI & multi-platform release pipelines
+├── scripts/
+│   ├── build-appimage.sh                 # Linux AppImage bundler
+│   └── build-deb.sh                      # Debian (.deb) package builder
 └── crates/
     ├── loganalysis-core/                 # Pure headless Rust library
     │   └── src/

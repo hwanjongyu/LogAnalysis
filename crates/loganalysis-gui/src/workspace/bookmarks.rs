@@ -166,7 +166,6 @@ impl LogAnalysisWorkspace {
             total_lines,
             bookmarks: self.bookmarks.items().to_vec(),
         };
-        let html_content = generate_html_report(&options);
 
         let dialog = crate::dialogs::prepare_dialog_with_parent(
             crate::dialogs::build_export_html_report_dialog_base(&default_export_name),
@@ -184,7 +183,7 @@ impl LogAnalysisWorkspace {
                     let path = handle.path().to_path_buf();
                     let write_res = bg_executor
                         .spawn(async move {
-                            std::fs::write(&path, html_content.as_bytes()).map(|_| path)
+                            export_html_report_to_path(&path, &options).map(|_| path)
                         })
                         .await;
 
@@ -333,6 +332,15 @@ impl LogAnalysisWorkspace {
     }
 }
 
+/// Generates the HTML incident report and persists it atomically to `path`.
+pub(crate) fn export_html_report_to_path(
+    path: &std::path::Path,
+    options: &HtmlReportOptions,
+) -> std::io::Result<()> {
+    let html_content = generate_html_report(options);
+    crate::workspace::filters::write_file_atomically(path, html_content.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::find_visible_row_for_source_idx;
@@ -365,5 +373,34 @@ mod tests {
                 "binary search mismatch at target {target}"
             );
         }
+    }
+
+    #[test]
+    fn test_export_html_report_to_path_atomic_write() {
+        use super::export_html_report_to_path;
+        use loganalysis_core::{Bookmark, HtmlReportOptions, LineSeverity};
+
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let out_path = dir.path().join("incident.html");
+        let opts = HtmlReportOptions {
+            file_name: "sample.log".to_string(),
+            total_lines: 100,
+            bookmarks: vec![Bookmark {
+                source_idx: 4,
+                line_number: 5,
+                text: "11-06 18:00:00.000 E Crash: boom".to_string(),
+                note: Some("investigate".to_string()),
+                severity: LineSeverity::Error,
+                created_at_epoch: 0,
+            }],
+        };
+
+        export_html_report_to_path(&out_path, &opts).expect("export HTML report atomically");
+        let written = std::fs::read_to_string(&out_path).expect("read exported HTML");
+        assert!(written.contains("sample.log"));
+        assert!(written.contains("investigate"));
+        // Verify no leftover temp files remain in dir
+        let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(entries.len(), 1);
     }
 }

@@ -119,6 +119,22 @@ fn cleanup_aborted_command(
     }
 }
 
+/// Maximum stdout bytes captured by [`run_command_with_timeout`] before aborting (`16 MiB`).
+pub const MAX_ADB_COMMAND_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+
+#[cold]
+fn abort_output_limit(
+    child: std::process::Child,
+    rx: crossbeam_channel::Receiver<Vec<u8>>,
+    reader_handle: thread::JoinHandle<()>,
+    pipe_disconnected: bool,
+) -> AdbError {
+    cleanup_aborted_command(child, rx, reader_handle, pipe_disconnected);
+    AdbError::ExecutionFailed(format!(
+        "ADB command output exceeded {MAX_ADB_COMMAND_OUTPUT_BYTES} byte limit"
+    ))
+}
+
 /// Executes `cmd` with captured stdout and an enforced wall-clock `timeout`.
 /// Uses a dedicated pipe-reader thread and bounded crossbeam channel so pipe reads
 /// cannot block timeout enforcement on any platform (Linux, macOS, Windows).
@@ -183,6 +199,14 @@ pub fn run_command_with_timeout(
 
         match rx.recv_timeout(remaining.min(Duration::from_millis(20))) {
             Ok(chunk) => {
+                if output.len().saturating_add(chunk.len()) > MAX_ADB_COMMAND_OUTPUT_BYTES {
+                    return Err(abort_output_limit(
+                        child,
+                        rx,
+                        reader_handle,
+                        pipe_disconnected,
+                    ));
+                }
                 output.extend_from_slice(&chunk);
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
@@ -194,7 +218,19 @@ pub fn run_command_with_timeout(
                         // Drain any chunks already buffered in the channel.
                         loop {
                             match rx.try_recv() {
-                                Ok(chunk) => output.extend_from_slice(&chunk),
+                                Ok(chunk) => {
+                                    if output.len().saturating_add(chunk.len())
+                                        > MAX_ADB_COMMAND_OUTPUT_BYTES
+                                    {
+                                        return Err(abort_output_limit(
+                                            child,
+                                            rx,
+                                            reader_handle,
+                                            pipe_disconnected,
+                                        ));
+                                    }
+                                    output.extend_from_slice(&chunk);
+                                }
                                 Err(crossbeam_channel::TryRecvError::Empty) => break,
                                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
                                     pipe_disconnected = true;
@@ -218,7 +254,19 @@ pub fn run_command_with_timeout(
                                     break;
                                 }
                                 match rx.recv_timeout(grace_rem) {
-                                    Ok(chunk) => output.extend_from_slice(&chunk),
+                                    Ok(chunk) => {
+                                        if output.len().saturating_add(chunk.len())
+                                            > MAX_ADB_COMMAND_OUTPUT_BYTES
+                                        {
+                                            return Err(abort_output_limit(
+                                                child,
+                                                rx,
+                                                reader_handle,
+                                                pipe_disconnected,
+                                            ));
+                                        }
+                                        output.extend_from_slice(&chunk);
+                                    }
                                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => break,
                                     Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                                         pipe_disconnected = true;
@@ -485,6 +533,19 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(1),
             "Timeout took too long ({elapsed:?}) when grandchild inherited stdout FD"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_command_with_timeout_caps_oversized_stdout() {
+        let mut cmd = Command::new("sh");
+        // Emit 17 MiB (> MAX_ADB_COMMAND_OUTPUT_BYTES = 16 MiB)
+        cmd.args(["-c", "dd if=/dev/zero bs=65536 count=272 2>/dev/null"]);
+        let res = run_command_with_timeout(cmd, Duration::from_secs(5));
+        assert!(
+            matches!(res, Err(AdbError::ExecutionFailed(ref msg)) if msg.contains("byte limit")),
+            "Expected ExecutionFailed mentioning byte limit, got: {res:?}"
         );
     }
 }

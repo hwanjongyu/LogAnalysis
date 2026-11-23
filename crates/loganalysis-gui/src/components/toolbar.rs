@@ -2,7 +2,6 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use loganalysis_core::LogSource;
 
-use crate::components::titlebar::should_render_csd;
 use crate::components::tooltip::render_tooltip;
 use crate::theme::Theme;
 use crate::types::FilterPanelPosition;
@@ -65,14 +64,12 @@ pub const HEADER_CONTRACT_DOM_IDS: [&str; 16] = [
 /// Renders the unified 38px compact header bar integrating branding, log sources,
 /// centralized draggable breadcrumb status pill, view toggles, find, overflow menu,
 /// and CSD window controls.
-#[allow(clippy::needless_pass_by_ref_mut)]
 pub fn render_unified_header(
     workspace: &LogAnalysisWorkspace,
-    window: &mut Window,
+    is_csd: bool,
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> impl IntoElement {
     let theme = workspace.theme;
-    let is_csd = should_render_csd(window);
 
     div()
         .id(HEADER_CONTRACT_DOM_IDS[0])
@@ -143,7 +140,7 @@ pub fn render_unified_header(
                         .py(px(3.0))
                         .rounded_sm()
                         .bg(theme.accent)
-                        .hover(move |s| s.bg(theme.accent_muted).text_color(theme.accent))
+                        .hover(move |s| s.bg(theme.accent_hover))
                         .tooltip(render_tooltip("Open log file from disk", Some("Ctrl+O"), theme))
                         .text_color(rgb(0xffffff))
                         .text_size(px(11.0))
@@ -291,9 +288,9 @@ pub fn render_unified_header(
                                 })
                                 .hover(move |s| {
                                     if workspace.adb.is_streaming {
-                                        s.bg(rgb(0xdc2626))
+                                        s.bg(theme.error_hover)
                                     } else {
-                                        s.bg(rgb(0x16a34a))
+                                        s.bg(theme.success_hover)
                                     }
                                 })
                                 .tooltip(render_tooltip(
@@ -301,7 +298,11 @@ pub fn render_unified_header(
                                     Some("Ctrl+Shift+R"),
                                     theme,
                                 ))
-                                .text_color(rgb(0xffffff))
+                                .text_color(if workspace.adb.is_streaming {
+                                    theme.on_error
+                                } else {
+                                    theme.on_success
+                                })
                                 .text_size(px(11.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .cursor_pointer()
@@ -328,6 +329,7 @@ pub fn render_unified_header(
                 .id(HEADER_CONTRACT_DOM_IDS[8])
                 .flex_1()
                 .min_w(px(0.0))
+                .overflow_hidden()
                 .h_full()
                 .flex()
                 .items_center()
@@ -387,7 +389,7 @@ pub fn render_unified_header(
                                                 .bg(theme.accent_muted)
                                                 .font_family("monospace")
                                                 .font_weight(FontWeight::BOLD)
-                                                .text_color(theme.accent)
+                                                .text_color(theme.accent_muted_fg)
                                                 .text_size(px(10.0))
                                                 .child(format!("{} matches", matched)),
                                         )
@@ -570,7 +572,7 @@ pub fn render_unified_header(
                         })
                         .tooltip(render_tooltip("Search text in log buffer", Some("Ctrl+F"), theme))
                         .text_color(if workspace.search_ctrl.is_visible {
-                            theme.accent
+                            theme.accent_muted_fg
                         } else {
                             theme.text_primary
                         })
@@ -623,7 +625,7 @@ pub fn render_unified_header(
                         .children(render_overflow_menu(workspace, cx)),
                 )
                 // CSD Window Controls (Min, Max, Close) when should_render_csd is true
-                .children(crate::components::titlebar::render_window_controls(window, theme, cx)),
+                .children(crate::components::titlebar::render_window_controls(is_csd, theme, cx)),
         )
 }
 
@@ -872,9 +874,10 @@ fn render_device_dropdown(
 
     div()
         .id("dropdown-adb-devices")
+        .occlude()
         .absolute()
         .top(px(30.0))
-        .right(px(0.0))
+        .left(px(0.0))
         .w(px(290.0))
         .bg(theme.bg_panel)
         .border_1()

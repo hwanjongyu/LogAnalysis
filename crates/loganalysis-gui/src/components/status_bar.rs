@@ -33,7 +33,9 @@ pub fn render_status_bar(
     let selected_dt = workspace.get_selected_delta_time();
     let font_size = workspace.font_size;
     let font_size_f32: f32 = font_size.into();
-    let selected_real_line = workspace.selection.anchor_source_idx;
+    let selected_real_line = workspace
+        .resolve_active_selected_line()
+        .map(|sel| sel.source_idx);
     let bookmark_count = workspace.bookmarks.len();
     let (mem_str, mem_backend) = workspace.get_buffer_memory_display();
 
@@ -187,13 +189,13 @@ pub fn render_status_bar(
                                         .flex()
                                         .items_center()
                                         .gap_1()
-                                        .text_color(rgb(0xef4444))
+                                        .text_color(theme.error_red)
                                         .child(
                                             div()
                                                 .w(px(6.0))
                                                 .h(px(6.0))
                                                 .rounded_full()
-                                                .bg(rgb(0xef4444)),
+                                                .bg(theme.error_red),
                                         )
                                         .child(format!("{} err", total_errors)),
                                 )
@@ -204,13 +206,13 @@ pub fn render_status_bar(
                                         .flex()
                                         .items_center()
                                         .gap_1()
-                                        .text_color(rgb(0xf59e0b))
+                                        .text_color(theme.warning_text)
                                         .child(
                                             div()
                                                 .w(px(6.0))
                                                 .h(px(6.0))
                                                 .rounded_full()
-                                                .bg(rgb(0xf59e0b)),
+                                                .bg(theme.warning_text),
                                         )
                                         .child(format!("{} warn", total_warnings)),
                                 )
@@ -231,8 +233,8 @@ pub fn render_status_bar(
                             .bg(theme.accent_muted)
                             .border_1()
                             .border_color(theme.accent)
-                            .text_color(theme.accent)
-                            .hover(|s| s.bg(theme.accent).text_color(rgb(0xffffff)))
+                            .text_color(theme.accent_muted_fg)
+                            .hover(move |s| s.bg(theme.accent_hover).text_color(rgb(0xffffff)))
                             .tooltip(render_tooltip("Open triage bookmarks drawer", Some("Ctrl+B"), theme))
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.toggle_bookmark_drawer(cx);
@@ -270,10 +272,10 @@ pub fn render_status_bar(
                             (theme.bg_card, theme.text_muted, "⏱️")
                         }
                         loganalysis_core::LatencyLevel::Warning => {
-                            (rgba(0xf59e0b25), rgb(0xf59e0b), "▲")
+                            (rgba(0xf59e0b25), theme.warning_text, "▲")
                         }
                         loganalysis_core::LatencyLevel::Critical => {
-                            (rgba(0xef444425), rgb(0xef4444), "⚠️")
+                            (rgba(0xef444425), theme.error_red, "⚠️")
                         }
                     };
                     parent.child(

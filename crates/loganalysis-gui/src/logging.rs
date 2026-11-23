@@ -37,16 +37,43 @@ pub(crate) fn resolve_user_log_dir_from_env<F>(get_env: F) -> Option<PathBuf>
 where
     F: Fn(&str) -> Option<String>,
 {
-    if let Some(home) = get_env("HOME").filter(|s| !s.is_empty()) {
+    resolve_user_log_dir_from_env_for_os(cfg!(windows), get_env)
+}
+
+pub(crate) fn resolve_user_log_dir_from_env_for_os<F>(is_windows: bool, get_env: F) -> Option<PathBuf>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let non_empty = |key: &str| get_env(key).filter(|s| !s.is_empty());
+    if is_windows {
+        if let Some(local_app_data) = non_empty("LOCALAPPDATA") {
+            Some(PathBuf::from(local_app_data).join("loganalysis"))
+        } else if let Some(app_data) = non_empty("APPDATA") {
+            Some(PathBuf::from(app_data).join("loganalysis"))
+        } else if let Some(user_profile) = non_empty("USERPROFILE") {
+            Some(
+                PathBuf::from(user_profile)
+                    .join("AppData")
+                    .join("Local")
+                    .join("loganalysis"),
+            )
+        } else {
+            non_empty("HOME")
+                .map(|home| PathBuf::from(home).join(".local").join("share").join("loganalysis"))
+        }
+    } else if let Some(home) = non_empty("HOME") {
         Some(PathBuf::from(home).join(".local").join("share").join("loganalysis"))
-    } else if let Some(local_app_data) = get_env("LOCALAPPDATA").filter(|s| !s.is_empty()) {
+    } else if let Some(local_app_data) = non_empty("LOCALAPPDATA") {
         Some(PathBuf::from(local_app_data).join("loganalysis"))
-    } else if let Some(app_data) = get_env("APPDATA").filter(|s| !s.is_empty()) {
+    } else if let Some(app_data) = non_empty("APPDATA") {
         Some(PathBuf::from(app_data).join("loganalysis"))
     } else {
-        get_env("USERPROFILE")
-            .filter(|s| !s.is_empty())
-            .map(|user_profile| PathBuf::from(user_profile).join("AppData").join("Local").join("loganalysis"))
+        non_empty("USERPROFILE").map(|user_profile| {
+            PathBuf::from(user_profile)
+                .join("AppData")
+                .join("Local")
+                .join("loganalysis")
+        })
     }
 }
 
@@ -213,13 +240,26 @@ pub(crate) fn record_crash_report(
         "[{timestamp}] [CRITICAL_PANIC] Thread '{thread_name}' at {location}: {payload}\n"
     );
 
-    let mut state = LOG_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    // Flush any previously buffered events before appending and flushing CRITICAL_PANIC
-    state.flush();
-    for path in log_paths {
-        state.write_line(path, &error_line, true);
+    let state_opt = match LOG_STATE.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    };
+
+    if let Some(mut state) = state_opt {
+        // Flush any previously buffered events before appending and flushing CRITICAL_PANIC
+        state.flush();
+        for path in log_paths {
+            state.write_line(path, &error_line, true);
+        }
+        state.flush();
+    } else {
+        // LOG_STATE is currently held by this panicking thread or another thread; bypass it
+        // so the panic hook never deadlocks.
+        for path in log_paths {
+            append_to_file(path, &error_line);
+        }
     }
-    state.flush();
 }
 
 /// Initializes global panic hook to guarantee all crashes and stack traces are captured to disk
@@ -345,42 +385,110 @@ mod tests {
     fn test_resolve_user_log_dir_precedence() {
         // Verify resolve_user_log_dir calls the resolver
         let _ = resolve_user_log_dir();
+        let _ = resolve_user_log_dir_from_env(|_| None);
 
-        // 1. HOME takes precedence when present
-        let dir = resolve_user_log_dir_from_env(|k| match k {
+        // --- Unix (`is_windows = false`): HOME > LOCALAPPDATA > APPDATA > USERPROFILE ---
+        let dir = resolve_user_log_dir_from_env_for_os(false, |k| match k {
             "HOME" => Some("/home/testuser".into()),
             "LOCALAPPDATA" => Some("/mock/appdata/local".into()),
             _ => None,
         });
-        assert_eq!(dir, Some(PathBuf::from("/home/testuser").join(".local").join("share").join("loganalysis")));
+        assert_eq!(
+            dir,
+            Some(PathBuf::from("/home/testuser").join(".local").join("share").join("loganalysis"))
+        );
 
-        // 2. LOCALAPPDATA used when HOME is unset
-        let dir = resolve_user_log_dir_from_env(|k| match k {
+        let dir = resolve_user_log_dir_from_env_for_os(false, |k| match k {
             "LOCALAPPDATA" => Some("/mock/appdata/local".into()),
             "APPDATA" => Some("/mock/appdata/roaming".into()),
             "USERPROFILE" => Some("/mock/userprofile".into()),
             _ => None,
         });
-        assert_eq!(dir, Some(PathBuf::from("/mock/appdata/local").join("loganalysis")));
+        assert_eq!(
+            dir,
+            Some(PathBuf::from("/mock/appdata/local").join("loganalysis"))
+        );
 
-        // 3. APPDATA used when HOME and LOCALAPPDATA are unset
-        let dir = resolve_user_log_dir_from_env(|k| match k {
+        let dir = resolve_user_log_dir_from_env_for_os(false, |k| match k {
             "APPDATA" => Some("/mock/appdata/roaming".into()),
             "USERPROFILE" => Some("/mock/userprofile".into()),
             _ => None,
         });
-        assert_eq!(dir, Some(PathBuf::from("/mock/appdata/roaming").join("loganalysis")));
+        assert_eq!(
+            dir,
+            Some(PathBuf::from("/mock/appdata/roaming").join("loganalysis"))
+        );
 
-        // 4. USERPROFILE used when HOME, LOCALAPPDATA, and APPDATA are unset
-        let dir = resolve_user_log_dir_from_env(|k| match k {
+        let dir = resolve_user_log_dir_from_env_for_os(false, |k| match k {
             "USERPROFILE" => Some("/mock/userprofile".into()),
             _ => None,
         });
-        assert_eq!(dir, Some(PathBuf::from("/mock/userprofile").join("AppData").join("Local").join("loganalysis")));
+        assert_eq!(
+            dir,
+            Some(
+                PathBuf::from("/mock/userprofile")
+                    .join("AppData")
+                    .join("Local")
+                    .join("loganalysis")
+            )
+        );
 
-        // 5. None when no environment variables set
-        let dir = resolve_user_log_dir_from_env(|_| None);
-        assert_eq!(dir, None);
+        // --- Windows (`is_windows = true`): LOCALAPPDATA > APPDATA > USERPROFILE > HOME ---
+        let dir = resolve_user_log_dir_from_env_for_os(true, |k| match k {
+            "HOME" => Some("C:\\msys64\\home\\testuser".into()),
+            "LOCALAPPDATA" => Some("C:\\Users\\test\\AppData\\Local".into()),
+            "APPDATA" => Some("C:\\Users\\test\\AppData\\Roaming".into()),
+            "USERPROFILE" => Some("C:\\Users\\test".into()),
+            _ => None,
+        });
+        assert_eq!(
+            dir,
+            Some(PathBuf::from("C:\\Users\\test\\AppData\\Local").join("loganalysis"))
+        );
+
+        let dir = resolve_user_log_dir_from_env_for_os(true, |k| match k {
+            "HOME" => Some("C:\\msys64\\home\\testuser".into()),
+            "APPDATA" => Some("C:\\Users\\test\\AppData\\Roaming".into()),
+            "USERPROFILE" => Some("C:\\Users\\test".into()),
+            _ => None,
+        });
+        assert_eq!(
+            dir,
+            Some(PathBuf::from("C:\\Users\\test\\AppData\\Roaming").join("loganalysis"))
+        );
+
+        let dir = resolve_user_log_dir_from_env_for_os(true, |k| match k {
+            "HOME" => Some("C:\\msys64\\home\\testuser".into()),
+            "USERPROFILE" => Some("C:\\Users\\test".into()),
+            _ => None,
+        });
+        assert_eq!(
+            dir,
+            Some(
+                PathBuf::from("C:\\Users\\test")
+                    .join("AppData")
+                    .join("Local")
+                    .join("loganalysis")
+            )
+        );
+
+        let dir = resolve_user_log_dir_from_env_for_os(true, |k| match k {
+            "HOME" => Some("C:\\msys64\\home\\testuser".into()),
+            _ => None,
+        });
+        assert_eq!(
+            dir,
+            Some(
+                PathBuf::from("C:\\msys64\\home\\testuser")
+                    .join(".local")
+                    .join("share")
+                    .join("loganalysis")
+            )
+        );
+
+        // None when no environment variables set
+        assert_eq!(resolve_user_log_dir_from_env_for_os(false, |_| None), None);
+        assert_eq!(resolve_user_log_dir_from_env_for_os(true, |_| None), None);
     }
 
     #[test]
@@ -597,6 +705,36 @@ mod tests {
         if let Ok(cwd) = std::env::current_dir() {
             assert!(!cwd.join("loganalysis.log").exists());
         }
+    }
+
+    #[test]
+    fn test_record_crash_report_no_deadlock_when_log_state_held() {
+        let _guard = LOG_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let log_dir = TempDir::new().expect("create temp test dir");
+        let _reset = ResetLogWriterOnDrop;
+        reset_log_writer_for_test();
+
+        let crash_log = log_dir.path().join("crash.log");
+        let app_log = log_dir.path().join("loganalysis.log");
+
+        // Hold LOG_STATE on the current thread to simulate a panic while LOG_STATE is locked.
+        let held_state = LOG_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let report = "LOGANALYSIS CRASH REPORT\nDeadlock check\n";
+        record_crash_report(
+            std::slice::from_ref(&crash_log),
+            std::slice::from_ref(&app_log),
+            "2026-11-23 00:00:00 UTC",
+            "main",
+            "src/lib.rs:42:5",
+            "panic while holding LOG_STATE",
+            report,
+        );
+        drop(held_state);
+
+        assert_eq!(std::fs::read_to_string(&crash_log).unwrap(), report);
+        let app_written = std::fs::read_to_string(&app_log).unwrap();
+        assert!(app_written.contains("[CRITICAL_PANIC]"));
+        assert!(app_written.contains("panic while holding LOG_STATE"));
     }
 }
 

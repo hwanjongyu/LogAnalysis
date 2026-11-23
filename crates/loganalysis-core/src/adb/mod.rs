@@ -49,7 +49,7 @@ pub fn resolve_adb_path() -> PathBuf {
         let p = PathBuf::from(android_home)
             .join("platform-tools")
             .join(exe_name);
-        if p.exists() {
+        if p.is_file() {
             return p;
         }
     }
@@ -59,7 +59,7 @@ pub fn resolve_adb_path() -> PathBuf {
         let p = PathBuf::from(sdk_root)
             .join("platform-tools")
             .join(exe_name);
-        if p.exists() {
+        if p.is_file() {
             return p;
         }
     }
@@ -80,7 +80,7 @@ pub fn resolve_adb_path() -> PathBuf {
             "Library/Android/sdk/platform-tools",
         ] {
             let p = home_path.join(sub).join(exe_name);
-            if p.exists() {
+            if p.is_file() {
                 return p;
             }
         }
@@ -94,7 +94,7 @@ pub fn resolve_adb_path() -> PathBuf {
         "/opt/android-studio/bin/adb",
     ] {
         let p = PathBuf::from(standard_path);
-        if p.exists() {
+        if p.is_file() {
             return p;
         }
     }

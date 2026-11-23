@@ -67,26 +67,42 @@ macro_rules! define_default_keybindings {
 
 define_default_keybindings!(
     ("ctrl-o", OpenFile),
+    ("cmd-o", OpenFile),
     ("ctrl-h", ToggleFilteredOnly),
+    ("cmd-h", ToggleFilteredOnly),
     ("ctrl-f", Find),
+    ("cmd-f", Find),
     ("f3", FindNext),
     ("shift-f3", FindPrev),
     ("ctrl-c", CopySelection),
+    ("cmd-c", CopySelection),
     ("ctrl-shift-f", AddFilter),
+    ("cmd-shift-f", AddFilter),
     ("ctrl-s", SaveFilters),
+    ("cmd-s", SaveFilters),
     ("ctrl-shift-s", SaveFiltersAs),
+    ("cmd-shift-s", SaveFiltersAs),
     ("ctrl-shift-o", LoadFilters),
+    ("cmd-shift-o", LoadFilters),
     ("ctrl-k", ClearLogs),
+    ("cmd-k", ClearLogs),
     ("ctrl-=", ZoomIn),
+    ("cmd-=", ZoomIn),
     ("ctrl-+", ZoomIn),
+    ("cmd-+", ZoomIn),
     ("ctrl--", ZoomOut),
+    ("cmd--", ZoomOut),
     ("ctrl-0", ResetZoom),
     ("cmd-0", ResetZoom),
     ("ctrl-space", TogglePauseStream),
     ("ctrl-t", AddFilterTab),
+    ("cmd-t", AddFilterTab),
     ("ctrl-d", DeleteFilterTab),
+    ("cmd-d", DeleteFilterTab),
     ("ctrl-r", RenameFilterTab),
+    ("cmd-r", RenameFilterTab),
     ("ctrl-shift-l", ToggleFilterPanelPosition),
+    ("cmd-shift-l", ToggleFilterPanelPosition),
     ("ctrl-p", ToggleCommandPalette),
     ("cmd-p", ToggleCommandPalette),
     ("ctrl-shift-p", ToggleCommandPalette),
@@ -106,7 +122,9 @@ define_default_keybindings!(
     ("ctrl-\\", ToggleSplitView),
     ("cmd-\\", ToggleSplitView),
     ("ctrl-alt-\\", ToggleSplitOrientation),
+    ("cmd-alt-\\", ToggleSplitOrientation),
     ("ctrl-alt-s", ToggleSyncedScroll),
+    ("cmd-alt-s", ToggleSyncedScroll),
     ("ctrl-g", ToggleColumnView),
     ("cmd-g", ToggleColumnView),
     ("ctrl-shift-m", OpenMergedLogs),
@@ -201,7 +219,7 @@ impl Render for LogAnalysisWorkspace {
         let is_csd = components::titlebar::should_render_csd(window);
         let is_floating = !window.is_maximized();
 
-        let unified_header_el = render_unified_header(self, window, cx);
+        let unified_header_el = render_unified_header(self, is_csd, cx);
         let timeline_ribbon_el =
             if should_render_timeline_ribbon(self.is_timeline_visible, self.is_zen_mode) {
                 render_timeline_sparkline(self, cx)
@@ -217,7 +235,7 @@ impl Render for LogAnalysisWorkspace {
         let palette_el = render_command_palette(self, cx);
         let bookmark_drawer_el = render_bookmark_drawer(self, cx);
         let note_modal_el = render_note_edit_modal(self, cx);
-        let resize_borders = render_window_resize_borders(window, cx);
+        let resize_borders = render_window_resize_borders(is_csd, window, cx);
 
         let content_area =
             if workspace_shows_filter_dock(self.is_zen_mode, self.is_filter_dock_visible) {
@@ -359,187 +377,292 @@ impl Render for LogAnalysisWorkspace {
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenFile, window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.prompt_open_file(Some(window), cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleFilteredOnly, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.toggle_filtered_only(cx);
             }))
             .on_action(cx.listener(|this, _: &Find, window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.toggle_search_bar(cx);
                 if this.search_ctrl.is_visible {
                     window.focus(&this.find_input.read(cx).focus_handle);
                 }
             }))
             .on_action(cx.listener(|this, _: &FindNext, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.search(true, cx);
             }))
             .on_action(cx.listener(|this, _: &FindPrev, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.search(false, cx);
             }))
             .on_action(cx.listener(|this, _: &CloseFind, _window, cx| {
                 this.close_search_bar(cx);
             }))
             .on_action(cx.listener(|this, _: &CopySelection, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.copy_selection(cx);
             }))
             .on_action(cx.listener(|this, _: &AddFilter, window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.open_add_filter_modal(cx);
                 window.focus(&this.modal_pattern_input.read(cx).focus_handle);
             }))
             .on_action(cx.listener(|this, _: &SaveFilters, window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.save_filters(Some(window), cx);
             }))
             .on_action(cx.listener(|this, _: &SaveFiltersAs, window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.prompt_save_filters(Some(window), cx);
             }))
             .on_action(cx.listener(|this, _: &LoadFilters, window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.prompt_load_filters(Some(window), cx);
             }))
-            .on_action(cx.listener(|this, _: &ClearLogs, _window, cx| {
-                if this.input_focus != InputFocusTarget::None {
+            .on_action(cx.listener(|this, _: &ClearLogs, window, cx| {
+                if this.has_blocking_modal_open() || this.has_any_text_input_focus(window, cx) {
                     return;
                 }
                 this.clear_logs(cx);
             }))
-            .on_action(cx.listener(|this, _: &AddFilterTab, _window, cx| {
-                if this.input_focus != InputFocusTarget::None {
+            .on_action(cx.listener(|this, _: &AddFilterTab, window, cx| {
+                if this.has_blocking_modal_open() || this.has_any_text_input_focus(window, cx) {
                     return;
                 }
                 this.add_filter_tab(cx);
             }))
-            .on_action(cx.listener(|this, _: &DeleteFilterTab, _window, cx| {
-                if this.input_focus != InputFocusTarget::None {
+            .on_action(cx.listener(|this, _: &DeleteFilterTab, window, cx| {
+                if this.has_blocking_modal_open() || this.has_any_text_input_focus(window, cx) {
                     return;
                 }
                 this.delete_current_tab(cx);
             }))
-            .on_action(cx.listener(|this, _: &RenameFilterTab, _window, cx| {
-                if this.input_focus != InputFocusTarget::None {
+            .on_action(cx.listener(|this, _: &RenameFilterTab, window, cx| {
+                if this.has_blocking_modal_open() || this.has_any_text_input_focus(window, cx) {
                     return;
                 }
                 this.rename_current_tab(cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleTheme, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.toggle_theme(cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleFullLineDisplay, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.toggle_full_line_display(cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleLineDetail, _window, cx| {
-                if this.filter_edit_modal.is_open
-                    || this.bookmarks.is_note_modal_open
-                    || this.is_command_palette_open
-                {
+                if this.has_blocking_modal_open() {
                     return;
                 }
                 this.toggle_line_detail(cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleAutoScroll, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.toggle_auto_scroll(cx);
             }))
             .on_action(cx.listener(|this, _: &ZoomIn, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.zoom(1.0, cx);
             }))
             .on_action(cx.listener(|this, _: &ZoomOut, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.zoom(-1.0, cx);
             }))
             .on_action(cx.listener(|this, _: &ResetZoom, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.reset_zoom(cx);
             }))
-            .on_action(cx.listener(|this, _: &TogglePauseStream, _window, cx| {
-                if this.input_focus != InputFocusTarget::None {
+            .on_action(cx.listener(|this, _: &TogglePauseStream, window, cx| {
+                if this.has_blocking_modal_open() || this.has_any_text_input_focus(window, cx) {
                     return;
                 }
                 this.toggle_pause_stream(cx);
             }))
             .on_action(
                 cx.listener(|this, _: &AddIncludeFromSelection, _window, cx| {
+                    if this.has_blocking_modal_open() {
+                        return;
+                    }
                     this.add_quick_filter_from_selection(false, cx);
                 }),
             )
             .on_action(
                 cx.listener(|this, _: &AddExcludeFromSelection, _window, cx| {
+                    if this.has_blocking_modal_open() {
+                        return;
+                    }
                     this.add_quick_filter_from_selection(true, cx);
                 }),
             )
             .on_action(
                 cx.listener(|this, _: &ToggleFilterPanelPosition, _window, cx| {
+                    if this.has_blocking_modal_open() {
+                        return;
+                    }
                     this.toggle_filter_panel_position(cx);
                 }),
             )
             .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
+                if this.filter_edit_modal.is_open || this.bookmarks.is_note_modal_open {
+                    return;
+                }
                 this.toggle_command_palette(cx);
                 if this.is_command_palette_open {
                     window.focus(&this.palette_input.read(cx).focus_handle);
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleBookmark, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.toggle_bookmark_on_selected(cx);
             }))
             .on_action(cx.listener(|this, _: &NextBookmark, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.jump_next_bookmark(cx);
             }))
             .on_action(cx.listener(|this, _: &PrevBookmark, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.jump_prev_bookmark(cx);
             }))
             .on_action(cx.listener(|this, _: &ClearPatternHistory, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.clear_pattern_history(cx);
             }))
             .on_action(cx.listener(|this, _: &ClearBookmarks, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.clear_all_bookmarks(cx);
             }))
             .on_action(cx.listener(|this, _: &ExportHtmlReport, window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.prompt_export_html_report(Some(window), cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleBookmarkDrawer, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.toggle_bookmark_drawer(cx);
             }))
             .on_action(cx.listener(|this, _: &EditBookmarkNote, window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.open_note_modal_for_selected(cx);
                 if this.bookmarks.is_note_modal_open {
                     window.focus(&this.note_input.read(cx).focus_handle);
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleEpsTimeline, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.toggle_eps_timeline(cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleZenMode, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.toggle_zen_mode(cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleSplitView, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.toggle_split_view(cx);
             }))
             .on_action(
                 cx.listener(|this, _: &ToggleSplitOrientation, _window, cx| {
+                    if this.has_blocking_modal_open() {
+                        return;
+                    }
                     this.toggle_split_orientation(cx);
                 }),
             )
             .on_action(cx.listener(|this, _: &ToggleSyncedScroll, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.toggle_synced_scroll(cx);
             }))
             .on_action(cx.listener(|this, _: &OpenSecondaryLog, window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.prompt_open_secondary_file(Some(window), cx);
             }))
             .on_action(cx.listener(|this, _: &OpenMergedLogs, window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.prompt_open_merged_files(Some(window), cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleColumnView, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.toggle_column_view(cx);
             }))
-            .on_action(cx.listener(|this, _: &ToggleFilterDock, _window, cx| {
-                if this.input_focus != InputFocusTarget::None {
+            .on_action(cx.listener(|this, _: &ToggleFilterDock, window, cx| {
+                if this.has_blocking_modal_open() || this.has_any_text_input_focus(window, cx) {
                     return;
                 }
                 this.toggle_filter_dock(cx);
             }))
-            .on_action(cx.listener(|this, _: &ToggleFacetsBar, _window, cx| {
-                if this.input_focus != InputFocusTarget::None {
+            .on_action(cx.listener(|this, _: &ToggleFacetsBar, window, cx| {
+                if this.has_blocking_modal_open() || this.has_any_text_input_focus(window, cx) {
                     return;
                 }
                 this.toggle_facets_bar(cx);
             }))
-            .on_action(cx.listener(|this, _: &StartAdb, _window, cx| {
-                if this.input_focus != InputFocusTarget::None {
+            .on_action(cx.listener(|this, _: &StartAdb, window, cx| {
+                if this.has_blocking_modal_open() || this.has_any_text_input_focus(window, cx) {
                     return;
                 }
                 if this.adb.is_streaming {
@@ -549,9 +672,15 @@ impl Render for LogAnalysisWorkspace {
                 }
             }))
             .on_action(cx.listener(|this, _: &StopAdb, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.stop_adb_stream(cx);
             }))
             .on_action(cx.listener(|this, _: &RefreshAdbDevices, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
                 this.refresh_adb_devices(cx);
             }))
             .relative()
@@ -687,14 +816,7 @@ pub fn detect_initial_window_decorations() -> Option<WindowDecorations> {
 
     #[cfg(target_os = "linux")]
     {
-        let is_wayland = std::env::var_os("WAYLAND_DISPLAY")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-            || std::env::var("XDG_SESSION_TYPE")
-                .map(|v| v.eq_ignore_ascii_case("wayland"))
-                .unwrap_or(false);
-
-        if is_wayland {
+        if dialogs::is_wayland_session() {
             Some(WindowDecorations::Client)
         } else {
             None
@@ -870,5 +992,42 @@ mod tests {
             Some(OsStr::new("1")),
             Some(OsStr::new("@im=fcitx"))
         ));
+    }
+
+    #[test]
+    fn test_default_keybinding_specs_macos_cmd_parity() {
+        use super::actions::*;
+        use super::default_keybinding_specs;
+        use gpui::Action;
+
+        let specs = default_keybinding_specs();
+        let expected_cmd_bindings = [
+            ("cmd-o", Action::name(&OpenFile)),
+            ("cmd-h", Action::name(&ToggleFilteredOnly)),
+            ("cmd-f", Action::name(&Find)),
+            ("cmd-c", Action::name(&CopySelection)),
+            ("cmd-shift-f", Action::name(&AddFilter)),
+            ("cmd-s", Action::name(&SaveFilters)),
+            ("cmd-shift-s", Action::name(&SaveFiltersAs)),
+            ("cmd-shift-o", Action::name(&LoadFilters)),
+            ("cmd-k", Action::name(&ClearLogs)),
+            ("cmd-=", Action::name(&ZoomIn)),
+            ("cmd-+", Action::name(&ZoomIn)),
+            ("cmd--", Action::name(&ZoomOut)),
+            ("cmd-t", Action::name(&AddFilterTab)),
+            ("cmd-d", Action::name(&DeleteFilterTab)),
+            ("cmd-r", Action::name(&RenameFilterTab)),
+            ("cmd-shift-l", Action::name(&ToggleFilterPanelPosition)),
+            ("cmd-alt-\\", Action::name(&ToggleSplitOrientation)),
+            ("cmd-alt-s", Action::name(&ToggleSyncedScroll)),
+        ];
+
+        for pair in expected_cmd_bindings {
+            assert!(
+                specs.contains(&pair),
+                "Missing macOS keybinding parity spec: {:?}",
+                pair
+            );
+        }
     }
 }

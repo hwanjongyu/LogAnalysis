@@ -274,6 +274,16 @@ pub(crate) fn resolve_modal_key_layer(
     }
 }
 
+/// Pure helper returning `true` when any blocking modal dialog (`FilterEditModal`,
+/// `NoteEditModal`, or `CommandPalette`) is open.
+pub(crate) fn is_blocking_modal_open(
+    is_filter_modal_open: bool,
+    is_note_modal_open: bool,
+    is_command_palette_open: bool,
+) -> bool {
+    is_filter_modal_open || is_note_modal_open || is_command_palette_open
+}
+
 impl LogAnalysisWorkspace {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let default_tab = FilterTabData {
@@ -867,6 +877,16 @@ impl LogAnalysisWorkspace {
                 }
             }
         }
+    }
+
+    /// Returns `true` when any blocking modal dialog (`filter_edit_modal`, `note_modal`, or
+    /// `command_palette`) is currently open.
+    pub(crate) fn has_blocking_modal_open(&self) -> bool {
+        is_blocking_modal_open(
+            self.filter_edit_modal.is_open,
+            self.bookmarks.is_note_modal_open,
+            self.is_command_palette_open,
+        )
     }
 
     /// Returns `true` when any workspace `TextInput` currently holds window focus.
@@ -2279,5 +2299,23 @@ mod tests {
             resolve_modal_key_layer(true, true, true, true),
             ModalKeyLayer::FilterEditModal
         );
+    }
+
+    #[test]
+    fn test_is_blocking_modal_open_combinations() {
+        use super::is_blocking_modal_open;
+
+        for filter_open in [false, true] {
+            for note_open in [false, true] {
+                for palette_open in [false, true] {
+                    let expected = filter_open || note_open || palette_open;
+                    assert_eq!(
+                        is_blocking_modal_open(filter_open, note_open, palette_open),
+                        expected,
+                        "mismatch for ({filter_open}, {note_open}, {palette_open})"
+                    );
+                }
+            }
+        }
     }
 }

@@ -396,13 +396,40 @@ function applyFilters() {{
     }});
 }}
 
+function execCommandCopy(text) {{
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try {{
+        ok = document.execCommand('copy');
+    }} catch (_e) {{
+        ok = false;
+    }}
+    document.body.removeChild(ta);
+    return ok;
+}}
+
 function copyRow(btn) {{
     const text = btn.closest('tr').querySelector('.log-text').textContent;
-    navigator.clipboard.writeText(text).then(() => {{
-        const orig = btn.textContent;
+    const onCopied = () => {{
+        clearTimeout(btn._copyTimer);
         btn.textContent = '✓ Copied';
-        setTimeout(() => {{ btn.textContent = orig; }}, 1500);
-    }});
+        btn._copyTimer = setTimeout(() => {{ btn.textContent = '📋 Copy'; }}, 1500);
+    }};
+    if (navigator.clipboard && navigator.clipboard.writeText) {{
+        navigator.clipboard.writeText(text).then(onCopied).catch(() => {{
+            if (execCommandCopy(text)) {{
+                onCopied();
+            }}
+        }});
+    }} else if (execCommandCopy(text)) {{
+        onCopied();
+    }}
 }}
 </script>
 </body>
@@ -569,5 +596,28 @@ mod tests {
         assert!(html.contains("setSeverityFilter('match', this)"));
         assert!(html.contains("data-severity=\"match\""));
         assert!(html.contains("data-severity=\"info\""));
+    }
+
+    #[test]
+    fn test_html_report_copy_row_has_exec_command_fallback_and_constant_label_restore() {
+        let options = HtmlReportOptions {
+            file_name: "copy.log".into(),
+            total_lines: 1,
+            bookmarks: vec![Bookmark {
+                source_idx: 0,
+                line_number: 1,
+                text: "sample log line".into(),
+                note: None,
+                severity: LineSeverity::Normal,
+                created_at_epoch: 1_793_721_600,
+            }],
+        };
+
+        let html = generate_html_report(&options);
+        assert!(html.contains("function execCommandCopy(text)"));
+        assert!(html.contains("document.execCommand('copy')"));
+        assert!(html.contains("clearTimeout(btn._copyTimer)"));
+        assert!(html.contains("btn.textContent = '📋 Copy'"));
+        assert!(!html.contains("const orig = btn.textContent"));
     }
 }

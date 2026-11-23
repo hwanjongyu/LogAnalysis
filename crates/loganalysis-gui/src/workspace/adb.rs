@@ -5,7 +5,6 @@ use crossbeam_channel::{bounded, TryRecvError};
 use gpui::*;
 use loganalysis_core::*;
 
-use crate::types::InputFocusTarget;
 use super::LogAnalysisWorkspace;
 
 #[derive(Clone)]
@@ -117,6 +116,8 @@ impl LogAnalysisWorkspace {
 
     /// Scans for connected ADB devices asynchronously with rich metadata
     pub fn refresh_adb_devices(&mut self, cx: &mut Context<Self>) {
+        self.adb.scan_gen = self.adb.scan_gen.wrapping_add(1);
+        let scan_gen = self.adb.scan_gen;
         self.adb.is_scanning = true;
         self.status_text = "Scanning ADB devices...".into();
         cx.notify();
@@ -131,6 +132,9 @@ impl LogAnalysisWorkspace {
                     .await;
 
                 let _ = this.update(&mut async_cx, |workspace, cx| {
+                    if workspace.adb.scan_gen != scan_gen {
+                        return;
+                    }
                     workspace.adb.is_scanning = false;
                     match res {
                         Ok(devices) => {
@@ -572,9 +576,6 @@ impl LogAnalysisWorkspace {
 
     /// Toggles ADB stream pause and flushes buffered chunks when resumed
     pub fn toggle_pause_stream(&mut self, cx: &mut Context<Self>) {
-        if self.input_focus != InputFocusTarget::None {
-            return;
-        }
         if self.adb.is_streaming {
             self.adb.is_paused = !self.adb.is_paused;
             if !self.adb.is_paused {

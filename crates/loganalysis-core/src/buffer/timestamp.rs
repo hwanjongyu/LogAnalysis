@@ -371,8 +371,18 @@ fn day_of_year(month: u32, day: u32) -> u32 {
 }
 
 #[inline]
-fn is_leap_year_u64(year: u64) -> bool {
-    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
+fn civil_from_days(days_since_epoch: i128) -> (i128, u32, u32) {
+    let z = days_since_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = (yoe as i128) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = y + if m <= 2 { 1 } else { 0 };
+    (year, m as u32, d as u32)
 }
 
 /// Formats epoch seconds into a human-readable UTC timestamp string (`YYYY-MM-DD HH:MM:SS UTC`).
@@ -380,42 +390,9 @@ pub fn format_epoch_utc(secs: u64) -> String {
     let s = secs % 60;
     let m = (secs / 60) % 60;
     let h = (secs / 3600) % 24;
-    let mut days = secs / 86400;
+    let days = (secs / 86_400) as i128;
 
-    let mut year: u64 = 1970;
-    loop {
-        let days_in_year = if is_leap_year_u64(year) { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-
-    let leap = is_leap_year_u64(year);
-    let month_days = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut month = 1u64;
-    for &md in &month_days {
-        if days < md {
-            break;
-        }
-        days -= md;
-        month += 1;
-    }
-    let day = days + 1;
+    let (year, month, day) = civil_from_days(days);
 
     format!("{year:04}-{month:02}-{day:02} {h:02}:{m:02}:{s:02} UTC")
 }
@@ -694,5 +671,24 @@ mod tests {
         assert_eq!(normalize_month_day_rollover(ts_jan01, anchor_oct20), ts_jan01);
         assert_eq!(normalize_month_day_rollover(ts_jan06, anchor_oct20), ts_jan06);
         assert_eq!(normalize_month_day_rollover(ts_jan15, anchor_oct20), ts_jan15);
+    }
+
+    #[test]
+    fn test_format_epoch_utc_o1_boundaries_and_u64_max() {
+        assert_eq!(format_epoch_utc(0), "1970-01-01 00:00:00 UTC");
+
+        let feb29_2024 = (days_since_epoch(2024, 2, 29) as u64) * 86_400 + 23 * 3600 + 59 * 60 + 59;
+        assert_eq!(format_epoch_utc(feb29_2024), "2024-02-29 23:59:59 UTC");
+
+        let nov23_2026 = (days_since_epoch(2026, 11, 23) as u64) * 86_400 + 17 * 3600 + 2 * 60 + 51;
+        assert_eq!(format_epoch_utc(nov23_2026), "2026-11-23 17:02:51 UTC");
+
+        let mar01_2100 = (days_since_epoch(2100, 3, 1) as u64) * 86_400;
+        assert_eq!(format_epoch_utc(mar01_2100), "2100-03-01 00:00:00 UTC");
+
+        let feb29_2400 = (days_since_epoch(2400, 2, 29) as u64) * 86_400;
+        assert_eq!(format_epoch_utc(feb29_2400), "2400-02-29 00:00:00 UTC");
+
+        assert_eq!(format_epoch_utc(u64::MAX), "584554051223-11-09 07:00:15 UTC");
     }
 }

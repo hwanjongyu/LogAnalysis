@@ -18,7 +18,11 @@ pub fn render_find_bar(
             .id("floating-find-widget")
             .occlude()
             .absolute()
-            .top(px(8.0))
+            .top(px(if workspace.split_view.is_split_view {
+                8.0 + 26.0
+            } else {
+                8.0
+            }))
             .right(px(20.0))
             .bg(theme.bg_card)
             .border_1()
@@ -87,7 +91,7 @@ pub fn render_find_bar(
                         .text_color(if is_zero {
                             theme.error_red
                         } else {
-                            theme.accent
+                            theme.accent_muted_fg
                         })
                         .text_size(px(10.0))
                         .font_family("monospace")
@@ -185,7 +189,7 @@ pub fn render_find_bar(
                     .py(px(2.0))
                     .rounded_xs()
                     .bg(theme.accent)
-                    .hover(move |s| s.bg(theme.accent_muted).text_color(theme.accent))
+                    .hover(move |s| s.bg(theme.accent_hover))
                     .text_color(rgb(0xffffff))
                     .text_size(px(11.0))
                     .cursor_pointer()
@@ -221,7 +225,6 @@ pub fn is_find_status_error(status: &str) -> bool {
         || lower.contains("not found")
         || lower.contains("invalid")
         || lower.contains("error")
-        || lower.contains("0 matches")
 }
 
 #[cfg(test)]
@@ -233,6 +236,8 @@ mod tests {
         assert!(!is_find_status_error("Line 10"));
         assert!(!is_find_status_error("Line 20"));
         assert!(!is_find_status_error("Line 100"));
+        assert!(!is_find_status_error("10 matches"));
+        assert!(!is_find_status_error("100 matches"));
         assert!(!is_find_status_error("Searching..."));
 
         assert!(is_find_status_error("0 matches"));

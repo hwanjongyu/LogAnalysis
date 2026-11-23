@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag (e.g. v0.1.2)'
+        description: 'Release Tag (e.g. v0.2.5)'
         required: true
-        default: 'v0.1.2'
+        default: 'v0.2.5'
 
 permissions:
   contents: write
@@ -167,7 +167,6 @@ jobs:
   publish-release:
     name: Publish Release & SHA256 Checksums
     needs: [build-linux, build-macos, build-windows]
-    if: always() && !cancelled() && (needs.build-linux.result == 'success' || needs.build-macos.result == 'success' || needs.build-windows.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

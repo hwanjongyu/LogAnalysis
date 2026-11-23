@@ -83,6 +83,9 @@ pub fn render_log_viewport(
         })
 }
 
+/// Height offset of the 25px split-pane header plus its 1px bottom border.
+const SPLIT_PANE_HEADER_OFFSET_PX: f32 = 26.0;
+
 /// Calculates the dynamic vertical position of the floating selection action bar
 /// to prevent collision with the Find widget (top: 8px) and Forensic Facets bar (h: 28px).
 pub fn calculate_selection_bar_top(is_search_visible: bool, is_facets_visible: bool) -> Pixels {
@@ -95,6 +98,21 @@ pub fn calculate_selection_bar_top(is_search_visible: bool, is_facets_visible: b
     }
 }
 
+/// Calculates the vertical position of the floating selection action bar accounting for
+/// the split-pane header when Split View is active.
+pub fn calculate_selection_bar_top_with_split(
+    is_search_visible: bool,
+    is_facets_visible: bool,
+    is_split_view: bool,
+) -> Pixels {
+    let base: f32 = calculate_selection_bar_top(is_search_visible, is_facets_visible).into();
+    if is_split_view {
+        px(base + SPLIT_PANE_HEADER_OFFSET_PX)
+    } else {
+        px(base)
+    }
+}
+
 /// Renders the contextual floating selection mini-bar when a log row is selected
 pub fn render_selection_action_bar(
     workspace: &LogAnalysisWorkspace,
@@ -104,7 +122,11 @@ pub fn render_selection_action_bar(
     let theme = workspace.theme;
 
     // Smart vertical positioning to avoid collisions with Find bar (main_content_wrapper sits below facets bar)
-    let top_pos = calculate_selection_bar_top(workspace.search_ctrl.is_visible, false);
+    let top_pos = calculate_selection_bar_top_with_split(
+        workspace.search_ctrl.is_visible,
+        false,
+        workspace.split_view.is_split_view,
+    );
 
     // Extract human-friendly line index label (1-based)
     let line_label = if workspace.split_view.is_split_view && active_sel.is_secondary_pane {
@@ -141,7 +163,7 @@ pub fn render_selection_action_bar(
                     .text_size(px(10.0))
                     .font_weight(FontWeight::BOLD)
                     .font_family("monospace")
-                    .text_color(theme.accent)
+                    .text_color(theme.accent_muted_fg)
                     .child(line_label),
             )
             // Vertical Divider
@@ -163,7 +185,7 @@ pub fn render_selection_action_bar(
                     .py(px(2.5))
                     .rounded_sm()
                     .when(workspace.is_line_detail_open, |s| {
-                        s.bg(theme.accent_muted).text_color(theme.accent)
+                        s.bg(theme.accent_muted).text_color(theme.accent_muted_fg)
                     })
                     .when(!workspace.is_line_detail_open, |s| {
                         s.text_color(theme.text_primary)
@@ -306,7 +328,7 @@ fn render_pane_container(
     };
 
     let (badge_bg, badge_fg) = if is_active_pane {
-        (theme.accent_muted, theme.accent)
+        (theme.accent_muted, theme.accent_muted_fg)
     } else {
         (theme.bg_badge, theme.text_muted)
     };
@@ -478,7 +500,7 @@ fn render_vertical_splitter(
                     theme.bg_badge
                 })
                 .text_color(if is_synced {
-                    theme.accent
+                    theme.accent_muted_fg
                 } else {
                     theme.text_muted
                 })
@@ -574,7 +596,7 @@ fn render_horizontal_splitter(
                             theme.bg_badge
                         })
                         .text_color(if is_synced {
-                            theme.accent
+                            theme.accent_muted_fg
                         } else {
                             theme.text_muted
                         })
@@ -839,7 +861,8 @@ pub struct HScrollRenderSnapshot {
 /// Formatted payload produced by [`format_line_detail_text`] for the Line Detail inspector.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LineDetailFormatted {
-    pub display_text: String,
+    pub display_text: SharedString,
+    pub char_count: usize,
     pub has_json: bool,
     pub is_truncated_for_render: bool,
 }
@@ -1022,6 +1045,7 @@ pub fn format_line_detail_text(
     max_render_bytes: usize,
 ) -> LineDetailFormatted {
     let clean_raw = raw.trim_end_matches(['\r', '\n']);
+    let char_count = clean_raw.chars().count();
 
     let mut found_json: Option<(usize, usize, serde_json::Value)> = None;
     if clean_raw.len() <= LINE_DETAIL_JSON_PARSE_MAX_BYTES {
@@ -1084,7 +1108,8 @@ pub fn format_line_detail_text(
     };
 
     LineDetailFormatted {
-        display_text,
+        display_text: SharedString::from(display_text),
+        char_count,
         has_json,
         is_truncated_for_render,
     }
@@ -1224,7 +1249,7 @@ fn render_line_detail_panel(
                         .child("📄 Line Detail"),
                 )
                 .when_some(active_opt.as_ref(), |s, active| {
-                    let char_count = active.line_text.as_ref().chars().count();
+                    let char_count = formatted_opt.as_ref().map_or(0, |f| f.char_count);
                     let is_truncated = formatted_opt
                         .as_ref()
                         .is_some_and(|f| f.is_truncated_for_render);
@@ -1257,7 +1282,7 @@ fn render_line_detail_panel(
                             .font_family("monospace")
                             .text_size(px(10.0))
                             .font_weight(FontWeight::BOLD)
-                            .text_color(theme.accent)
+                            .text_color(theme.accent_muted_fg)
                             .child(line_badge),
                     )
                     .child(
@@ -1276,7 +1301,7 @@ fn render_line_detail_panel(
                                 .bg(theme.bg_badge)
                                 .text_size(px(9.5))
                                 .font_weight(FontWeight::BOLD)
-                                .text_color(theme.warning_amber)
+                                .text_color(theme.warning_text)
                                 .child("truncated"),
                         )
                     })
@@ -1332,7 +1357,7 @@ fn render_line_detail_panel(
                             .text_size(px(10.5))
                             .font_weight(FontWeight::SEMIBOLD)
                             .when(is_json_pretty, |b| {
-                                b.bg(theme.accent_muted).text_color(theme.accent)
+                                b.bg(theme.accent_muted).text_color(theme.accent_muted_fg)
                             })
                             .when(!is_json_pretty, |b| {
                                 b.bg(theme.bg_card).text_color(theme.text_muted)
@@ -1410,7 +1435,7 @@ fn render_line_detail_panel(
                     .line_height(px(f32::from(workspace.font_size) * 1.45))
                     .text_color(theme.text_primary)
                     .child(render_highlighted_text(
-                        SharedString::from(formatted.display_text),
+                        formatted.display_text.clone(),
                         &workspace.search_ctrl.cached_matcher,
                         highlight_style,
                     )),
@@ -1448,7 +1473,11 @@ fn render_line_detail_panel(
 }
 
 /// Column Header Bar for Structured Column Grid View
-fn render_column_header(theme: crate::theme::Theme, scroll_x: f32) -> impl IntoElement {
+fn render_column_header(
+    theme: crate::theme::Theme,
+    scroll_x: f32,
+    is_merged: bool,
+) -> impl IntoElement {
     div()
         .h_full()
         .min_w_full()
@@ -1473,6 +1502,21 @@ fn render_column_header(theme: crate::theme::Theme, scroll_x: f32) -> impl IntoE
                 .justify_end()
                 .child("Line"),
         )
+        // Merged Source Header (76px, only in Merged Logs mode)
+        .when(is_merged, |s| {
+            s.child(
+                div()
+                    .w(px(76.0))
+                    .h_full()
+                    .flex_shrink_0()
+                    .px(px(4.0))
+                    .border_r_1()
+                    .border_color(theme.border_subtle)
+                    .flex()
+                    .items_center()
+                    .child("Source"),
+            )
+        })
         // Time Header (135px)
         .child(
             div()
@@ -1692,10 +1736,8 @@ fn render_log_list(
                     } else {
                         theme.border_subtle
                     })
-                    .text_color(if is_selected {
-                        theme.accent
-                    } else if is_bookmarked {
-                        rgb(0x3b82f6)
+                    .text_color(if is_selected || is_bookmarked {
+                        theme.accent_muted_fg
                     } else {
                         theme.text_gutter
                     })
@@ -1773,13 +1815,18 @@ fn render_log_list(
                     let (badge_bg, badge_fg) = badge_colors[(s_id as usize) % badge_colors.len()];
                     row_el = row_el.child(
                         div()
+                            .w(px(76.0))
                             .h_full()
                             .flex_shrink_0()
+                            .px(px(4.0))
+                            .border_r_1()
+                            .border_color(row_theme.border_subtle)
                             .flex()
                             .items_center()
-                            .px(px(3.0))
+                            .overflow_hidden()
                             .child(
                                 div()
+                                    .max_w_full()
                                     .px(px(4.0))
                                     .py(px(1.0))
                                     .rounded_xs()
@@ -1787,6 +1834,9 @@ fn render_log_list(
                                     .text_color(badge_fg)
                                     .text_size(px(10.0))
                                     .font_weight(FontWeight::BOLD)
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
                                     .child(SharedString::new(s_name)),
                             ),
                     );
@@ -1831,6 +1881,8 @@ fn render_log_list(
                                     .border_color(row_theme.border_subtle)
                                     .flex()
                                     .items_center()
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
                                     .text_size(px(11.0))
                                     .text_color(row_theme.text_muted)
                                     .child(SharedString::new(time_str)),
@@ -1870,6 +1922,8 @@ fn render_log_list(
                                     .border_color(row_theme.border_subtle)
                                     .flex()
                                     .items_center()
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
                                     .text_size(px(11.0))
                                     .font_family("monospace")
                                     .text_color(row_theme.text_muted)
@@ -2225,6 +2279,17 @@ fn render_log_list(
         .flex_col()
         .overflow_hidden()
         .when(is_column_view, |s| {
+            let is_merged = if is_primary {
+                matches!(
+                    workspace.log_source.as_deref(),
+                    Some(loganalysis_core::ActiveLogSource::Merged(_))
+                )
+            } else {
+                matches!(
+                    workspace.split_view.secondary_log_source.as_deref(),
+                    Some(loganalysis_core::ActiveLogSource::Merged(_))
+                )
+            };
             s.child(
                 div()
                     .w_full()
@@ -2243,6 +2308,7 @@ fn render_log_list(
                             .child(render_column_header(
                                 theme,
                                 rendered_snapshot.clamped_scroll_x,
+                                is_merged,
                             )),
                     )
                     .child(
@@ -2323,7 +2389,7 @@ fn render_secondary_empty_state(
                                 .py(px(8.0))
                                 .rounded_md()
                                 .bg(theme.accent)
-                                .hover(move |s| s.bg(theme.btn_hover))
+                                .hover(move |s| s.bg(theme.accent_hover))
                                 .text_color(rgb(0xffffff))
                                 .text_size(px(12.0))
                                 .font_weight(FontWeight::SEMIBOLD)
@@ -2376,7 +2442,8 @@ fn render_onboarding_empty_state(
         .p(px(24.0))
         .child(
             div()
-                .w(px(860.0))
+                .w_full()
+                .max_w(px(860.0))
                 .flex()
                 .flex_col()
                 .items_center()
@@ -2515,7 +2582,7 @@ fn render_onboarding_empty_state(
                                                 .py(px(7.5))
                                                 .rounded_md()
                                                 .bg(theme.accent)
-                                                .hover(move |s| s.bg(theme.btn_hover))
+                                                .hover(move |s| s.bg(theme.accent_hover))
                                                 .text_color(rgb(0xffffff))
                                                 .text_size(px(11.5))
                                                 .font_weight(FontWeight::SEMIBOLD)
@@ -2618,7 +2685,7 @@ fn render_onboarding_empty_state(
                                                 .py(px(7.5))
                                                 .rounded_md()
                                                 .bg(theme.accent)
-                                                .hover(move |s| s.bg(theme.btn_hover))
+                                                .hover(move |s| s.bg(theme.accent_hover))
                                                 .text_color(rgb(0xffffff))
                                                 .text_size(px(11.5))
                                                 .font_weight(FontWeight::SEMIBOLD)
@@ -2755,7 +2822,7 @@ fn render_onboarding_empty_state(
                                                                     .child(
                                                                         div()
                                                                             .text_size(px(10.0))
-                                                                            .text_color(if is_ready { theme.success_green } else { theme.warning_amber })
+                                                                            .text_color(if is_ready { theme.success_green } else { theme.warning_text })
                                                                             .child(if is_ready { "Ready" } else { "Unauthorized" }),
                                                                     ),
                                                             )
@@ -2781,7 +2848,7 @@ fn render_onboarding_empty_state(
                                                                 div()
                                                                     .text_size(px(11.0))
                                                                     .font_weight(FontWeight::MEDIUM)
-                                                                    .text_color(theme.warning_amber)
+                                                                    .text_color(theme.warning_text)
                                                                     .child("No Android devices detected"),
                                                             )
                                                             .child(
@@ -2802,12 +2869,12 @@ fn render_onboarding_empty_state(
                                                 .bg(if has_devices { theme.success_green } else { theme.bg_card })
                                                 .hover(move |s| {
                                                     if has_devices {
-                                                        s.bg(rgb(0x16a34a))
+                                                        s.bg(theme.success_hover)
                                                     } else {
                                                         s.bg(theme.btn_hover)
                                                     }
                                                 })
-                                                .text_color(if has_devices { rgb(0xffffff) } else { theme.text_muted })
+                                                .text_color(if has_devices { theme.on_success } else { theme.text_muted })
                                                 .text_size(px(11.5))
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .cursor_pointer()
@@ -3318,7 +3385,8 @@ mod tests {
     fn test_format_line_detail_text_and_json_detection() {
         // 1. Plain text preserves body and strips trailing \r\n
         let plain = format_line_detail_text("11-06 18:00:00.000 I Tag: hello\r\n", true, 4096);
-        assert_eq!(plain.display_text, "11-06 18:00:00.000 I Tag: hello");
+        assert_eq!(plain.display_text.as_ref(), "11-06 18:00:00.000 I Tag: hello");
+        assert_eq!(plain.char_count, "11-06 18:00:00.000 I Tag: hello".chars().count());
         assert!(!plain.has_json);
         assert!(!plain.is_truncated_for_render);
 
@@ -3337,7 +3405,8 @@ mod tests {
         ] {
             let res = format_line_detail_text(fp, true, 4096);
             assert!(!res.has_json, "Must reject false positive JSON in '{fp}'");
-            assert_eq!(res.display_text, fp);
+            assert_eq!(res.display_text.as_ref(), fp);
+            assert_eq!(res.char_count, fp.chars().count());
         }
 
         // 3. Pure JSON object & array formatting
@@ -3348,7 +3417,7 @@ mod tests {
 
         let pure_raw = format_line_detail_text("{\"b\":2,\"a\":1}\n", false, 4096);
         assert!(pure_raw.has_json);
-        assert_eq!(pure_raw.display_text, "{\"b\":2,\"a\":1}");
+        assert_eq!(pure_raw.display_text.as_ref(), "{\"b\":2,\"a\":1}");
 
         let pure_arr = format_line_detail_text("[{\"id\":1},{\"id\":2}]\r\n", true, 4096);
         assert!(pure_arr.has_json);
@@ -3358,7 +3427,7 @@ mod tests {
 
         let pure_arr_raw = format_line_detail_text("[10,20,30]\n", false, 4096);
         assert!(pure_arr_raw.has_json);
-        assert_eq!(pure_arr_raw.display_text, "[10,20,30]");
+        assert_eq!(pure_arr_raw.display_text.as_ref(), "[10,20,30]");
 
         // 4. Logcat line with >= 8 bracketed tags before JSON + trailing " (12ms)" suffix
         let complex = "11-06 18:00:00.123 100 100 I Net: [1] [2] [3] [4] [5] [6] [7] [8] [9] payload={\"status\":200,\"ok\":true} (12ms)\n";
@@ -3461,5 +3530,21 @@ mod tests {
 
         assert!(build_heatmap_ticks(Some(&heatmap), 0.0).is_empty());
         assert_eq!(build_heatmap_ticks(Some(&heatmap), 400.0).len(), 2);
+    }
+
+    #[test]
+    fn test_calculate_selection_bar_top_with_split_offset() {
+        use super::{calculate_selection_bar_top_with_split, SPLIT_PANE_HEADER_OFFSET_PX};
+
+        assert_eq!(calculate_selection_bar_top_with_split(false, false, false), px(10.0));
+        assert_eq!(calculate_selection_bar_top_with_split(true, false, false), px(52.0));
+        assert_eq!(
+            calculate_selection_bar_top_with_split(false, false, true),
+            px(10.0 + SPLIT_PANE_HEADER_OFFSET_PX)
+        );
+        assert_eq!(
+            calculate_selection_bar_top_with_split(true, false, true),
+            px(52.0 + SPLIT_PANE_HEADER_OFFSET_PX)
+        );
     }
 }

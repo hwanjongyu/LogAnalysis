@@ -219,10 +219,8 @@ pub fn stream_log_lines<R: std::io::Read>(
             break;
         }
 
-        raw_buf.clear();
-        if !carry_buf.is_empty() {
+        if raw_buf.is_empty() && !carry_buf.is_empty() {
             raw_buf.extend_from_slice(&carry_buf);
-            carry_buf.clear();
         }
 
         let max_to_read = (MAX_STREAM_LINE_BYTES.saturating_sub(raw_buf.len())).max(1) as u64;
@@ -233,6 +231,7 @@ pub fn stream_log_lines<R: std::io::Read>(
         {
             Ok(0) => break, // Clean EOF (subprocess closed pipe or was killed)
             Ok(bytes_read) => {
+                carry_buf.clear();
                 let hit_newline = raw_buf.ends_with(b"\n");
                 let hit_read_limit = !hit_newline && bytes_read == max_to_read as usize;
 
@@ -278,6 +277,8 @@ pub fn stream_log_lines<R: std::io::Read>(
                     buffer.push(line);
                 }
 
+                raw_buf.clear();
+
                 let should_flush = buffer.len() >= 100
                     || (reader.buffer().is_empty() && !buffer.is_empty())
                     || (last_flush.elapsed() >= Duration::from_millis(16) && !buffer.is_empty());
@@ -307,13 +308,31 @@ pub fn stream_log_lines<R: std::io::Read>(
         }
     }
 
-    if !carry_buf.is_empty() {
+    if !raw_buf.is_empty() {
+        while raw_buf.ends_with(b"\r") {
+            raw_buf.pop();
+        }
+        let line = String::from_utf8_lossy(&raw_buf).to_string();
+        buffer.push(line);
+    } else if !carry_buf.is_empty() {
+        while carry_buf.ends_with(b"\r") {
+            carry_buf.pop();
+        }
         let line = String::from_utf8_lossy(&carry_buf).to_string();
         buffer.push(line);
     }
 
-    if !buffer.is_empty() && !stop_flag.load(Ordering::Relaxed) {
-        let _ = chunk_tx.send_timeout(buffer, Duration::from_millis(20));
+    if !buffer.is_empty() {
+        let mut to_send = buffer;
+        while !stop_flag.load(Ordering::Relaxed) {
+            match chunk_tx.send_timeout(to_send, Duration::from_millis(20)) {
+                Ok(()) => break,
+                Err(SendTimeoutError::Timeout(msg)) => {
+                    to_send = msg;
+                }
+                Err(SendTimeoutError::Disconnected(_)) => break,
+            }
+        }
     }
 }
 
@@ -788,5 +807,143 @@ mod tests {
                 "Zombie child PID {zombie_pid} was not reaped cleanly"
             );
         }
+    }
+
+    #[test]
+    fn test_stream_eof_immediately_after_64kib_mid_utf8_preserves_carry_bytes() {
+        let (tx, rx) = bounded(10);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+
+        // 65,535 bytes of 'A' followed by an incomplete 3-byte UTF-8 lead [0xED, 0x95]
+        // (Wait: 65,535 'A's + 0xED = 65,536 bytes; then EOF immediately after!)
+        let mut input = vec![b'A'; 65_535];
+        input.push(0xED);
+
+        let reader = BufReader::new(&input[..]);
+        stream_log_lines(reader, tx, stop_flag);
+
+        let mut all_lines = Vec::new();
+        while let Ok(batch) = rx.try_recv() {
+            all_lines.extend(batch);
+        }
+
+        assert_eq!(all_lines.len(), 2);
+        assert_eq!(all_lines[0], "A".repeat(65_535));
+        assert_eq!(all_lines[1], "\u{FFFD}");
+    }
+
+    #[test]
+    fn test_stream_eintr_mid_carry_preserves_carry_bytes() {
+        struct EintrAfterCarryReader {
+            chunk: Vec<u8>,
+            pos: usize,
+            eintr_emitted: bool,
+        }
+
+        impl Read for EintrAfterCarryReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.pos >= 65_536 && !self.eintr_emitted {
+                    self.eintr_emitted = true;
+                    return Err(io::Error::from(io::ErrorKind::Interrupted));
+                }
+                if self.pos >= self.chunk.len() {
+                    return Ok(0);
+                }
+                let avail = (self.chunk.len() - self.pos).min(buf.len());
+                buf[..avail].copy_from_slice(&self.chunk[self.pos..self.pos + avail]);
+                self.pos += avail;
+                Ok(avail)
+            }
+        }
+
+        let (tx, rx) = bounded(10);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let mut payload = vec![b'A'; 65_535];
+        payload.extend_from_slice("한\n".as_bytes());
+
+        let reader = BufReader::new(EintrAfterCarryReader {
+            chunk: payload,
+            pos: 0,
+            eintr_emitted: false,
+        });
+        stream_log_lines(reader, tx, stop_flag);
+
+        let mut all_lines = Vec::new();
+        while let Ok(batch) = rx.try_recv() {
+            all_lines.extend(batch);
+        }
+
+        assert_eq!(all_lines.len(), 2);
+        assert_eq!(all_lines[0], "A".repeat(65_535));
+        assert_eq!(all_lines[1], "한");
+    }
+
+    #[test]
+    fn test_stream_saturated_channel_eof_flush_retries_without_dropping() {
+        struct OwnedSignalingReader {
+            chunks: Vec<Vec<u8>>,
+            index: usize,
+            notify_at_index: usize,
+            signal: Arc<(Mutex<bool>, Condvar)>,
+        }
+
+        impl Read for OwnedSignalingReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.index == self.notify_at_index {
+                    let (lock, cvar) = &*self.signal;
+                    let mut ready = lock.lock().unwrap();
+                    *ready = true;
+                    cvar.notify_all();
+                }
+                if self.index >= self.chunks.len() {
+                    return Ok(0);
+                }
+                let chunk = &self.chunks[self.index];
+                let to_copy = chunk.len().min(buf.len());
+                buf[..to_copy].copy_from_slice(&chunk[..to_copy]);
+                if to_copy == chunk.len() {
+                    self.index += 1;
+                } else {
+                    self.chunks[self.index] = chunk[to_copy..].to_vec();
+                }
+                Ok(to_copy)
+            }
+        }
+
+        let (tx, rx) = bounded(1);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stop_flag_clone = Arc::clone(&stop_flag);
+        let signal = Arc::new((Mutex::new(false), Condvar::new()));
+        let signal_clone = Arc::clone(&signal);
+
+        // Chunk 0 fills the 64 KiB boundary ending mid-UTF-8, saturating `bounded(1)` on flush.
+        // Then EOF hits immediately, forcing the post-loop EOF flush into the retry loop.
+        let mut first_chunk = vec![b'A'; 65_535];
+        first_chunk.push(0xED);
+
+        let worker = thread::spawn(move || {
+            let reader = BufReader::new(OwnedSignalingReader {
+                chunks: vec![first_chunk],
+                index: 0,
+                notify_at_index: 1,
+                signal: signal_clone,
+            });
+            stream_log_lines(reader, tx, stop_flag_clone);
+        });
+
+        wait_until_ready(&signal);
+        assert!(rx.is_full(), "Channel must be saturated before EOF flush");
+
+        // Wait past a single 20ms send_timeout to prove the worker retries rather than dropping.
+        let gate = (Mutex::new(()), Condvar::new());
+        let g = gate.0.lock().unwrap();
+        let _ = gate.1.wait_timeout(g, Duration::from_millis(45)).unwrap();
+        assert!(!worker.is_finished(), "Worker must keep retrying saturated EOF flush");
+
+        let batch1 = rx.recv_timeout(Duration::from_secs(1)).expect("batch 1");
+        let batch2 = rx.recv_timeout(Duration::from_secs(1)).expect("EOF batch 2");
+        assert_eq!(batch1, vec!["A".repeat(65_535)]);
+        assert_eq!(batch2, vec!["\u{FFFD}"]);
+        worker.join().expect("worker should exit cleanly");
     }
 }

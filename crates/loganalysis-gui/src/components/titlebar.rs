@@ -48,12 +48,7 @@ pub fn should_render_csd(window: &Window) -> bool {
     #[cfg(target_os = "linux")]
     {
         // Fail-safe defense-in-depth: If running under Wayland, ensure CSD titlebar is always rendered
-        std::env::var_os("WAYLAND_DISPLAY")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-            || std::env::var("XDG_SESSION_TYPE")
-                .map(|v| v.eq_ignore_ascii_case("wayland"))
-                .unwrap_or(false)
+        crate::dialogs::is_wayland_session()
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -65,11 +60,11 @@ pub fn should_render_csd(window: &Window) -> bool {
 /// Renders CSD window controls (minimize, maximize, close) for integration into the far-right
 /// of the 38px unified header bar. Returns None if Server-Side Decorations (SSD) are active.
 pub fn render_window_controls(
-    window: &Window,
+    is_csd: bool,
     theme: Theme,
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> Option<impl IntoElement> {
-    if !should_render_csd(window) {
+    if !is_csd {
         return None;
     }
 

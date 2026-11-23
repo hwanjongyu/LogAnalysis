@@ -3,7 +3,6 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use unicode_width::UnicodeWidthStr;
 
 use super::timestamp::{
     extract_timestamp_with_kind, normalize_month_day_rollover, TimestampKind,
@@ -105,22 +104,22 @@ impl StreamLogBuffer {
         }
 
         for line in chunk {
-            let measured = line.trim_end();
-            let width = UnicodeWidthStr::width(measured);
+            let clean = trim_line_end_str(&line);
+            let width = super::measure_display_width(clean.as_bytes());
             if width > self.max_line_len {
                 self.max_line_len = width;
-                self.longest_line_text = measured.to_string();
+                self.longest_line_text = clean.trim_end().to_string();
             }
 
             if self.first_month_day_ts.is_none() {
-                if let Some(parsed) = extract_timestamp_with_kind(trim_line_end(line.as_bytes())) {
+                if let Some(parsed) = extract_timestamp_with_kind(clean.as_bytes()) {
                     if parsed.kind == TimestampKind::MonthDayTime {
                         self.first_month_day_ts = Some(parsed.timestamp.total_micros);
                     }
                 }
             }
 
-            let arc: Arc<str> = Arc::from(line);
+            let arc: Arc<str> = Arc::from(clean);
             let need_new_page = self
                 .pages
                 .back()
@@ -170,7 +169,7 @@ impl StreamLogBuffer {
 
             if !longest_was_trimmed && self.max_line_len > 0 {
                 for line in &front[self.head_offset..self.head_offset + take] {
-                    if UnicodeWidthStr::width(line.trim_end()) >= self.max_line_len {
+                    if super::measure_display_width(line.as_bytes()) >= self.max_line_len {
                         longest_was_trimmed = true;
                         break;
                     }
@@ -205,11 +204,10 @@ impl StreamLogBuffer {
         for (page_idx, page) in self.pages.iter().enumerate() {
             let start = if page_idx == 0 { self.head_offset } else { 0 };
             for line in &page[start..] {
-                let measured = line.trim_end();
-                let width = UnicodeWidthStr::width(measured);
+                let width = super::measure_display_width(line.as_bytes());
                 if width > max_len {
                     max_len = width;
-                    longest_text = measured.to_string();
+                    longest_text = line.trim_end().to_string();
                 }
             }
         }
@@ -509,5 +507,24 @@ mod tests {
         for reader in readers {
             reader.join().expect("reader thread panicked");
         }
+    }
+
+    #[test]
+    fn test_stream_log_buffer_strips_crlf_and_lf_before_storing_arc() {
+        let mut buf = StreamLogBuffer::new(16, 4);
+        assert!(buf.append_chunk(vec![
+            "line with crlf\r\n".to_string(),
+            "line with lf\n".to_string(),
+            "한글 line\r\n".to_string(),
+        ]));
+
+        assert_eq!(buf.get_line_arc(0).as_deref(), Some("line with crlf"));
+        assert_eq!(buf.get_line_arc(1).as_deref(), Some("line with lf"));
+        assert_eq!(buf.get_line_arc(2).as_deref(), Some("한글 line"));
+        assert_eq!(
+            buf.max_line_len(),
+            super::super::measure_display_width(b"line with crlf")
+        );
+        assert_eq!(buf.longest_line_text(), "line with crlf");
     }
 }

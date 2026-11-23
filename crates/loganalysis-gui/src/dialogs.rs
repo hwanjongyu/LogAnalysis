@@ -21,6 +21,8 @@ impl raw_window_handle::HasWindowHandle for CustomX11WindowHandle {
     fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
         let handle = raw_window_handle::XlibWindowHandle::new(self.0);
         let raw = raw_window_handle::RawWindowHandle::Xlib(handle);
+        // SAFETY: `self.0` holds a live non-zero X11 window ID for the duration of the synchronous
+        // `rfd::AsyncFileDialog::set_parent` handle-binding call, and `WindowHandle<'_>` borrows `&self`.
         unsafe { Ok(raw_window_handle::WindowHandle::borrow_raw(raw)) }
     }
 }
@@ -61,6 +63,8 @@ impl<W: ?Sized> raw_window_handle::HasDisplayHandle for SafeDialogParent<'_, W> 
     ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
         let handle = raw_window_handle::WindowsDisplayHandle::new();
         let raw = raw_window_handle::RawDisplayHandle::Windows(handle);
+        // SAFETY: `WindowsDisplayHandle` is a zero-field ZST with no borrowed pointers, and
+        // `DisplayHandle<'_>` is tied to `&self` for the duration of the handle-binding call.
         unsafe { Ok(raw_window_handle::DisplayHandle::borrow_raw(raw)) }
     }
 }
@@ -95,6 +99,25 @@ pub fn get_active_x11_window_id() -> Option<std::os::raw::c_ulong> {
     )
 }
 
+/// Returns `true` when running inside a Linux Wayland session (`WAYLAND_DISPLAY` is non-empty
+/// or `XDG_SESSION_TYPE` equals `"wayland"` case-insensitively).
+#[inline]
+pub(crate) fn is_wayland_session() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("WAYLAND_DISPLAY")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+            || std::env::var("XDG_SESSION_TYPE")
+                .map(|v| v.eq_ignore_ascii_case("wayland"))
+                .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 /// Safely attaches a parent window handle to an AsyncFileDialog across Linux (X11 & Wayland), macOS, and Windows.
 ///
 /// - On Linux X11, GPUI 0.2.2's `X11Window::window_handle` invokes `unimplemented!()`.
@@ -107,11 +130,7 @@ pub fn get_active_x11_window_id() -> Option<std::os::raw::c_ulong> {
 pub fn attach_dialog_parent(mut dialog: rfd::AsyncFileDialog, parent: Option<&Window>) -> rfd::AsyncFileDialog {
     #[cfg(target_os = "linux")]
     {
-        let is_wayland = std::env::var_os("WAYLAND_DISPLAY")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-
-        if is_wayland {
+        if is_wayland_session() {
             if let Some(w) = parent {
                 dialog = dialog.set_parent(w);
             }
@@ -145,10 +164,7 @@ pub fn attach_dialog_parent(mut dialog: rfd::AsyncFileDialog, parent: Option<&Wi
 pub fn is_x11_session() -> bool {
     #[cfg(target_os = "linux")]
     {
-        let is_wayland = std::env::var_os("WAYLAND_DISPLAY")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-        !is_wayland
+        !is_wayland_session()
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -336,6 +352,8 @@ mod tests {
                 let raw = RawWindowHandle::Win32(Win32WindowHandle::new(
                     NonZeroIsize::new(0x0012_3456).unwrap(),
                 ));
+                // SAFETY: Mock Win32 handle with a non-zero synthetic HWND used only in unit tests
+                // to verify `SafeDialogParent` forwards `window_handle()` without panicking.
                 unsafe { Ok(WindowHandle::borrow_raw(raw)) }
             }
         }
@@ -451,12 +469,19 @@ mod tests {
 
     #[test]
     fn test_prepare_dialog_with_parent_handles_x11_and_wayland_env_no_panic() {
-        struct WaylandRestoreGuard(Option<std::ffi::OsString>);
+        struct WaylandRestoreGuard {
+            wayland_display: Option<std::ffi::OsString>,
+            xdg_session_type: Option<std::ffi::OsString>,
+        }
         impl Drop for WaylandRestoreGuard {
             fn drop(&mut self) {
-                match &self.0 {
+                match &self.wayland_display {
                     Some(v) => std::env::set_var("WAYLAND_DISPLAY", v),
                     None => std::env::remove_var("WAYLAND_DISPLAY"),
+                }
+                match &self.xdg_session_type {
+                    Some(v) => std::env::set_var("XDG_SESSION_TYPE", v),
+                    None => std::env::remove_var("XDG_SESSION_TYPE"),
                 }
             }
         }
@@ -464,14 +489,20 @@ mod tests {
         let _lock = DIALOG_ENV_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _restore = WaylandRestoreGuard(std::env::var_os("WAYLAND_DISPLAY"));
+        let _restore = WaylandRestoreGuard {
+            wayland_display: std::env::var_os("WAYLAND_DISPLAY"),
+            xdg_session_type: std::env::var_os("XDG_SESSION_TYPE"),
+        };
 
-        // 1. X11 env (WAYLAND_DISPLAY unset): prepare_dialog_with_parent defers attachment cleanly
+        // 1. X11 env (WAYLAND_DISPLAY unset, XDG_SESSION_TYPE=x11): prepare_dialog_with_parent defers attachment cleanly
         std::env::remove_var("WAYLAND_DISPLAY");
+        std::env::set_var("XDG_SESSION_TYPE", "x11");
         if cfg!(target_os = "linux") {
             assert!(is_x11_session());
+            assert!(!is_wayland_session());
         } else {
             assert!(!is_x11_session());
+            assert!(!is_wayland_session());
         }
         let _ = prepare_dialog_with_parent(build_open_log_dialog_base(), None);
         let _ = prepare_dialog_with_parent(build_save_filters_dialog_base(), None);
@@ -481,9 +512,10 @@ mod tests {
             None,
         );
 
-        // 2. Wayland env (WAYLAND_DISPLAY set): synchronous attach branch handles None parent safely
+        // 2. Wayland env via WAYLAND_DISPLAY: synchronous attach branch handles None parent safely
         std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
         assert!(!is_x11_session());
+        assert_eq!(is_wayland_session(), cfg!(target_os = "linux"));
         let _ = prepare_dialog_with_parent(build_open_log_dialog_base(), None);
         let _ = prepare_dialog_with_parent(build_save_filters_dialog_base(), None);
         let _ = prepare_dialog_with_parent(build_load_filters_dialog_base(), None);
@@ -491,5 +523,11 @@ mod tests {
             build_export_html_report_dialog_base("incident.html"),
             None,
         );
+
+        // 3. Wayland env via XDG_SESSION_TYPE=wayland alone (WAYLAND_DISPLAY unset)
+        std::env::remove_var("WAYLAND_DISPLAY");
+        std::env::set_var("XDG_SESSION_TYPE", "wayland");
+        assert!(!is_x11_session());
+        assert_eq!(is_wayland_session(), cfg!(target_os = "linux"));
     }
 }

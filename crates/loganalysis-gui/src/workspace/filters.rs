@@ -63,6 +63,8 @@ pub fn atomic_replace_file(from: &std::path::Path, to: &std::path::Path) -> std:
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
+        // SAFETY: `from_wide` and `to_wide` are valid null-terminated UTF-16 `Vec<u16>` buffers
+        // that remain alive and unmutated across the synchronous Win32 `MoveFileExW` call.
         let res = unsafe {
             MoveFileExW(
                 from_wide.as_ptr(),

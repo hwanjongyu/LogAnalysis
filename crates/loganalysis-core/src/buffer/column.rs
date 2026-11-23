@@ -78,8 +78,8 @@ impl LogFormatParser for ThreadtimeColumnParser {
         let bytes = trimmed.as_bytes();
 
         // Check for threadtime date: MM-DD (5 chars) + space + HH:MM:SS.mmm (12 chars)
-        // Total datetime length = 18 chars (e.g. "11-06 18:00:00.123")
-        // Full ASCII digit and delimiter validation strictly guarantees trimmed.is_char_boundary(18)
+        // or threadtime,usec: MM-DD HH:MM:SS.mmmmmm (21 chars).
+        // Full ASCII digit and delimiter validation strictly guarantees trimmed.is_char_boundary(time_end)
         if bytes.len() >= 18
             && bytes[0].is_ascii_digit()
             && bytes[1].is_ascii_digit()
@@ -99,16 +99,30 @@ impl LogFormatParser for ThreadtimeColumnParser {
             && bytes[15].is_ascii_digit()
             && bytes[16].is_ascii_digit()
             && bytes[17].is_ascii_digit()
-            && trimmed.is_char_boundary(18)
         {
-            let time_part = &trimmed[..18];
-            let rest = &trimmed[18..];
+            let time_end = if bytes.len() >= 21
+                && bytes[18].is_ascii_digit()
+                && bytes[19].is_ascii_digit()
+                && bytes[20].is_ascii_digit()
+            {
+                21
+            } else {
+                18
+            };
+            if !trimmed.is_char_boundary(time_end) {
+                return None;
+            }
+            let time_part = &trimmed[..time_end];
+            let rest = &trimmed[time_end..];
             let rest_bytes = rest.as_bytes();
             let mut i = 0;
 
-            // Skip whitespace before PID
+            // Require at least one ASCII space/tab before PID
             while i < rest_bytes.len() && (rest_bytes[i] == b' ' || rest_bytes[i] == b'\t') {
                 i += 1;
+            }
+            if i == 0 {
+                return None;
             }
             let pid_start = i;
             while i < rest_bytes.len() && rest_bytes[i].is_ascii_digit() {
@@ -646,5 +660,25 @@ mod tests {
         let p2 = parse_logcat_column_line(level_only);
         assert_eq!(p2.tag, None);
         assert_eq!(p2.message, "");
+    }
+
+    #[test]
+    fn test_threadtime_usec_and_whitespace_before_pid_requirement() {
+        let usec_line = "11-06 18:00:00.123456  1000  2000 E AndroidRuntime: crash";
+        let parsed = parse_logcat_column_line(usec_line);
+        assert_eq!(parsed.time, Some("11-06 18:00:00.123456"));
+        assert_eq!(parsed.pid, Some("1000"));
+        assert_eq!(parsed.tid, Some("2000"));
+        assert_eq!(parsed.level_char, Some('E'));
+        assert_eq!(parsed.level_severity, LineSeverity::Error);
+        assert_eq!(parsed.tag, Some("AndroidRuntime"));
+        assert_eq!(parsed.message, "crash");
+
+        // Missing whitespace immediately after 18-byte or 21-byte timestamp must fail
+        let no_space_after_ms = "11-06 18:00:00.12345 1000 2000 I Tag: msg";
+        assert!(THREADTIME_COLUMN_PARSER.parse(no_space_after_ms).is_none());
+
+        let no_space_after_us = "11-06 18:00:00.123456789 1000 2000 I Tag: msg";
+        assert!(THREADTIME_COLUMN_PARSER.parse(no_space_after_us).is_none());
     }
 }

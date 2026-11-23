@@ -163,20 +163,12 @@ impl HeatmapData {
 /// falling back to raw byte keyword inspection.
 #[inline]
 pub fn detect_line_severity(raw_line: Option<&[u8]>, style: &ResolvedStyle) -> LineSeverity {
-    // 1. Check style colors first (user-defined rules have top precedence)
-    if let Some(bg) = style.bg_hex {
-        if is_error_color(bg) {
-            return LineSeverity::Error;
-        } else if is_warn_color(bg) {
-            return LineSeverity::Warning;
-        }
+    // 1. Check style colors first (user-defined rules have top precedence: Error > Warning)
+    if style.bg_hex.is_some_and(is_error_color) || style.fg_hex.is_some_and(is_error_color) {
+        return LineSeverity::Error;
     }
-    if let Some(fg) = style.fg_hex {
-        if is_error_color(fg) {
-            return LineSeverity::Error;
-        } else if is_warn_color(fg) {
-            return LineSeverity::Warning;
-        }
+    if style.bg_hex.is_some_and(is_warn_color) || style.fg_hex.is_some_and(is_warn_color) {
+        return LineSeverity::Warning;
     }
 
     // 2. High-speed raw byte heuristics (Android logcat & standard logs)
@@ -201,21 +193,42 @@ pub fn detect_line_severity(raw_line: Option<&[u8]>, style: &ResolvedStyle) -> L
 }
 
 #[inline]
+fn rgb_to_hsv(hex: u32) -> (f32, f32, f32) {
+    let r = ((hex >> 16) & 0xff) as f32 / 255.0;
+    let g = ((hex >> 8) & 0xff) as f32 / 255.0;
+    let b = (hex & 0xff) as f32 / 255.0;
+
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let delta = max - min;
+
+    let s = if max == 0.0 { 0.0 } else { delta / max };
+    let h = if delta == 0.0 {
+        0.0
+    } else {
+        let raw = if max == r {
+            ((g - b) / delta).rem_euclid(6.0)
+        } else if max == g {
+            (b - r) / delta + 2.0
+        } else {
+            (r - g) / delta + 4.0
+        };
+        (raw * 60.0).rem_euclid(360.0)
+    };
+
+    (h, s, max)
+}
+
+#[inline]
 fn is_error_color(hex: u32) -> bool {
-    let r = (hex >> 16) & 0xff;
-    let g = (hex >> 8) & 0xff;
-    let b = hex & 0xff;
-    // Dominant red component
-    r >= 170 && g <= 100 && b <= 100
+    let (h, s, v) = rgb_to_hsv(hex);
+    v > 0.0 && s >= 0.25 && (h <= 18.0 || h >= 340.0)
 }
 
 #[inline]
 fn is_warn_color(hex: u32) -> bool {
-    let r = (hex >> 16) & 0xff;
-    let g = (hex >> 8) & 0xff;
-    let b = hex & 0xff;
-    // Dominant amber/orange/yellow: high red, moderate green, low blue
-    r >= 180 && g >= 110 && b <= 90
+    let (h, s, v) = rgb_to_hsv(hex);
+    v > 0.0 && s >= 0.42 && h > 18.0 && h <= 62.0
 }
 
 #[inline]
@@ -525,5 +538,86 @@ mod tests {
             detect_line_severity(stream.get_raw_line(1), &res.visible_styles[1]),
             LineSeverity::Normal
         );
+    }
+
+    #[test]
+    fn test_hsv_palette_severity_classification_and_precedence() {
+        use crate::constants::parse_color_spec;
+
+        let error_bg_names = ["Red", "DarkRed", "DarkRose", "Salmon", "Coral"];
+        for name in error_bg_names {
+            let hex = parse_color_spec(name, true).expect(name);
+            assert!(is_error_color(hex), "BG {name} (0x{hex:06X}) must classify as Error");
+            assert!(!is_warn_color(hex), "BG {name} (0x{hex:06X}) must not classify as Warning");
+        }
+
+        let error_fg_names = ["Red", "DarkRed", "Crimson", "CoralRed", "Rose"];
+        for name in error_fg_names {
+            let hex = parse_color_spec(name, false).expect(name);
+            assert!(is_error_color(hex), "FG {name} (0x{hex:06X}) must classify as Error");
+            assert!(!is_warn_color(hex), "FG {name} (0x{hex:06X}) must not classify as Warning");
+        }
+
+        let warn_bg_names = ["Orange", "DarkOrange", "DarkAmber", "Gold", "Yellow"];
+        for name in warn_bg_names {
+            let hex = parse_color_spec(name, true).expect(name);
+            assert!(is_warn_color(hex), "BG {name} (0x{hex:06X}) must classify as Warning");
+            assert!(!is_error_color(hex), "BG {name} (0x{hex:06X}) must not classify as Error");
+        }
+
+        let warn_fg_names = ["DeepAmber", "Orange", "DarkOrange", "Amber", "WarmAmber"];
+        for name in warn_fg_names {
+            let hex = parse_color_spec(name, false).expect(name);
+            assert!(is_warn_color(hex), "FG {name} (0x{hex:06X}) must classify as Warning");
+            assert!(!is_error_color(hex), "FG {name} (0x{hex:06X}) must not classify as Error");
+        }
+
+        // Error > Warning precedence across bg_hex and fg_hex
+        let warn_bg_error_fg = ResolvedStyle {
+            bg_hex: parse_color_spec("Orange", true),
+            fg_hex: parse_color_spec("Red", false),
+            is_matched: true,
+        };
+        assert_eq!(
+            detect_line_severity(Some(b"11-06 12:00:00.000 1 1 I Tag: combo"), &warn_bg_error_fg),
+            LineSeverity::Error
+        );
+
+        let error_bg_warn_fg = ResolvedStyle {
+            bg_hex: parse_color_spec("DarkRose", true),
+            fg_hex: parse_color_spec("WarmAmber", false),
+            is_matched: true,
+        };
+        assert_eq!(
+            detect_line_severity(Some(b"11-06 12:00:00.000 1 1 I Tag: combo2"), &error_bg_warn_fg),
+            LineSeverity::Error
+        );
+
+        // Non-error / non-warn palette colors must classify as RuleMatch when matched
+        for (name, is_bg) in [
+            ("Blue", true),
+            ("Green", true),
+            ("Gray", true),
+            ("Pink", true),
+            ("Wheat", true),
+            ("Khaki", true),
+            ("HotPink", true),
+            ("Pink", false),
+            ("DeepPink", false),
+            ("Slate", false),
+        ] {
+            let hex = parse_color_spec(name, is_bg).expect(name);
+            assert!(!is_error_color(hex), "{name} (0x{hex:06X}) must not be Error");
+            assert!(!is_warn_color(hex), "{name} (0x{hex:06X}) must not be Warning");
+            let style = ResolvedStyle {
+                bg_hex: if is_bg { Some(hex) } else { None },
+                fg_hex: if is_bg { None } else { Some(hex) },
+                is_matched: true,
+            };
+            assert_eq!(
+                detect_line_severity(Some(b"11-06 12:00:00.000 1 1 I Tag: plain"), &style),
+                LineSeverity::RuleMatch
+            );
+        }
     }
 }

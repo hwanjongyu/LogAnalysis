@@ -49,9 +49,9 @@ pub fn render_timeline_sparkline(
                 .children(data.buckets.iter().enumerate().map(|(idx, bucket)| {
                     let height_px = (bucket.total_count as f32 / peak_count as f32 * 22.0).max(2.0);
                     let (bar_bg, bar_border) = if bucket.is_anomaly || bucket.error_count > 0 {
-                        (rgb(0xef4444), rgb(0xdc2626))
+                        (theme.error_red, theme.error_red)
                     } else if bucket.warn_count > 0 {
-                        (rgb(0xf59e0b), rgb(0xd97706))
+                        (theme.warning_amber, theme.warning_amber)
                     } else if bucket.total_count > 0 {
                         (theme.accent, theme.accent)
                     } else {
@@ -142,7 +142,7 @@ pub fn render_timeline_sparkline(
                             .font_family("monospace")
                             .font_weight(FontWeight::BOLD)
                             .text_size(px(10.0))
-                            .text_color(theme.accent)
+                            .text_color(theme.accent_muted_fg)
                             .child("EPS"),
                     )
                     .when(has_timestamps, |parent| {
@@ -162,10 +162,10 @@ pub fn render_timeline_sparkline(
                                         .rounded_xs()
                                         .bg(rgba(0xef444422))
                                         .border_1()
-                                        .border_color(rgb(0xef4444))
+                                        .border_color(theme.error_red)
                                         .text_size(px(10.0))
                                         .font_weight(FontWeight::BOLD)
-                                        .text_color(rgb(0xef4444))
+                                        .text_color(theme.error_red)
                                         .child("⚠ SPIKE (>3σ)"),
                                 )
                             })

@@ -108,36 +108,60 @@ pub(crate) fn get_recent_files_path() -> Option<std::path::PathBuf> {
     config_file_path("recent_files.json")
 }
 
-/// Resolves `<config dir>/loganalysis/<name>` using XDG_CONFIG_HOME, HOME, then APPDATA.
+/// Resolves `<config dir>/loganalysis/<name>` with OS-appropriate environment variable precedence.
 pub(crate) fn config_file_path(name: &str) -> Option<std::path::PathBuf> {
-    if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
-        if !config_home.is_empty() {
-            return Some(
+    config_file_path_from_env_for_os(name, cfg!(windows), |k| std::env::var(k).ok())
+}
+
+pub(crate) fn config_file_path_from_env_for_os<F>(
+    name: &str,
+    is_windows: bool,
+    get_env: F,
+) -> Option<std::path::PathBuf>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let non_empty = |key: &str| get_env(key).filter(|s| !s.is_empty());
+    if is_windows {
+        if let Some(appdata) = non_empty("APPDATA") {
+            Some(std::path::PathBuf::from(appdata).join("loganalysis").join(name))
+        } else if let Some(local_appdata) = non_empty("LOCALAPPDATA") {
+            Some(
+                std::path::PathBuf::from(local_appdata)
+                    .join("loganalysis")
+                    .join(name),
+            )
+        } else if let Some(config_home) = non_empty("XDG_CONFIG_HOME") {
+            Some(
                 std::path::PathBuf::from(config_home)
                     .join("loganalysis")
                     .join(name),
-            );
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            return Some(
+            )
+        } else {
+            non_empty("HOME").map(|home| {
                 std::path::PathBuf::from(home)
-                    .join(".config/loganalysis")
-                    .join(name),
-            );
-        }
-    }
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        if !appdata.is_empty() {
-            return Some(
-                std::path::PathBuf::from(appdata)
+                    .join(".config")
                     .join("loganalysis")
-                    .join(name),
-            );
+                    .join(name)
+            })
         }
+    } else if let Some(config_home) = non_empty("XDG_CONFIG_HOME") {
+        Some(
+            std::path::PathBuf::from(config_home)
+                .join("loganalysis")
+                .join(name),
+        )
+    } else if let Some(home) = non_empty("HOME") {
+        Some(
+            std::path::PathBuf::from(home)
+                .join(".config")
+                .join("loganalysis")
+                .join(name),
+        )
+    } else {
+        non_empty("APPDATA")
+            .map(|appdata| std::path::PathBuf::from(appdata).join("loganalysis").join(name))
     }
-    None
 }
 
 /// Loads up to 5 existing recent file paths from a JSON file at `path`.
@@ -277,5 +301,78 @@ mod tests {
         )
         .unwrap());
         assert_eq!(load_recent_files_from_path(&save_path), vec![entry]);
+    }
+
+    #[test]
+    fn test_config_file_path_from_env_for_os_precedence() {
+        use super::config_file_path_from_env_for_os;
+        use std::path::PathBuf;
+
+        // Unix: XDG_CONFIG_HOME > HOME > APPDATA
+        let p = config_file_path_from_env_for_os("recent.json", false, |k| match k {
+            "XDG_CONFIG_HOME" => Some("/xdg".into()),
+            "HOME" => Some("/home/u".into()),
+            "APPDATA" => Some("C:\\AppData".into()),
+            _ => None,
+        });
+        assert_eq!(
+            p,
+            Some(PathBuf::from("/xdg").join("loganalysis").join("recent.json"))
+        );
+
+        let p = config_file_path_from_env_for_os("recent.json", false, |k| match k {
+            "HOME" => Some("/home/u".into()),
+            "APPDATA" => Some("C:\\AppData".into()),
+            _ => None,
+        });
+        assert_eq!(
+            p,
+            Some(
+                PathBuf::from("/home/u")
+                    .join(".config")
+                    .join("loganalysis")
+                    .join("recent.json")
+            )
+        );
+
+        // Windows: APPDATA > LOCALAPPDATA > XDG_CONFIG_HOME > HOME
+        let p = config_file_path_from_env_for_os("recent.json", true, |k| match k {
+            "APPDATA" => Some("C:\\Users\\u\\AppData\\Roaming".into()),
+            "LOCALAPPDATA" => Some("C:\\Users\\u\\AppData\\Local".into()),
+            "XDG_CONFIG_HOME" => Some("/xdg".into()),
+            "HOME" => Some("/home/u".into()),
+            _ => None,
+        });
+        assert_eq!(
+            p,
+            Some(
+                PathBuf::from("C:\\Users\\u\\AppData\\Roaming")
+                    .join("loganalysis")
+                    .join("recent.json")
+            )
+        );
+
+        let p = config_file_path_from_env_for_os("recent.json", true, |k| match k {
+            "LOCALAPPDATA" => Some("C:\\Users\\u\\AppData\\Local".into()),
+            "HOME" => Some("/home/u".into()),
+            _ => None,
+        });
+        assert_eq!(
+            p,
+            Some(
+                PathBuf::from("C:\\Users\\u\\AppData\\Local")
+                    .join("loganalysis")
+                    .join("recent.json")
+            )
+        );
+
+        assert_eq!(
+            config_file_path_from_env_for_os("recent.json", false, |_| None),
+            None
+        );
+        assert_eq!(
+            config_file_path_from_env_for_os("recent.json", true, |_| None),
+            None
+        );
     }
 }

@@ -995,6 +995,8 @@ pub fn render_filter_dock(
                         .flex()
                         .items_center()
                         .gap_1()
+                        .min_w_0()
+                        .flex_1()
                         .overflow_hidden()
                         .children(workspace.filter_tabs.iter().enumerate().map(
                             |(t_idx, tab)| {
@@ -1036,6 +1038,7 @@ pub fn render_filter_dock(
                         .flex()
                         .items_center()
                         .gap_1()
+                        .flex_shrink_0()
                         .child(
                             div()
                                 .id("btn-add-tab")
@@ -1092,6 +1095,7 @@ pub fn render_filter_dock(
                         .items_center()
                         .gap_2()
                         .min_w_0()
+                        .flex_1()
                         .overflow_hidden()
                         .child(
                             div()
@@ -1143,6 +1147,7 @@ pub fn render_filter_dock(
                         .py(px(3.0))
                         .rounded_md()
                         .bg(theme.accent)
+                        .hover(move |s| s.bg(theme.accent_hover))
                         .text_color(rgb(0xffffff))
                         .text_size(px(11.0))
                         .font_weight(FontWeight::MEDIUM)
@@ -1159,10 +1164,12 @@ pub fn render_filter_dock(
                             this.open_add_filter_modal(cx);
                             window.focus(&this.modal_pattern_input.read(cx).focus_handle);
                         }))
-                        .child("+ New Rule")
-                        .child(crate::components::toolbar::render_kbd_badge_on_accent(
-                            "Ctrl+Shift+F",
-                        )),
+                        .child(if is_bottom_dock { "+ New Rule" } else { "+" })
+                        .when(is_bottom_dock, |s| {
+                            s.child(crate::components::toolbar::render_kbd_badge_on_accent(
+                                "Ctrl+Shift+F",
+                            ))
+                        }),
                 ),
         )
         // In Left Sidebar mode, display the full-width dedicated search box
@@ -1331,7 +1338,7 @@ pub fn render_filter_dock(
                                             .py(px(4.0))
                                             .rounded_md()
                                             .bg(theme.accent)
-                                            .hover(move |s| s.bg(theme.btn_hover))
+                                            .hover(move |s| s.bg(theme.accent_hover))
                                             .text_color(rgb(0xffffff))
                                             .text_size(px(11.0))
                                             .font_weight(FontWeight::MEDIUM)

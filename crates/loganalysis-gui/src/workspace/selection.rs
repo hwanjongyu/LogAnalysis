@@ -222,53 +222,23 @@ impl LogAnalysisWorkspace {
         cx.notify();
     }
 
-    /// Computes the delta time (Δt) between the selected visible row and its nearest preceding timestamped line.
+    /// Computes the delta time (Δt) between the selected visible row and its nearest preceding timestamped line
+    /// for whichever pane currently owns the active selection.
     pub fn get_selected_delta_time(&self) -> Option<(String, loganalysis_core::LatencyLevel, i64)> {
-        let selected_row = self.selection.selected_row?;
-        let filter_res = self.filter_result.as_ref()?;
-        let source = self.log_source.as_ref()?;
-
-        let curr_src_idx = *filter_res.visible_indices.get(selected_row)?;
-        let is_merged = matches!(&**source, loganalysis_core::ActiveLogSource::Merged(_));
-
-        let diff = if is_merged {
-            let t_curr_us = source.get_timestamp_micros(curr_src_idx)?;
-            let mut found_diff = None;
-            for back_step in 1..=10 {
-                if selected_row < back_step {
-                    break;
-                }
-                let prev_src_idx = *filter_res.visible_indices.get(selected_row - back_step)?;
-                if let Some(t_prev_us) = source.get_timestamp_micros(prev_src_idx) {
-                    found_diff = Some(t_curr_us.saturating_sub(t_prev_us));
-                    break;
-                }
-            }
-            found_diff?
+        let active = self.resolve_active_selected_line()?;
+        if active.is_secondary_pane {
+            compute_delta_time_for_pane(
+                &self.secondary_selection,
+                self.split_view.secondary_filter_result.as_deref(),
+                self.split_view.secondary_log_source.as_deref(),
+            )
         } else {
-            let t_curr = source
-                .get_raw_line(curr_src_idx)
-                .and_then(loganalysis_core::extract_timestamp_with_kind)?;
-            let mut found_diff = None;
-            for back_step in 1..=10 {
-                if selected_row < back_step {
-                    break;
-                }
-                let prev_src_idx = *filter_res.visible_indices.get(selected_row - back_step)?;
-                if let Some(t_prev) = source
-                    .get_raw_line(prev_src_idx)
-                    .and_then(loganalysis_core::extract_timestamp_with_kind)
-                {
-                    found_diff = Some(loganalysis_core::compute_delta_micros_typed(t_prev, t_curr));
-                    break;
-                }
-            }
-            found_diff?
-        };
-
-        let formatted = loganalysis_core::format_delta_micros(diff);
-        let latency = loganalysis_core::LatencyLevel::from_micros(diff);
-        Some((formatted, latency, diff))
+            compute_delta_time_for_pane(
+                &self.selection,
+                self.filter_result.as_deref(),
+                self.log_source.as_deref(),
+            )
+        }
     }
 
     /// Clears the active log row selection and refreshes status line
@@ -279,6 +249,60 @@ impl LogAnalysisWorkspace {
         self.refresh_status_line(cx);
         cx.notify();
     }
+}
+
+/// Computes the delta time (Δt) between the selected visible row in `sel` and its nearest
+/// preceding timestamped line within `(filter_res, source)`.
+pub(crate) fn compute_delta_time_for_pane(
+    sel: &SelectionModel,
+    filter_res: Option<&FilterResult>,
+    source: Option<&ActiveLogSource>,
+) -> Option<(String, loganalysis_core::LatencyLevel, i64)> {
+    let selected_row = sel.selected_row?;
+    let filter_res = filter_res?;
+    let source = source?;
+
+    let curr_src_idx = *filter_res.visible_indices.get(selected_row)?;
+    let is_merged = matches!(source, loganalysis_core::ActiveLogSource::Merged(_));
+
+    let diff = if is_merged {
+        let t_curr_us = source.get_timestamp_micros(curr_src_idx)?;
+        let mut found_diff = None;
+        for back_step in 1..=10 {
+            if selected_row < back_step {
+                break;
+            }
+            let prev_src_idx = *filter_res.visible_indices.get(selected_row - back_step)?;
+            if let Some(t_prev_us) = source.get_timestamp_micros(prev_src_idx) {
+                found_diff = Some(t_curr_us.saturating_sub(t_prev_us));
+                break;
+            }
+        }
+        found_diff?
+    } else {
+        let t_curr = source
+            .get_raw_line(curr_src_idx)
+            .and_then(loganalysis_core::extract_timestamp_with_kind)?;
+        let mut found_diff = None;
+        for back_step in 1..=10 {
+            if selected_row < back_step {
+                break;
+            }
+            let prev_src_idx = *filter_res.visible_indices.get(selected_row - back_step)?;
+            if let Some(t_prev) = source
+                .get_raw_line(prev_src_idx)
+                .and_then(loganalysis_core::extract_timestamp_with_kind)
+            {
+                found_diff = Some(loganalysis_core::compute_delta_micros_typed(t_prev, t_curr));
+                break;
+            }
+        }
+        found_diff?
+    };
+
+    let formatted = loganalysis_core::format_delta_micros(diff);
+    let latency = loganalysis_core::LatencyLevel::from_micros(diff);
+    Some((formatted, latency, diff))
 }
 
 #[cfg(test)]
@@ -480,5 +504,49 @@ mod tests {
         assert_eq!(post_trim.source_idx, 0);
         assert_eq!(post_trim.abs_source_idx, 2);
         assert!(post_trim.line_text.as_ref().contains("surviving_2"));
+    }
+
+    #[test]
+    fn test_compute_delta_time_for_pane_secondary_vs_primary() {
+        use super::compute_delta_time_for_pane;
+
+        let mut pane_a_stream = StreamLogBuffer::new(100, 10);
+        pane_a_stream.append_chunk(vec![
+            "11-06 18:00:00.000 100 100 I TagA: zero\n".to_string(),
+            "11-06 18:00:00.100 100 100 I TagA: hundred_ms\n".to_string(),
+        ]);
+        let pane_a_src = ActiveLogSource::Stream(pane_a_stream);
+        let pane_a_res = FilterResult {
+            visible_indices: vec![0, 1],
+            ..Default::default()
+        };
+        let mut pane_a_sel = SelectionModel::new();
+        pane_a_sel.select(1, 1);
+
+        let mut pane_b_stream = StreamLogBuffer::new(100, 10);
+        pane_b_stream.append_chunk(vec![
+            "11-06 18:00:00.000 200 200 I TagB: zero\n".to_string(),
+            "11-06 18:00:02.500 200 200 I TagB: two_half_s\n".to_string(),
+        ]);
+        let pane_b_src = ActiveLogSource::Stream(pane_b_stream);
+        let pane_b_res = FilterResult {
+            visible_indices: vec![0, 1],
+            ..Default::default()
+        };
+        let mut pane_b_sel = SelectionModel::new();
+        pane_b_sel.select(1, 1);
+
+        let (_, _, diff_a) =
+            compute_delta_time_for_pane(&pane_a_sel, Some(&pane_a_res), Some(&pane_a_src))
+                .expect("Pane A delta time");
+        assert_eq!(diff_a, 100_000);
+
+        let (_, _, diff_b) =
+            compute_delta_time_for_pane(&pane_b_sel, Some(&pane_b_res), Some(&pane_b_src))
+                .expect("Pane B delta time");
+        assert_eq!(diff_b, 2_500_000);
+
+        let empty_sel = SelectionModel::new();
+        assert!(compute_delta_time_for_pane(&empty_sel, Some(&pane_b_res), Some(&pane_b_src)).is_none());
     }
 }

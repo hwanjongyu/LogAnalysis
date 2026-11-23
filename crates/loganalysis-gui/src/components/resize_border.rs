@@ -9,11 +9,12 @@ const CORNER_SIZE: Pixels = px(12.0);
 
 /// Renders invisible interactive window resize handles for Client-Side Decoration (CSD) environments (e.g. Ubuntu Wayland).
 pub fn render_window_resize_borders(
+    is_csd: bool,
     window: &Window,
     cx: &mut Context<LogAnalysisWorkspace>,
 ) -> Vec<Stateful<Div>> {
     // Only render interactive client-side resize handles if CSD is active and window is not maximized
-    if !crate::components::titlebar::should_render_csd(window) || window.is_maximized() {
+    if !is_csd || window.is_maximized() {
         return Vec::new();
     }
 

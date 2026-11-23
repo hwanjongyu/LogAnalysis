@@ -23,10 +23,17 @@ pub struct Theme {
     pub highlight_search: Rgba,
     pub btn_hover: Rgba,
     pub accent: Rgba,
+    pub accent_hover: Rgba,
     pub accent_muted: Rgba,
+    pub accent_muted_fg: Rgba,
     pub error_red: Rgba,
+    pub error_hover: Rgba,
+    pub on_error: Rgba,
     pub success_green: Rgba,
+    pub success_hover: Rgba,
+    pub on_success: Rgba,
     pub warning_amber: Rgba,
+    pub warning_text: Rgba,
     pub kbd_bg: Rgba,
     pub kbd_fg: Rgba,
     pub kbd_border: Rgba,
@@ -127,10 +134,17 @@ impl Theme {
             highlight_search: rgb(0x4a3818),// Warm amber search highlight
             btn_hover: rgb(0x252737),       // Interactive button hover surface
             accent: rgb(0x3b82f6),          // Electric blue accent
+            accent_hover: rgb(0x2563eb),    // High-contrast primary button hover (5.17:1 w/ white)
             accent_muted: rgb(0x1e3a8a),    // Muted active pill background
+            accent_muted_fg: rgb(0x93c5fd), // AA-compliant text on accent_muted (5.74:1)
             error_red: rgb(0xf87171),       // Coral red for Exclude / Errors
+            error_hover: rgb(0xfca5a5),     // Lighter red hover for Dark theme (8.51:1 w/ on_error)
+            on_error: rgb(0x450a0a),        // AA-compliant dark text on error_red (5.84:1)
             success_green: rgb(0x34d399),   // Emerald green for Live / Active
+            success_hover: rgb(0x6ee7b7),   // Lighter emerald hover for Dark theme (9.78:1 w/ on_success)
+            on_success: rgb(0x052e16),      // AA-compliant dark text on success_green (7.75:1)
             warning_amber: rgb(0xfbbf24),   // Amber for Paused / Warnings
+            warning_text: rgb(0xfbbf24),    // AA-compliant warning text on dark surfaces (9.92:1 on bg_card)
             kbd_bg: rgb(0x202230),          // Shortcut badge background
             kbd_fg: rgb(0x9ca3af),          // Shortcut badge text
             kbd_border: rgba(0xffffff18),   // Shortcut badge border
@@ -161,10 +175,17 @@ impl Theme {
             highlight_search: rgb(0xfef08a),
             btn_hover: rgb(0xe2e8f0),
             accent: rgb(0x2563eb),
+            accent_hover: rgb(0x1d4ed8),
             accent_muted: rgb(0xbfdbfe),
+            accent_muted_fg: rgb(0x1e40af),
             error_red: rgb(0xdc2626),
-            success_green: rgb(0x16a34a),
+            error_hover: rgb(0xb91c1c),
+            on_error: rgb(0xffffff),
+            success_green: rgb(0x15803d),
+            success_hover: rgb(0x166534),
+            on_success: rgb(0xffffff),
             warning_amber: rgb(0xd97706),
+            warning_text: rgb(0x92400e),
             kbd_bg: rgb(0xf1f5f9),
             kbd_fg: rgb(0x475569),
             kbd_border: rgb(0xcbd5e1),
@@ -317,6 +338,76 @@ mod tests {
             assert_eq!(
                 resolve_selected_row_fg(false, false, None, theme),
                 theme.text_primary
+            );
+        }
+    }
+
+    #[test]
+    fn test_theme_wcag_aa_contrast_matrix() {
+        for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+            let assert_aa = |label: &str, bg: Rgba, fg: Rgba| {
+                let ratio =
+                    loganalysis_core::contrast_ratio(rgba_to_rgb24(bg), rgba_to_rgb24(fg));
+                assert!(
+                    ratio >= 4.5,
+                    "[{name}] WCAG AA contrast failed for {label}: ratio = {ratio:.2}:1 (< 4.5:1)"
+                );
+            };
+
+            // Primary text against all major opaque surfaces
+            assert_aa("text_primary on bg_dark", theme.bg_dark, theme.text_primary);
+            assert_aa("text_primary on bg_panel", theme.bg_panel, theme.text_primary);
+            assert_aa("text_primary on bg_card", theme.bg_card, theme.text_primary);
+            assert_aa("text_primary on bg_header", theme.bg_header, theme.text_primary);
+            assert_aa(
+                "text_primary on bg_viewport",
+                theme.bg_viewport,
+                theme.text_primary,
+            );
+
+            // Selection & muted accent pills
+            assert_aa(
+                "selection_fg on selection_bg",
+                theme.selection_bg,
+                theme.selection_fg,
+            );
+            assert_aa(
+                "accent_muted_fg on accent_muted",
+                theme.accent_muted,
+                theme.accent_muted_fg,
+            );
+
+            // Semantic status buttons & hover states
+            assert_aa(
+                "on_success on success_green",
+                theme.success_green,
+                theme.on_success,
+            );
+            assert_aa(
+                "on_success on success_hover",
+                theme.success_hover,
+                theme.on_success,
+            );
+            assert_aa("on_error on error_red", theme.error_red, theme.on_error);
+            assert_aa("on_error on error_hover", theme.error_hover, theme.on_error);
+            assert_aa(
+                "white on accent_hover",
+                theme.accent_hover,
+                rgb(0xffffff),
+            );
+
+            // Warning text against major opaque surfaces
+            assert_aa("warning_text on bg_card", theme.bg_card, theme.warning_text);
+            assert_aa("warning_text on bg_panel", theme.bg_panel, theme.warning_text);
+            assert_aa(
+                "warning_text on bg_header",
+                theme.bg_header,
+                theme.warning_text,
+            );
+            assert_aa(
+                "warning_text on bg_viewport",
+                theme.bg_viewport,
+                theme.warning_text,
             );
         }
     }

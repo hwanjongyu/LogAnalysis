@@ -12,11 +12,20 @@ echo "=================================================="
 echo " Building LogAnalysis AppImage for Ubuntu / Linux"
 echo "=================================================="
 
-# 1. Cargo Release Build
-echo "==> [1/4] Compiling optimized release binary..."
-cargo build --release -p loganalysis-gui
+REBUILD=false
+if [[ "${1:-}" == "--rebuild" ]]; then
+    REBUILD=true
+fi
 
+# 1. Cargo Release Build (reuse existing binary unless --rebuild is passed)
 BIN_SRC="${PROJECT_ROOT}/target/release/loganalysis"
+if [ ! -f "${BIN_SRC}" ] || [ "${REBUILD}" = true ]; then
+    echo "==> [1/4] Compiling optimized release binary..."
+    cargo build --release -p loganalysis-gui
+else
+    echo "==> [1/4] Reusing existing release binary at ${BIN_SRC}"
+fi
+
 if [ ! -f "${BIN_SRC}" ]; then
     echo "Error: Binary not found at ${BIN_SRC}" >&2
     exit 1

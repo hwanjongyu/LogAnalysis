@@ -1,8 +1,9 @@
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 use memmap2::Mmap;
+use parking_lot::RwLock;
 
 use super::timestamp::{
     extract_timestamp_with_kind, normalize_month_day_rollover, TimestampKind,
@@ -13,7 +14,7 @@ const LINE_CACHE_SIZE: usize = 1024;
 type LineCache = RwLock<Box<[Option<(usize, Arc<str>)>; LINE_CACHE_SIZE]>>;
 
 enum Storage {
-    Mmap(Mmap),
+    Mmap(Mmap, File),
     Heap(Vec<u8>),
 }
 
@@ -21,7 +22,7 @@ impl Storage {
     #[inline]
     fn as_bytes(&self) -> &[u8] {
         match self {
-            Storage::Mmap(m) => m.as_ref(),
+            Storage::Mmap(m, _) => m.as_ref(),
             Storage::Heap(v) => v.as_slice(),
         }
     }
@@ -41,10 +42,7 @@ pub struct FileLogBuffer {
 
 impl FileLogBuffer {
     fn from_storage(path_buf: PathBuf, storage: Storage) -> Self {
-        let empty_cache = vec![None; LINE_CACHE_SIZE]
-            .into_boxed_slice()
-            .try_into()
-            .unwrap();
+        let empty_cache = Box::new(std::array::from_fn(|_| None));
 
         let bytes = storage.as_bytes();
         if bytes.is_empty() {
@@ -123,7 +121,12 @@ impl FileLogBuffer {
         let path_buf = path.as_ref().to_path_buf();
         let mut file = File::open(&path_buf)?;
         let metadata = file.metadata()?;
-        let file_len = metadata.len() as usize;
+        let file_len = usize::try_from(metadata.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "File size exceeds addressable usize range",
+            )
+        })?;
 
         if file_len == 0 {
             return Ok(Self::from_storage(path_buf, Storage::Heap(Vec::new())));
@@ -131,7 +134,7 @@ impl FileLogBuffer {
 
         // Safety: We assume the file is opened in read-only mode and not concurrently modified.
         let storage = match unsafe { Mmap::map(&file) } {
-            Ok(mmap) => Storage::Mmap(mmap),
+            Ok(mmap) => Storage::Mmap(mmap, file),
             Err(_) => {
                 // Fallback to heap allocation if mmap is unsupported; rewind existing handle
                 file.seek(SeekFrom::Start(0))?;
@@ -150,7 +153,13 @@ impl FileLogBuffer {
         use std::io::Read;
         let path_buf = path.as_ref().to_path_buf();
         let mut file = File::open(&path_buf)?;
-        let file_len = file.metadata()?.len() as usize;
+        let metadata = file.metadata()?;
+        let file_len = usize::try_from(metadata.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "File size exceeds addressable usize range",
+            )
+        })?;
         let mut bytes = Vec::with_capacity(file_len);
         file.read_to_end(&mut bytes)?;
         Ok(Self::from_storage(path_buf, Storage::Heap(bytes)))
@@ -168,7 +177,8 @@ impl FileLogBuffer {
     pub fn is_truncated_on_disk(&self) -> bool {
         match &self.storage {
             Storage::Heap(_) => false,
-            Storage::Mmap(_) => std::fs::metadata(&self.path)
+            Storage::Mmap(_, file) => file
+                .metadata()
                 .map(|m| m.len() < self.byte_size() as u64)
                 .unwrap_or(false),
         }
@@ -224,7 +234,8 @@ impl LogSource for FileLogBuffer {
 
         let slot = idx & (LINE_CACHE_SIZE - 1);
 
-        if let Ok(guard) = self.line_cache.read() {
+        {
+            let guard = self.line_cache.read();
             if let Some((cached_idx, ref arc)) = guard[slot] {
                 if cached_idx == idx {
                     return Some(Arc::clone(arc));
@@ -235,7 +246,8 @@ impl LogSource for FileLogBuffer {
         let line_cow = self.get_line(idx)?;
         let arc: Arc<str> = Arc::from(line_cow.as_ref());
 
-        if let Ok(mut guard) = self.line_cache.write() {
+        {
+            let mut guard = self.line_cache.write();
             guard[slot] = Some((idx, Arc::clone(&arc)));
         }
 
@@ -365,5 +377,47 @@ mod tests {
         let buf = FileLogBuffer::open(tmp.path()).expect("open file");
         assert_eq!(buf.max_line_len(), 25);
         assert_eq!(buf.longest_line_text().as_deref(), Some(ascii_line.as_str()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_file_log_buffer_fstat_ignores_path_rotation_and_detects_inode_truncation() {
+        use std::fs::OpenOptions;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let orig_path = dir.path().join("app.log");
+        let rotated_path = dir.path().join("app.log.1");
+
+        std::fs::write(
+            &orig_path,
+            b"11-06 10:00:00.000 alpha\n11-06 10:00:01.000 beta\n11-06 10:00:02.000 gamma\n",
+        )
+        .expect("write initial log");
+
+        let buf = FileLogBuffer::open(&orig_path).expect("open mmap buffer");
+        assert!(!buf.is_heap_backed());
+        assert!(!buf.is_truncated_on_disk());
+
+        // Rotate: rename mapped file and replace original path with a shorter file.
+        std::fs::rename(&orig_path, &rotated_path).expect("rename mapped file");
+        std::fs::write(&orig_path, b"new\n").expect("write smaller replacement at old path");
+
+        assert!(
+            !buf.is_truncated_on_disk(),
+            "Replacing path after rotation must not falsely report truncation of mapped inode"
+        );
+
+        // Truncate the actual mapped inode via rotated_path.
+        let rotated_file = OpenOptions::new()
+            .write(true)
+            .open(&rotated_path)
+            .expect("open rotated inode");
+        rotated_file.set_len(5).expect("truncate mapped inode");
+        rotated_file.sync_all().expect("sync truncated inode");
+
+        assert!(
+            buf.is_truncated_on_disk(),
+            "Truncating the mapped inode itself must return true"
+        );
     }
 }

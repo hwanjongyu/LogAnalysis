@@ -202,6 +202,21 @@ impl TextInputState {
         self.marked_range = None;
     }
 
+    pub(crate) fn previous_boundary(&self, offset: usize) -> usize {
+        self.content
+            .grapheme_indices(true)
+            .rev()
+            .find_map(|(idx, _)| (idx < offset).then_some(idx))
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn next_boundary(&self, offset: usize) -> usize {
+        self.content
+            .grapheme_indices(true)
+            .find_map(|(idx, _)| (idx > offset).then_some(idx))
+            .unwrap_or(self.content.len())
+    }
+
     pub(crate) fn select_to_state(&mut self, offset: usize) {
         let offset = self.content.floor_char_boundary(offset);
         let pivot = self.content.floor_char_boundary(self.pivot);
@@ -409,18 +424,11 @@ impl TextInput {
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
-        self.content
-            .grapheme_indices(true)
-            .rev()
-            .find_map(|(idx, _)| (idx < offset).then_some(idx))
-            .unwrap_or(0)
+        self.state.previous_boundary(offset)
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
-        self.content
-            .grapheme_indices(true)
-            .find_map(|(idx, _)| (idx > offset).then_some(idx))
-            .unwrap_or(self.content.len())
+        self.state.next_boundary(offset)
     }
 
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
@@ -476,12 +484,18 @@ impl TextInput {
         if self.selected_range.is_empty() {
             self.select_to(self.previous_boundary(self.cursor_offset()), cx);
         }
+        if self.selected_range.is_empty() && self.marked_range.is_none() {
+            return;
+        }
         self.replace_text_in_range(None, "", window, cx);
     }
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             self.select_to(self.next_boundary(self.cursor_offset()), cx);
+        }
+        if self.selected_range.is_empty() && self.marked_range.is_none() {
+            return;
         }
         self.replace_text_in_range(None, "", window, cx);
     }
@@ -783,7 +797,7 @@ impl Element for TextElement {
 
         let cursor_x = line.x_for_index(cursor);
         let viewport_w = bounds.size.width;
-        let margin = px(28.0);
+        let margin = compute_scroll_margin(viewport_w);
         let mut scroll = input.scroll_offset;
 
         if cursor_x - scroll < margin {
@@ -926,6 +940,7 @@ impl Render for TextInput {
             .on_action(cx.listener(|this, _: &Cancel, _window, cx| {
                 // If IME is composing, Escape cancels the active preedit block without closing the parent modal
                 if this.cancel_ime_preedit() {
+                    cx.emit(TextInputEvent::Change);
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -940,6 +955,12 @@ impl Render for TextInput {
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .child(TextElement { input: cx.entity() })
     }
+}
+
+/// Computes horizontal scroll margin scaled for narrow inputs (`<= 28px`, capped at 20% of width).
+#[inline]
+pub(crate) fn compute_scroll_margin(viewport_w: Pixels) -> Pixels {
+    (viewport_w * 0.2).min(px(28.0))
 }
 
 /// Finds the UTF-8 word boundary range for word selection at a byte offset using Unicode Annex #29.
@@ -1502,5 +1523,42 @@ mod tests {
         assert_eq!(st.marked_range, None);
         assert_eq!(st.selected_range, expected_end..expected_end);
         assert_eq!(st.pivot, expected_end);
+    }
+
+    #[test]
+    fn test_compute_scroll_margin_scales_for_narrow_inputs() {
+        assert_eq!(compute_scroll_margin(px(0.0)), px(0.0));
+        assert_eq!(compute_scroll_margin(px(40.0)), px(8.0));
+        assert_eq!(compute_scroll_margin(px(55.0)), px(11.0));
+        // Must always stay strictly less than half the viewport width on narrow inputs
+        for w in [10.0, 20.0, 40.0, 55.0] {
+            let m: f32 = compute_scroll_margin(px(w)).into();
+            assert!(m * 2.0 < w, "margin {m} would oscillate for width {w}");
+        }
+        assert_eq!(compute_scroll_margin(px(140.0)), px(28.0));
+        assert_eq!(compute_scroll_margin(px(300.0)), px(28.0));
+    }
+
+    #[test]
+    fn test_cancel_ime_preedit_and_empty_boundary_guards() {
+        let mut st = TextInputState::default();
+        assert!(!st.cancel_ime_preedit());
+
+        st.replace_text_state(None, "abc");
+        // At offset 0, previous_boundary(0) == 0 -> selected_range stays empty
+        st.selected_range = 0..0;
+        assert_eq!(st.previous_boundary(0), 0);
+        // At content.len(), next_boundary(len) == len -> selected_range stays empty
+        let len = st.content.len();
+        assert_eq!(st.next_boundary(len), len);
+
+        // Cancel preedit removes the marked composition text and reports true so caller emits Change
+        st.move_cursor_state(len);
+        st.replace_and_mark_state(None, "ㅎ", None);
+        assert!(st.marked_range.is_some());
+        assert!(st.cancel_ime_preedit());
+        assert_eq!(st.content.as_ref(), "abc");
+        assert_eq!(st.marked_range, None);
+        assert_eq!(st.selected_range, 3..3);
     }
 }

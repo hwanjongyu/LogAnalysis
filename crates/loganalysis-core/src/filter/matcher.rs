@@ -563,6 +563,36 @@ impl MultiFilterMatcher {
     ) {
         out.clear();
 
+        if filters.len() <= 64 {
+            let mut mask: u64 = 0;
+
+            if let Some((ac, map)) = &self.ci_automaton {
+                for m in ac.find_overlapping_iter(raw_line) {
+                    mask |= 1u64 << map[m.pattern().as_usize()];
+                }
+            }
+
+            if let Some((ac, map)) = &self.cs_automaton {
+                for m in ac.find_overlapping_iter(raw_line) {
+                    mask |= 1u64 << map[m.pattern().as_usize()];
+                }
+            }
+
+            for &idx in &self.individual_filters {
+                let bit = 1u64 << idx;
+                if (mask & bit) == 0 && filters[idx].matches(raw_line) {
+                    mask |= bit;
+                }
+            }
+
+            while mask != 0 {
+                let idx = mask.trailing_zeros() as usize;
+                out.push(idx);
+                mask &= mask - 1;
+            }
+            return;
+        }
+
         if let Some((ac, map)) = &self.ci_automaton {
             for m in ac.find_overlapping_iter(raw_line) {
                 out.push(map[m.pattern().as_usize()]);
@@ -952,5 +982,92 @@ mod tests {
         let ranges = matcher.find_match_ranges(&line, 10);
         assert_eq!(ranges.len(), 1);
         assert_eq!(&line[ranges[0].clone()], "START");
+    }
+
+    #[test]
+    fn test_multi_filter_matcher_bitmask_and_fallback_parity() {
+        let build_prepared = |rules: Vec<FilterRule>| -> Vec<PreparedFilter> {
+            rules
+                .into_iter()
+                .enumerate()
+                .map(|(i, r)| PreparedFilter::new(r, i).expect("valid rule"))
+                .collect()
+        };
+
+        // <= 64 filters: CI literal, CS literal, regex, and Unicode CI literal
+        let small_rules = vec![
+            FilterRule {
+                text: "error".into(),
+                case_sensitive: false,
+                active: true,
+                ..Default::default()
+            },
+            FilterRule {
+                text: "Tag".into(),
+                case_sensitive: true,
+                active: true,
+                ..Default::default()
+            },
+            FilterRule {
+                text: r"code=\d+".into(),
+                case_sensitive: true,
+                regex: true,
+                active: true,
+                ..Default::default()
+            },
+            FilterRule {
+                text: "café".into(),
+                case_sensitive: false,
+                active: true,
+                ..Default::default()
+            },
+            FilterRule {
+                text: "missing".into(),
+                case_sensitive: false,
+                active: true,
+                ..Default::default()
+            },
+        ];
+        let small_prepared = build_prepared(small_rules);
+        let small_multi = MultiFilterMatcher::new(&small_prepared);
+
+        let line = "ERROR Tag ERROR code=42 at CAFÉ Tag".as_bytes();
+        let mut got_small = SmallVec::<[usize; 8]>::new();
+        small_multi.find_matches(line, &small_prepared, &mut got_small);
+        let expected_small: Vec<usize> = small_prepared
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, pf)| pf.matches(line).then_some(idx))
+            .collect();
+        assert_eq!(got_small.as_slice(), expected_small.as_slice());
+        assert_eq!(got_small.as_slice(), &[0, 1, 2, 3]);
+
+        // > 64 filters: fallback sort/dedup path
+        let mut large_rules = Vec::new();
+        for i in 0..70 {
+            let text = match i {
+                0 | 65 => "ERROR".to_string(),
+                3 | 68 => r"code=\d+".to_string(),
+                _ => format!("pat_{i}"),
+            };
+            large_rules.push(FilterRule {
+                text,
+                case_sensitive: i % 2 == 0,
+                regex: i == 3 || i == 68,
+                active: true,
+                ..Default::default()
+            });
+        }
+        let large_prepared = build_prepared(large_rules);
+        let large_multi = MultiFilterMatcher::new(&large_prepared);
+        let mut got_large = SmallVec::<[usize; 8]>::new();
+        large_multi.find_matches(line, &large_prepared, &mut got_large);
+        let expected_large: Vec<usize> = large_prepared
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, pf)| pf.matches(line).then_some(idx))
+            .collect();
+        assert_eq!(got_large.as_slice(), expected_large.as_slice());
+        assert_eq!(got_large.as_slice(), &[0, 3, 65, 68]);
     }
 }

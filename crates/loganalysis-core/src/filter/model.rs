@@ -128,7 +128,10 @@ pub fn parse_filters_json(json_str: &str) -> Result<Vec<FilterTabData>, serde_js
             vec![tab]
         }
         serde_json::Value::Array(arr) => {
-            if arr.first().and_then(|first| first.get("filters")).is_some() {
+            if arr.iter().any(|v| {
+                v.get("filters").is_some()
+                    || (v.get("name").is_some() && v.get("text").is_none())
+            }) {
                 serde_json::from_value(serde_json::Value::Array(arr))?
             } else {
                 let filters: Vec<FilterRule> =
@@ -237,5 +240,23 @@ mod tests {
         let tabs_rules = parse_filters_json(&json_rules).unwrap();
         assert_eq!(tabs_rules[0].filters[0].id.to_string(), dup_id);
         assert_ne!(tabs_rules[0].filters[0].id, tabs_rules[0].filters[1].id);
+    }
+
+    #[test]
+    fn test_parse_filters_json_handles_tab_array_without_leading_filters_field() {
+        let json_empty_first = r#"[{"name": "Empty Tab"}, {"name": "Errors", "filters": [{"text": "ERR"}]}]"#;
+        let tabs = parse_filters_json(json_empty_first).unwrap();
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs[0].name, "Empty Tab");
+        assert!(tabs[0].filters.is_empty());
+        assert_eq!(tabs[1].name, "Errors");
+        assert_eq!(tabs[1].filters.len(), 1);
+        assert_eq!(tabs[1].filters[0].text, "ERR");
+
+        let json_only_name = r#"[{"name": "OnlyName"}]"#;
+        let only_name_tabs = parse_filters_json(json_only_name).unwrap();
+        assert_eq!(only_name_tabs.len(), 1);
+        assert_eq!(only_name_tabs[0].name, "OnlyName");
+        assert!(only_name_tabs[0].filters.is_empty());
     }
 }

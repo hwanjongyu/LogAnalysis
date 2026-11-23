@@ -68,9 +68,9 @@ pub fn render_bookmark_drawer(
                 let b_source_idx = b.source_idx;
                 let b_line_num = b.line_number;
                 let (sev_color, sev_bg, sev_label) = match b.severity {
-                    LineSeverity::Error => (rgb(0xef4444), rgba(0xef444422), "ERROR"),
-                    LineSeverity::Warning => (rgb(0xf59e0b), rgba(0xf59e0b22), "WARN"),
-                    LineSeverity::RuleMatch => (rgb(0x3b82f6), rgba(0x3b82f622), "MATCH"),
+                    LineSeverity::Error => (theme.error_red, rgba(0xef444422), "ERROR"),
+                    LineSeverity::Warning => (theme.warning_text, rgba(0xf59e0b22), "WARN"),
+                    LineSeverity::RuleMatch => (theme.accent, rgba(0x3b82f622), "MATCH"),
                     LineSeverity::Normal => (theme.text_muted, theme.bg_card, "INFO"),
                 };
 
@@ -120,7 +120,7 @@ pub fn render_bookmark_drawer(
                                             .font_family("monospace")
                                             .text_size(px(11.0))
                                             .font_weight(FontWeight::BOLD)
-                                            .text_color(theme.accent)
+                                            .text_color(theme.accent_muted_fg)
                                             .child(format!("#{b_line_num}")),
                                     )
                                     .child(
@@ -153,7 +153,7 @@ pub fn render_bookmark_drawer(
                                             .rounded_xs()
                                             .text_size(px(11.0))
                                             .text_color(theme.accent)
-                                            .hover(|s| s.bg(theme.accent_muted))
+                                            .hover(move |s| s.bg(theme.accent_muted).text_color(theme.accent_muted_fg))
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 cx.stop_propagation();
                                                 this.open_note_modal_for_source_idx(b_source_idx, cx);
@@ -169,7 +169,7 @@ pub fn render_bookmark_drawer(
                                             .py_0p5()
                                             .rounded_xs()
                                             .text_size(px(11.0))
-                                            .text_color(rgb(0xef4444))
+                                            .text_color(theme.error_red)
                                             .hover(|s| s.bg(rgba(0xef444415)))
                                             .on_click(cx.listener(move |this, _, _window, cx| {
                                                 cx.stop_propagation();
@@ -290,7 +290,7 @@ pub fn render_bookmark_drawer(
                                             .bg(theme.bg_card)
                                             .text_size(px(11.0))
                                             .text_color(theme.accent)
-                                            .hover(|s| s.bg(theme.accent_muted))
+                                            .hover(move |s| s.bg(theme.accent_muted).text_color(theme.accent_muted_fg))
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.prompt_export_html_report(Some(window), cx);
                                             }))
@@ -307,7 +307,7 @@ pub fn render_bookmark_drawer(
                                             .border_color(theme.border)
                                             .bg(theme.bg_card)
                                             .text_size(px(11.0))
-                                            .text_color(rgb(0xef4444))
+                                            .text_color(theme.error_red)
                                             .hover(|s| s.bg(rgba(0xef444415)))
                                             .on_click(cx.listener(|this, _, _window, cx| {
                                                 this.clear_all_bookmarks(cx);

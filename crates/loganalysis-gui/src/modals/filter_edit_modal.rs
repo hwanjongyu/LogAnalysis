@@ -763,7 +763,7 @@ pub fn render_filter_edit_modal(
                                             .items_center()
                                             .justify_center()
                                             .text_size(px(10.0))
-                                            .text_color(rgb(0xffffff))
+                                            .text_color(theme.on_error)
                                             .child(if is_ex { "✓" } else { "" }),
                                     )
                                     .child(div().text_size(px(11.5)).child("Exclude (NOT)")),
@@ -877,8 +877,9 @@ pub fn render_filter_edit_modal(
                                             .text_size(px(10.0))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(match contrast_level {
+                                                ContrastLevel::Pass => theme.on_success,
                                                 ContrastLevel::Warning => rgb(0x000000),
-                                                _ => rgb(0xffffff),
+                                                ContrastLevel::Critical => theme.on_error,
                                             })
                                             .child(format!(
                                                 "WCAG {:.1}:1 ({})",
@@ -1134,7 +1135,7 @@ pub fn render_filter_edit_modal(
                                                                                 FontWeight::BOLD,
                                                                             )
                                                                             .text_color(if is_curr {
-                                                                                theme.text_primary
+                                                                                theme.accent_muted_fg
                                                                             } else {
                                                                                 theme.text_muted
                                                                             })

@@ -197,7 +197,7 @@ pub fn render_note_edit_modal(
                                             .border_color(theme.border)
                                             .bg(theme.bg_card)
                                             .text_size(px(11.0))
-                                            .text_color(rgb(0xef4444))
+                                            .text_color(theme.error_red)
                                             .hover(|s| s.bg(rgba(0xef444415)))
                                             .on_click(cx.listener(|this, _, _window, cx| {
                                                 this.clear_bookmark_note(cx);

@@ -269,9 +269,10 @@ pub fn execute_filtering(
             let start = chunk_idx * CHUNK_SIZE;
             let end = (start + CHUNK_SIZE).min(line_count);
 
-            let mut visible_indices = Vec::with_capacity(end - start);
-            let mut visible_styles = Vec::with_capacity(end - start);
-            let mut visible_filter_matches = Vec::with_capacity(end - start);
+            let initial_cap = if show_only_filtered { 0 } else { end - start };
+            let mut visible_indices = Vec::with_capacity(initial_cap);
+            let mut visible_styles = Vec::with_capacity(initial_cap);
+            let mut visible_filter_matches = Vec::with_capacity(initial_cap);
             let mut excluded_filter_matches: Vec<(usize, SmallVec<[usize; 2]>)> = Vec::new();
             let mut chunk_matched_count = 0;
             let mut local_max_len = 0;

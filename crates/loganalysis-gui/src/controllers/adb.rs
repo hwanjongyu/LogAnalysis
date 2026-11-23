@@ -9,6 +9,7 @@ pub struct AdbController {
     pub selected_device: Option<String>,
     pub is_device_selector_open: bool,
     pub is_scanning: bool,
+    pub scan_gen: u64,
     pub stream_handle: Option<LogcatStreamHandle>,
     pub is_streaming: bool,
     pub is_paused: bool,

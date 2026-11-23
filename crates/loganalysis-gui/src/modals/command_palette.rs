@@ -407,7 +407,7 @@ pub fn render_command_palette(
                 let category_fg = match cmd.category {
                     "FILE" => rgb(0x3b82f6),
                     "ADB" => rgb(0x10b981),
-                    "FILTER" => rgb(0xf59e0b),
+                    "FILTER" => theme.warning_text,
                     "VIEW" => rgb(0x8b5cf6),
                     _ => rgb(0x9ca3af),
                 };

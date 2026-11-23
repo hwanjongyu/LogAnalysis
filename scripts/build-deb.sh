@@ -58,7 +58,8 @@ cat << EOF > "${STAGE_DIR}/DEBIAN/control"
 Package: loganalysis
 Version: ${VERSION}
 Architecture: amd64
-Maintainer: Drew Yu
+Maintainer: Drew Yu <hwanjongyu@users.noreply.github.com>
+Depends: libc6, libvulkan1, libx11-xcb1, libxkbcommon0, libxkbcommon-x11-0, libfontconfig1, libasound2 | libasound2t64, libssl3 | libssl3t64
 Installed-Size: ${INSTALLED_SIZE}
 Section: utils
 Priority: optional
