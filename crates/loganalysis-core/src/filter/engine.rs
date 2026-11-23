@@ -82,9 +82,8 @@ pub fn resolve_style_from_matches(
     for &idx in matched_indices.iter().rev() {
         let pf = &prepared_filters[idx];
         if pf.rule.exclude {
-            // Any exclude rule encountered backwards resets styles and stops
-            bg_hex = None;
-            fg_hex = None;
+            // Earlier exclude rule acts as an inheritance barrier: stop walking backwards
+            // without erasing partial styles already resolved from later include rules.
             break;
         }
 

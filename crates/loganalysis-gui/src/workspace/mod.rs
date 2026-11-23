@@ -241,6 +241,36 @@ pub fn determine_escape_action(
     }
 }
 
+/// Topmost active modal/drawer layer owning non-Escape workspace key dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModalKeyLayer {
+    FilterEditModal,
+    NoteEditModal,
+    CommandPalette,
+    BookmarkDrawer,
+    Workspace,
+}
+
+/// Resolves the topmost key-handling layer so upper modals never leak keys into lower drawers or the workspace.
+pub(crate) fn resolve_modal_key_layer(
+    is_filter_modal_open: bool,
+    is_note_modal_open: bool,
+    is_command_palette_open: bool,
+    is_bookmark_drawer_open: bool,
+) -> ModalKeyLayer {
+    if is_filter_modal_open {
+        ModalKeyLayer::FilterEditModal
+    } else if is_note_modal_open {
+        ModalKeyLayer::NoteEditModal
+    } else if is_command_palette_open {
+        ModalKeyLayer::CommandPalette
+    } else if is_bookmark_drawer_open {
+        ModalKeyLayer::BookmarkDrawer
+    } else {
+        ModalKeyLayer::Workspace
+    }
+}
+
 impl LogAnalysisWorkspace {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let default_tab = FilterTabData {
@@ -910,167 +940,177 @@ impl LogAnalysisWorkspace {
             return;
         }
 
-        // If the filter modal is open, handle Enter fallback when focus is on non-input elements
-        if self.filter_edit_modal.is_open && key == "enter" {
-            self.save_modal_filter(cx);
-            return;
-        }
-
-        // If the note modal is open, handle Enter
-        if self.bookmarks.is_note_modal_open && key == "enter" {
-            self.save_bookmark_note(cx);
-            return;
-        }
-
-        // If the bookmark drawer is open, handle navigation keys
-        if self.bookmarks.is_drawer_open {
-            if key == "up" {
-                if self.bookmarks.drawer_selected_index > 0 {
-                    self.bookmarks.drawer_selected_index -= 1;
-                    cx.notify();
+        match resolve_modal_key_layer(
+            self.filter_edit_modal.is_open,
+            self.bookmarks.is_note_modal_open,
+            self.is_command_palette_open,
+            self.bookmarks.is_drawer_open,
+        ) {
+            ModalKeyLayer::FilterEditModal => {
+                // Handle Enter fallback when focus is on non-input elements inside the filter modal
+                if key == "enter" {
+                    self.save_modal_filter(cx);
                 }
-                return;
-            } else if key == "down" {
-                if self.bookmarks.drawer_selected_index + 1 < self.bookmarks.len() {
-                    self.bookmarks.drawer_selected_index += 1;
-                    cx.notify();
-                }
-                return;
-            } else if key == "enter" {
-                if let Some(b) = self
-                    .bookmarks
-                    .items()
-                    .get(self.bookmarks.drawer_selected_index)
-                {
-                    let src_idx = b.source_idx;
-                    self.jump_to_bookmark_source_idx(src_idx, cx);
-                    self.close_bookmark_drawer(cx);
-                }
-                return;
-            } else if key == "delete" || key == "backspace" {
-                if let Some(b) = self
-                    .bookmarks
-                    .items()
-                    .get(self.bookmarks.drawer_selected_index)
-                {
-                    let src_idx = b.source_idx;
-                    let line_num = b.line_number;
-                    self.bookmarks.remove(src_idx);
-                    self.bookmarks.drawer_selected_index =
-                        crate::modals::bookmark_drawer::clamp_drawer_selected_index(
-                            self.bookmarks.drawer_selected_index,
-                            self.bookmarks.len(),
-                        );
-                    self.status_text = format!("Removed bookmark on line {line_num}").into();
-                    cx.notify();
-                }
-                return;
             }
-        }
-
-        // Navigate log lines with Up/Down arrows and scroll horizontally with Left/Right/Home/End
-        if self.input_focus == InputFocusTarget::None
-            && !self.has_any_text_input_focus(window, cx)
-            && !self.filter_edit_modal.is_open
-            && !self.bookmarks.is_note_modal_open
-            && !self.bookmarks.is_drawer_open
-            && !self.is_command_palette_open
-        {
-            let is_sec = self.split_view.is_split_view && self.split_view.active_pane_is_secondary;
-            if key == "up" {
-                if is_sec {
-                    if let Some(res) = &self.split_view.secondary_filter_result {
-                        let total_rows = res.visible_indices.len();
-                        if total_rows > 0 {
-                            let cur_row = self.secondary_selection.selected_row.unwrap_or(0);
-                            let new_row = cur_row.saturating_sub(1);
-                            if let Some(&src_idx) = res.visible_indices.get(new_row) {
-                                self.select_secondary_log_row(new_row, src_idx, cx);
-                                self.secondary_scroll_handle
-                                    .scroll_to_item_strict(new_row, ScrollStrategy::Center);
+            ModalKeyLayer::NoteEditModal => {
+                if key == "enter" {
+                    self.save_bookmark_note(cx);
+                }
+            }
+            ModalKeyLayer::CommandPalette => {}
+            ModalKeyLayer::BookmarkDrawer => {
+                if key == "up" {
+                    if self.bookmarks.drawer_selected_index > 0 {
+                        self.bookmarks.drawer_selected_index -= 1;
+                        cx.notify();
+                    }
+                } else if key == "down" {
+                    if self.bookmarks.drawer_selected_index + 1 < self.bookmarks.len() {
+                        self.bookmarks.drawer_selected_index += 1;
+                        cx.notify();
+                    }
+                } else if key == "enter" {
+                    if let Some(b) = self
+                        .bookmarks
+                        .items()
+                        .get(self.bookmarks.drawer_selected_index)
+                    {
+                        let src_idx = b.source_idx;
+                        self.jump_to_bookmark_source_idx(src_idx, cx);
+                        self.close_bookmark_drawer(cx);
+                    }
+                } else if key == "delete" || key == "backspace" {
+                    if let Some(b) = self
+                        .bookmarks
+                        .items()
+                        .get(self.bookmarks.drawer_selected_index)
+                    {
+                        let src_idx = b.source_idx;
+                        let line_num = b.line_number;
+                        self.bookmarks.remove(src_idx);
+                        self.bookmarks.drawer_selected_index =
+                            crate::modals::bookmark_drawer::clamp_drawer_selected_index(
+                                self.bookmarks.drawer_selected_index,
+                                self.bookmarks.len(),
+                            );
+                        self.status_text = format!("Removed bookmark on line {line_num}").into();
+                        cx.notify();
+                    }
+                }
+            }
+            ModalKeyLayer::Workspace => {
+                // Navigate log lines with Up/Down arrows and scroll horizontally with Left/Right/Home/End
+                if self.input_focus == InputFocusTarget::None
+                    && !self.has_any_text_input_focus(window, cx)
+                {
+                    let is_sec =
+                        self.split_view.is_split_view && self.split_view.active_pane_is_secondary;
+                    if key == "up" {
+                        if is_sec {
+                            if let Some(res) = &self.split_view.secondary_filter_result {
+                                let total_rows = res.visible_indices.len();
+                                if total_rows > 0 {
+                                    let cur_row =
+                                        self.secondary_selection.selected_row.unwrap_or(0);
+                                    let new_row = cur_row.saturating_sub(1);
+                                    if let Some(&src_idx) = res.visible_indices.get(new_row) {
+                                        self.select_secondary_log_row(new_row, src_idx, cx);
+                                        self.secondary_scroll_handle
+                                            .scroll_to_item_strict(new_row, ScrollStrategy::Center);
+                                    }
+                                }
+                            }
+                        } else if let Some(res) = &self.filter_result {
+                            let total_rows = res.visible_indices.len();
+                            if total_rows > 0 {
+                                let cur_row = self.selection.selected_row.unwrap_or(0);
+                                let new_row = cur_row.saturating_sub(1);
+                                if let Some(&src_idx) = res.visible_indices.get(new_row) {
+                                    self.select_log_row(new_row, src_idx, cx);
+                                    self.scroll_handle
+                                        .scroll_to_item_strict(new_row, ScrollStrategy::Center);
+                                }
                             }
                         }
-                    }
-                } else if let Some(res) = &self.filter_result {
-                    let total_rows = res.visible_indices.len();
-                    if total_rows > 0 {
-                        let cur_row = self.selection.selected_row.unwrap_or(0);
-                        let new_row = cur_row.saturating_sub(1);
-                        if let Some(&src_idx) = res.visible_indices.get(new_row) {
-                            self.select_log_row(new_row, src_idx, cx);
-                            self.scroll_handle
-                                .scroll_to_item_strict(new_row, ScrollStrategy::Center);
-                        }
-                    }
-                }
-            } else if key == "down" {
-                if is_sec {
-                    if let Some(res) = &self.split_view.secondary_filter_result {
-                        let total_rows = res.visible_indices.len();
-                        if total_rows > 0 {
-                            let cur_row = self
-                                .secondary_selection
-                                .selected_row
-                                .map(|r| r + 1)
-                                .unwrap_or(0);
-                            let new_row = cur_row.min(total_rows.saturating_sub(1));
-                            if let Some(&src_idx) = res.visible_indices.get(new_row) {
-                                self.select_secondary_log_row(new_row, src_idx, cx);
-                                self.secondary_scroll_handle
-                                    .scroll_to_item_strict(new_row, ScrollStrategy::Center);
+                    } else if key == "down" {
+                        if is_sec {
+                            if let Some(res) = &self.split_view.secondary_filter_result {
+                                let total_rows = res.visible_indices.len();
+                                if total_rows > 0 {
+                                    let cur_row = self
+                                        .secondary_selection
+                                        .selected_row
+                                        .map(|r| r + 1)
+                                        .unwrap_or(0);
+                                    let new_row = cur_row.min(total_rows.saturating_sub(1));
+                                    if let Some(&src_idx) = res.visible_indices.get(new_row) {
+                                        self.select_secondary_log_row(new_row, src_idx, cx);
+                                        self.secondary_scroll_handle
+                                            .scroll_to_item_strict(new_row, ScrollStrategy::Center);
+                                    }
+                                }
+                            }
+                        } else if let Some(res) = &self.filter_result {
+                            let total_rows = res.visible_indices.len();
+                            if total_rows > 0 {
+                                let cur_row =
+                                    self.selection.selected_row.map(|r| r + 1).unwrap_or(0);
+                                let new_row = cur_row.min(total_rows.saturating_sub(1));
+                                if let Some(&src_idx) = res.visible_indices.get(new_row) {
+                                    self.select_log_row(new_row, src_idx, cx);
+                                    self.scroll_handle
+                                        .scroll_to_item_strict(new_row, ScrollStrategy::Center);
+                                }
                             }
                         }
-                    }
-                } else if let Some(res) = &self.filter_result {
-                    let total_rows = res.visible_indices.len();
-                    if total_rows > 0 {
-                        let cur_row = self.selection.selected_row.map(|r| r + 1).unwrap_or(0);
-                        let new_row = cur_row.min(total_rows.saturating_sub(1));
-                        if let Some(&src_idx) = res.visible_indices.get(new_row) {
-                            self.select_log_row(new_row, src_idx, cx);
-                            self.scroll_handle
-                                .scroll_to_item_strict(new_row, ScrollStrategy::Center);
+                    } else if self.full_line_display
+                        && !event.keystroke.modifiers.control
+                        && !event.keystroke.modifiers.platform
+                        && !event.keystroke.modifiers.alt
+                        && matches!(key, "left" | "right" | "home" | "end")
+                    {
+                        let handle = if is_sec {
+                            &self.secondary_scroll_handle
+                        } else {
+                            &self.scroll_handle
+                        };
+                        let step = if event.keystroke.modifiers.shift {
+                            H_SCROLL_FAST_STEP_PX
+                        } else {
+                            H_SCROLL_STEP_PX
+                        };
+                        let state = handle.0.borrow();
+                        let max_x: f32 = state.base_handle.max_offset().width.into();
+                        let cur = state.base_handle.offset();
+                        let cur_x: f32 = cur.x.into();
+                        let next_x = match key {
+                            "left" => {
+                                crate::components::log_view::clamp_horizontal_scroll_x(
+                                    cur_x + step,
+                                    max_x,
+                                )
+                            }
+                            "right" => {
+                                crate::components::log_view::clamp_horizontal_scroll_x(
+                                    cur_x - step,
+                                    max_x,
+                                )
+                            }
+                            "home" => 0.0,
+                            "end" => {
+                                crate::components::log_view::clamp_horizontal_scroll_x(-max_x, max_x)
+                            }
+                            _ => cur_x,
+                        };
+                        let changed = (next_x - cur_x).abs() > 0.01;
+                        if changed {
+                            state.base_handle.set_offset(point(px(next_x), cur.y));
+                        }
+                        drop(state);
+                        if changed {
+                            cx.notify();
                         }
                     }
-                }
-            } else if self.full_line_display
-                && !event.keystroke.modifiers.control
-                && !event.keystroke.modifiers.platform
-                && !event.keystroke.modifiers.alt
-                && matches!(key, "left" | "right" | "home" | "end")
-            {
-                let handle = if is_sec {
-                    &self.secondary_scroll_handle
-                } else {
-                    &self.scroll_handle
-                };
-                let step = if event.keystroke.modifiers.shift {
-                    H_SCROLL_FAST_STEP_PX
-                } else {
-                    H_SCROLL_STEP_PX
-                };
-                let state = handle.0.borrow();
-                let max_x: f32 = state.base_handle.max_offset().width.into();
-                let cur = state.base_handle.offset();
-                let cur_x: f32 = cur.x.into();
-                let next_x = match key {
-                    "left" => {
-                        crate::components::log_view::clamp_horizontal_scroll_x(cur_x + step, max_x)
-                    }
-                    "right" => {
-                        crate::components::log_view::clamp_horizontal_scroll_x(cur_x - step, max_x)
-                    }
-                    "home" => 0.0,
-                    "end" => crate::components::log_view::clamp_horizontal_scroll_x(-max_x, max_x),
-                    _ => cur_x,
-                };
-                let changed = (next_x - cur_x).abs() > 0.01;
-                if changed {
-                    state.base_handle.set_offset(point(px(next_x), cur.y));
-                }
-                drop(state);
-                if changed {
-                    cx.notify();
                 }
             }
         }
@@ -2187,5 +2227,51 @@ mod tests {
         preserve_selection_after_filter(&mut sec_sel, None, &handle);
         assert_eq!(sec_sel.selected_row, None);
         assert_eq!(sec_sel.anchor_source_idx, None);
+    }
+
+    #[test]
+    fn test_resolve_modal_key_layer_isolates_upper_modals_from_bookmark_drawer() {
+        use super::{resolve_modal_key_layer, ModalKeyLayer};
+
+        assert_eq!(
+            resolve_modal_key_layer(false, false, false, false),
+            ModalKeyLayer::Workspace
+        );
+        assert_eq!(
+            resolve_modal_key_layer(false, false, false, true),
+            ModalKeyLayer::BookmarkDrawer
+        );
+        assert_eq!(
+            resolve_modal_key_layer(false, false, true, false),
+            ModalKeyLayer::CommandPalette
+        );
+        assert_eq!(
+            resolve_modal_key_layer(false, false, true, true),
+            ModalKeyLayer::CommandPalette
+        );
+        assert_eq!(
+            resolve_modal_key_layer(false, true, false, false),
+            ModalKeyLayer::NoteEditModal
+        );
+        assert_eq!(
+            resolve_modal_key_layer(false, true, false, true),
+            ModalKeyLayer::NoteEditModal
+        );
+        assert_eq!(
+            resolve_modal_key_layer(false, true, true, true),
+            ModalKeyLayer::NoteEditModal
+        );
+        assert_eq!(
+            resolve_modal_key_layer(true, false, false, false),
+            ModalKeyLayer::FilterEditModal
+        );
+        assert_eq!(
+            resolve_modal_key_layer(true, false, false, true),
+            ModalKeyLayer::FilterEditModal
+        );
+        assert_eq!(
+            resolve_modal_key_layer(true, true, true, true),
+            ModalKeyLayer::FilterEditModal
+        );
     }
 }

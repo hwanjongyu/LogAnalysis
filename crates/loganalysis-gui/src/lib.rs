@@ -707,6 +707,14 @@ pub fn detect_initial_window_decorations() -> Option<WindowDecorations> {
     }
 }
 
+/// Returns `true` when `XMODIFIERS` should be removed at startup to bypass `zed-xim` on X11.
+pub(crate) fn should_sanitize_xmodifiers(
+    keep_xmodifiers: Option<&std::ffi::OsStr>,
+    xmodifiers: Option<&std::ffi::OsStr>,
+) -> bool {
+    keep_xmodifiers.is_none() && xmodifiers.is_some()
+}
+
 /// Launches the LogAnalysis GPUI desktop application.
 pub fn run_app() {
     // Evaluate CLI flags early before crash handler, desktop integration, or GPU window creation
@@ -728,22 +736,25 @@ pub fn run_app() {
 
     logging::init_crash_handler();
 
-    #[cfg(target_os = "linux")]
-    ensure_desktop_integration();
-
     // Guard against upstream Zed/GPUI bug on Linux X11:
     // When CJK/Korean IMEs (e.g. ibus, fcitx) send PreeditDraw compound text events,
     // zed-xim panics with 'Encoding Error: UnsupportedEncoding' at client.rs:237.
     // Unsetting XMODIFIERS safely bypasses zed-xim in favor of GPUI's native XKB input handler.
-    if std::env::var_os("LOGANALYSIS_KEEP_XMODIFIERS").is_none()
-        && std::env::var_os("XMODIFIERS").is_some()
-    {
+    // Must execute while single-threaded, before `ensure_desktop_integration()` spawns
+    // `"desktop-integration-refresh"` (which forks subprocesses reading `environ`).
+    if should_sanitize_xmodifiers(
+        std::env::var_os("LOGANALYSIS_KEEP_XMODIFIERS").as_deref(),
+        std::env::var_os("XMODIFIERS").as_deref(),
+    ) {
         logging::log_event(
             "INFO",
             "Sanitized XMODIFIERS to prevent upstream zed-xim PreeditDraw UnsupportedEncoding panic on X11",
         );
         std::env::remove_var("XMODIFIERS");
     }
+
+    #[cfg(target_os = "linux")]
+    ensure_desktop_integration();
 
     logging::log_event("INFO", "LogAnalysis starting up");
 
@@ -802,7 +813,8 @@ pub fn run_app() {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_desktop_entry_content, write_if_changed};
+    use super::{build_desktop_entry_content, should_sanitize_xmodifiers, write_if_changed};
+    use std::ffi::OsStr;
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -844,5 +856,19 @@ mod tests {
         assert!(!write_if_changed(&target, b"v1").unwrap());
         assert!(write_if_changed(&target, b"v2").unwrap());
         assert_eq!(std::fs::read(&target).unwrap(), b"v2");
+    }
+
+    #[test]
+    fn test_should_sanitize_xmodifiers_matrix() {
+        assert!(!should_sanitize_xmodifiers(None, None));
+        assert!(should_sanitize_xmodifiers(
+            None,
+            Some(OsStr::new("@im=ibus"))
+        ));
+        assert!(!should_sanitize_xmodifiers(Some(OsStr::new("1")), None));
+        assert!(!should_sanitize_xmodifiers(
+            Some(OsStr::new("1")),
+            Some(OsStr::new("@im=fcitx"))
+        ));
     }
 }

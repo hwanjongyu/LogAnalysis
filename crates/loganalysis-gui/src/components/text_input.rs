@@ -164,6 +164,36 @@ impl TextInputState {
         true
     }
 
+    /// Commits any active IME preedit in place, clearing `marked_range` and moving the cursor to its end.
+    pub(crate) fn commit_ime_preedit(&mut self) -> bool {
+        let Some(marked) = self.marked_range.take() else {
+            return false;
+        };
+        let clamped = clamp_range_to_char_boundaries(&self.content, marked);
+        self.selected_range = clamped.end..clamped.end;
+        self.pivot = clamped.end;
+        self.selection_reversed = false;
+        true
+    }
+
+    /// Updates cursor and selection state for a mouse-down event while preserving `pivot` on Shift-click.
+    pub(crate) fn handle_mouse_down_state(
+        &mut self,
+        index: usize,
+        click_count: usize,
+        shift: bool,
+    ) {
+        if click_count == 2 {
+            self.select_word_state(index);
+        } else if click_count >= 3 {
+            self.select_all_state();
+        } else if shift {
+            self.select_to_state(index);
+        } else {
+            self.move_cursor_state(index);
+        }
+    }
+
     pub(crate) fn move_cursor_state(&mut self, offset: usize) {
         let offset = self.content.floor_char_boundary(offset);
         self.selected_range = offset..offset;
@@ -347,6 +377,11 @@ impl TextInput {
         self.state.cancel_ime_preedit()
     }
 
+    /// Commits any active IME preedit in place, clearing `marked_range` and moving the cursor to its end.
+    pub fn commit_ime_preedit(&mut self) -> bool {
+        self.state.commit_ime_preedit()
+    }
+
     pub fn set_text(&mut self, new_text: &str, cx: &mut Context<Self>) {
         self.content = new_text.to_string().into();
         let len = self.content.len();
@@ -371,12 +406,6 @@ impl TextInput {
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.state.select_to_state(offset);
         cx.notify();
-    }
-
-    fn select_word_at(&mut self, offset: usize, cx: &mut Context<Self>) {
-        if self.state.select_word_state(offset) {
-            cx.notify();
-        }
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
@@ -466,18 +495,9 @@ impl TextInput {
         window.focus(&self.focus_handle);
         self.is_selecting = true;
         let index = self.index_for_mouse_position(event.position);
-        self.pivot = index;
-
-        if event.click_count == 2 {
-            self.select_word_at(index, cx);
-        } else if event.click_count >= 3 {
-            self.state.select_all_state();
-            cx.notify();
-        } else if event.modifiers.shift {
-            self.select_to(index, cx);
-        } else {
-            self.move_to(index, cx);
-        }
+        self.state
+            .handle_mouse_down_state(index, event.click_count, event.modifiers.shift);
+        cx.notify();
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, _cx: &mut Context<Self>) {
@@ -895,11 +915,11 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(|this, _: &Submit, _window, cx| {
                 // If IME is currently composing syllables (e.g. Korean Hangul), commit preedit only without submitting modal
-                if this.marked_range.is_some() {
+                if this.commit_ime_preedit() {
+                    cx.notify();
                     cx.stop_propagation();
                     return;
                 }
-                this.marked_range = None;
                 cx.emit(TextInputEvent::Submit);
                 cx.stop_propagation();
             }))
@@ -1412,5 +1432,75 @@ mod tests {
         st.select_all_state();
         assert_eq!(st.marked_range, None);
         assert_eq!(st.selected_range, 0..st.content.len());
+    }
+
+    #[test]
+    fn test_mouse_down_shift_click_extends_selection_from_existing_pivot() {
+        let mut st = TextInputState::default();
+        st.replace_text_state(None, "alpha beta gamma");
+
+        // Single click sets cursor and pivot at 6 ('b' in "beta")
+        st.handle_mouse_down_state(6, 1, false);
+        assert_eq!(st.selected_range, 6..6);
+        assert_eq!(st.pivot, 6);
+        assert!(!st.selection_reversed);
+
+        // Shift-click forward to 10 extends selection from existing pivot 6..10
+        st.handle_mouse_down_state(10, 1, true);
+        assert_eq!(st.selected_range, 6..10);
+        assert_eq!(st.pivot, 6);
+        assert!(!st.selection_reversed);
+
+        // Shift-click backward past pivot to 2 reverses selection to 2..6
+        st.handle_mouse_down_state(2, 1, true);
+        assert_eq!(st.selected_range, 2..6);
+        assert_eq!(st.pivot, 6);
+        assert!(st.selection_reversed);
+
+        // Double-click selects word and clears marked_range
+        st.handle_mouse_down_state(16, 1, false);
+        st.replace_and_mark_state(None, "!", None);
+        assert!(st.marked_range.is_some());
+        st.handle_mouse_down_state(7, 2, false);
+        assert_eq!(st.marked_range, None);
+        assert_eq!(st.selected_range, 6..10);
+
+        // Triple-click selects all and clears marked_range
+        st.replace_and_mark_state(None, "?", None);
+        assert!(st.marked_range.is_some());
+        st.handle_mouse_down_state(0, 3, false);
+        assert_eq!(st.marked_range, None);
+        assert_eq!(st.selected_range, 0..st.content.len());
+    }
+
+    #[test]
+    fn test_commit_ime_preedit_clears_marked_range_and_allows_subsequent_submit() {
+        let mut st = TextInputState::default();
+        // No preedit -> commit returns false
+        assert!(!st.commit_ime_preedit());
+
+        // Populate committed text + Hangul preedit syllable
+        st.replace_text_state(None, "로그 ");
+        st.replace_and_mark_state(None, "한", None);
+        let expected_end = st.content.len();
+        assert_eq!(st.marked_range, Some(7..expected_end));
+
+        // First Enter commits preedit in place and blocks submit
+        assert!(st.commit_ime_preedit());
+        assert_eq!(st.marked_range, None);
+        assert_eq!(st.content.as_ref(), "로그 한");
+        assert_eq!(st.selected_range, expected_end..expected_end);
+        assert_eq!(st.pivot, expected_end);
+        assert!(!st.selection_reversed);
+
+        // Subsequent Enter sees no marked_range -> returns false so submit proceeds
+        assert!(!st.commit_ime_preedit());
+
+        // Out-of-bounds / mid-UTF-8 marked_range clamps cleanly without panic
+        st.marked_range = Some(1..999);
+        assert!(st.commit_ime_preedit());
+        assert_eq!(st.marked_range, None);
+        assert_eq!(st.selected_range, expected_end..expected_end);
+        assert_eq!(st.pivot, expected_end);
     }
 }

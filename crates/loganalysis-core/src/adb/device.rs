@@ -104,15 +104,19 @@ pub fn parse_adb_devices_output(stdout: &str) -> Vec<AdbDeviceInfo> {
     devices
 }
 
+/// Terminates an aborted child process and joins the reader thread only if pipe EOF was observed.
 fn cleanup_aborted_command(
     mut child: Child,
     rx: crossbeam_channel::Receiver<Vec<u8>>,
     reader_handle: thread::JoinHandle<()>,
+    pipe_disconnected: bool,
 ) {
     let _ = child.kill();
     let _ = child.wait();
     drop(rx);
-    let _ = reader_handle.join();
+    if pipe_disconnected {
+        let _ = reader_handle.join();
+    }
 }
 
 /// Executes `cmd` with captured stdout and an enforced wall-clock `timeout`.
@@ -173,7 +177,7 @@ pub fn run_command_with_timeout(
     let status = loop {
         let remaining = timeout.saturating_sub(start_time.elapsed());
         if remaining.is_zero() {
-            cleanup_aborted_command(child, rx, reader_handle);
+            cleanup_aborted_command(child, rx, reader_handle, pipe_disconnected);
             return Err(AdbError::Timeout(timeout));
         }
 
@@ -228,7 +232,7 @@ pub fn run_command_with_timeout(
                     }
                     Ok(None) => {}
                     Err(err) => {
-                        cleanup_aborted_command(child, rx, reader_handle);
+                        cleanup_aborted_command(child, rx, reader_handle, pipe_disconnected);
                         return Err(err);
                     }
                 }
@@ -244,13 +248,18 @@ pub fn run_command_with_timeout(
                         Ok(None) => {
                             let remaining = timeout.saturating_sub(start_time.elapsed());
                             if remaining.is_zero() {
-                                cleanup_aborted_command(child, rx, reader_handle);
+                                cleanup_aborted_command(
+                                    child,
+                                    rx,
+                                    reader_handle,
+                                    pipe_disconnected,
+                                );
                                 return Err(AdbError::Timeout(timeout));
                             }
                             std::thread::sleep(remaining.min(Duration::from_millis(5)));
                         }
                         Err(err) => {
-                            cleanup_aborted_command(child, rx, reader_handle);
+                            cleanup_aborted_command(child, rx, reader_handle, pipe_disconnected);
                             return Err(err);
                         }
                     }
@@ -460,5 +469,22 @@ mod tests {
         fail_cmd.args(["-c", "exec 1>&-; exit 7"]);
         let res = run_command_with_timeout(fail_cmd, Duration::from_secs(5));
         assert_eq!(res, Err(AdbError::NonZeroExit(Some(7))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_command_with_timeout_inherited_daemon_fd_enforces_timeout() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 3 & exec sleep 30"]);
+        let timeout = Duration::from_millis(80);
+        let start = Instant::now();
+        let res = run_command_with_timeout(cmd, timeout);
+        let elapsed = start.elapsed();
+
+        assert_eq!(res, Err(AdbError::Timeout(timeout)));
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "Timeout took too long ({elapsed:?}) when grandchild inherited stdout FD"
+        );
     }
 }

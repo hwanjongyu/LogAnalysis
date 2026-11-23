@@ -1934,3 +1934,100 @@ fn test_execute_filtering_and_streaming_non_ascii_case_insensitive_parity() {
     assert_eq!(inc.visible_styles, full.visible_styles);
     assert_eq!(inc.rule_counts, full.rule_counts);
 }
+
+#[test]
+fn test_include_after_exclude_preserves_partial_style_and_blocks_prior_inheritance() {
+    let raw_line = b"E/Auth: Session token expired";
+
+    // Case 1: FG-only subsequent include after an exclude barrier
+    let rules_fg_only = vec![
+        PreparedFilter::new(
+            FilterRule {
+                text: "Auth".to_string(),
+                bg_color: "Yellow".to_string(),
+                text_color: "Blue".to_string(),
+                active: true,
+                ..Default::default()
+            },
+            0,
+        )
+        .unwrap(),
+        PreparedFilter::new(
+            FilterRule {
+                text: "token".to_string(),
+                exclude: true,
+                active: true,
+                ..Default::default()
+            },
+            1,
+        )
+        .unwrap(),
+        PreparedFilter::new(
+            FilterRule {
+                text: "expired".to_string(),
+                bg_color: "None".to_string(),
+                text_color: "Red".to_string(),
+                active: true,
+                ..Default::default()
+            },
+            2,
+        )
+        .unwrap(),
+    ];
+
+    let (visible, style, is_matched) =
+        evaluate_and_style_line(raw_line, &rules_fg_only, true, None);
+    assert!(visible);
+    assert!(is_matched);
+    assert_eq!(style.fg_hex, parse_color_spec("Red", false));
+    assert_eq!(
+        style.bg_hex, None,
+        "FG-only include after exclude must not inherit Yellow BG across the exclude barrier"
+    );
+
+    // Case 2: BG-only subsequent include after an exclude barrier
+    let rules_bg_only = vec![
+        PreparedFilter::new(
+            FilterRule {
+                text: "Auth".to_string(),
+                bg_color: "Yellow".to_string(),
+                text_color: "Blue".to_string(),
+                active: true,
+                ..Default::default()
+            },
+            0,
+        )
+        .unwrap(),
+        PreparedFilter::new(
+            FilterRule {
+                text: "token".to_string(),
+                exclude: true,
+                active: true,
+                ..Default::default()
+            },
+            1,
+        )
+        .unwrap(),
+        PreparedFilter::new(
+            FilterRule {
+                text: "expired".to_string(),
+                bg_color: "Cyan".to_string(),
+                text_color: "None".to_string(),
+                active: true,
+                ..Default::default()
+            },
+            2,
+        )
+        .unwrap(),
+    ];
+
+    let (visible, style, is_matched) =
+        evaluate_and_style_line(raw_line, &rules_bg_only, true, None);
+    assert!(visible);
+    assert!(is_matched);
+    assert_eq!(style.bg_hex, parse_color_spec("Cyan", true));
+    assert_eq!(
+        style.fg_hex, None,
+        "BG-only include after exclude must not inherit Blue FG across the exclude barrier"
+    );
+}
