@@ -3010,7 +3010,7 @@ dependencies = [
 
 [[package]]
 name = "loganalysis-core"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "aho-corasick",
  "crossbeam-channel",
@@ -3032,7 +3032,7 @@ dependencies = [
 
 [[package]]
 name = "loganalysis-gui"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "crossbeam-channel",

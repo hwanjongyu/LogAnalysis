@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.6] - 2026-11-23
+
+### Added
+- **Stage 1 GitHub Release Update Checker (`dfaadd6`)**: Asynchronous startup release check (ON by default, 24h throttled via `update_settings.json`, `5s` timeout, silent offline failure) and on-demand manual check via `ureq` (`rustls-no-provider` + `ring` + `rustls-native-certs`) with `If-None-Match` ETag / `304` handling and HTTP `403`/`429` redirect fallback. Added Update Modal (`modals/update_modal.rs`) with sanitized release notes preview, `[Open Release Page]` (verified `https://github.com/hwanjongyu/LogAnalysis/releases...` allowlist + `open::that_detached`), `[Skip This Version]`, and auto-check toggle, plus Command Palette actions (`App: Check for Updates...`, `App: Toggle Auto-Check for Updates`) and clickable Status Bar version / `↑` update-available pills.
+- **Scrollable Recent Workspaces Shelf (`8fc3f29`)**: Capped persisted recent workspaces at 10 (`MAX_RECENT_FILES`), displayed 3 rows collapsed with a `"Show all (N)"` / `"Show less"` toggle, interactive vertical scrollbar, and boundary-aware wheel scroll chaining inside a clipped-safe scrollable viewport.
+
+### Changed
+- **Flat Dense Filter List UI (`8fc3f29`)**: Consolidated Filter Dock header chrome to `56px` (`28px` Tab Bar + `28px` unified Search/Add toolbar with `11px` non-clipping `TextInput`) in both Left and Bottom Dock modes, transitioned filter cards to `24px` full-bleed flat hairline rows synced with DnD hit-testing, and revealed inline `✎`/`✕` controls on row hover.
+
+### Fixed
+- **P0–P2 Reliability, Correctness & Packaging (`cfa0538`, `19fa410`, `021400f`)**:
+  - **P0**: Startup env race, ADB timeout hang, filter style inheritance, and modal/input edge cases.
+  - **P1**: Timestamp year-rollover ordering, matcher limits, streaming analytics reconciliation, persistence locking, search sync, and rendering defects.
+  - **P2**: Core ring-buffer/parser edge cases, WCAG AA theme contrast, cross-platform atomic I/O, UI polish, and AppImage/Debian packaging scripts.
+
+---
+
 ## [0.2.5] - 2026-11-19
 
 ### Added
