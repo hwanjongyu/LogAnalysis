@@ -8,6 +8,179 @@ use crate::workspace::LogAnalysisWorkspace;
 
 /// Multiplier applied to font size to compute uniform log row height in logical pixels.
 pub const LOG_ROW_HEIGHT_MULTIPLIER: f32 = 1.55;
+/// Number of recent workspaces shown when the Welcome Screen shelf is collapsed.
+pub const RECENT_WORKSPACES_COLLAPSED_COUNT: usize = 3;
+/// Exact fixed height in logical pixels of each recent workspace row.
+pub const RECENT_WORKSPACE_ROW_HEIGHT_PX: f32 = 30.0;
+/// Vertical gap in logical pixels between consecutive recent workspace rows.
+pub const RECENT_WORKSPACE_ROW_GAP_PX: f32 = 4.0;
+/// Bottom padding in logical pixels inside the expanded recent workspaces scroll content.
+pub const RECENT_WORKSPACE_LIST_BOTTOM_PAD_PX: f32 = 4.0;
+/// Maximum number of visible rows in the expanded recent workspaces scroll viewport.
+pub const RECENT_WORKSPACES_EXPANDED_MAX_VISIBLE_ROWS: usize = 5;
+/// Maximum height in logical pixels of the expanded recent workspaces scroll container
+/// (5 rows * 30px + 4 gaps * 4px + 4px bottom padding = 170.0px).
+pub const RECENT_WORKSPACES_EXPANDED_MAX_HEIGHT_PX: f32 = 170.0;
+/// Maximum character budget for compact parent directory display in recent workspace rows.
+pub const RECENT_PATH_MAX_CHARS: usize = 48;
+
+/// Formats the parent directory of `path` for compact single-line display,
+/// preserving the tail segments (e.g. `…/android/dumps`) using char-safe indexing.
+pub fn format_compact_recent_path(path: &std::path::Path, max_chars: usize) -> String {
+    let parent = match path.parent().map(|p| p.to_string_lossy()) {
+        Some(p) if !p.is_empty() => p.into_owned(),
+        _ => {
+            let raw = path.to_string_lossy();
+            match raw.rfind('\\') {
+                Some(idx) if idx > 0 => raw[..idx].to_string(),
+                _ => String::new(),
+            }
+        }
+    };
+    if parent.is_empty() || max_chars == 0 {
+        return String::new();
+    }
+    let total_chars = parent.chars().count();
+    if total_chars <= max_chars {
+        return parent;
+    }
+    if max_chars == 1 {
+        return "…".to_string();
+    }
+    let keep_tail = max_chars - 1;
+    let start_byte = parent
+        .char_indices()
+        .nth(total_chars - keep_tail)
+        .map(|(idx, _)| idx)
+        .unwrap_or(parent.len());
+    let tail = &parent[start_byte..];
+    let snapped_tail = match tail.find(['/', '\\']) {
+        Some(sep_idx) if sep_idx + 1 < tail.len() => &tail[sep_idx..],
+        _ => tail,
+    };
+    format!("…{snapped_tail}")
+}
+
+/// Minimum thumb height in logical pixels for the Recent Workspaces vertical scrollbar.
+pub const RECENT_SCROLLBAR_MIN_THUMB_HEIGHT_PX: f32 = 24.0;
+/// Estimated row height (including gap) in logical pixels per recent workspace item.
+pub const RECENT_WORKSPACE_ROW_ESTIMATE_PX: f32 =
+    RECENT_WORKSPACE_ROW_HEIGHT_PX + RECENT_WORKSPACE_ROW_GAP_PX;
+
+/// Returns `(visible_items, hidden_count)` for the Hybrid 1+2 recent workspaces shelf.
+pub fn visible_recent_files_slice<T>(items: &[T], expanded: bool) -> (&[T], usize) {
+    if expanded || items.len() <= RECENT_WORKSPACES_COLLAPSED_COUNT {
+        (items, 0)
+    } else {
+        (
+            &items[..RECENT_WORKSPACES_COLLAPSED_COUNT],
+            items.len() - RECENT_WORKSPACES_COLLAPSED_COUNT,
+        )
+    }
+}
+
+#[inline]
+fn recent_thumb_height(track_height: f32, max_scroll_y: f32) -> f32 {
+    let total_content_height = track_height + max_scroll_y;
+    let visible_ratio = (track_height / total_content_height).clamp(0.0, 1.0);
+    (track_height * visible_ratio)
+        .max(RECENT_SCROLLBAR_MIN_THUMB_HEIGHT_PX)
+        .min(track_height)
+}
+
+/// Computes `(thumb_top, thumb_height)` for the Recent Workspaces vertical scrollbar.
+/// Returns `None` when the track has non-positive height or content does not overflow.
+pub fn compute_recent_scrollbar_thumb(
+    track_height: f32,
+    max_scroll_y: f32,
+    scroll_y: f32,
+) -> Option<(f32, f32)> {
+    if !track_height.is_finite()
+        || !max_scroll_y.is_finite()
+        || track_height <= 0.0
+        || max_scroll_y <= 0.5
+    {
+        return None;
+    }
+    let thumb_height = recent_thumb_height(track_height, max_scroll_y);
+    let clamped_scroll_y = if scroll_y.is_nan() {
+        0.0
+    } else {
+        scroll_y.clamp(0.0, max_scroll_y)
+    };
+    let ratio = (clamped_scroll_y / max_scroll_y).clamp(0.0, 1.0);
+    let scrollable_track = (track_height - thumb_height).max(0.0);
+    let thumb_top = (ratio * scrollable_track).clamp(0.0, scrollable_track);
+    Some((thumb_top, thumb_height))
+}
+
+/// Maps a pointer Y coordinate inside the Recent Workspaces scrollbar track to a GPUI
+/// vertical scroll offset in `[-max_scroll_y, 0.0]`, centering the thumb on `mouse_y`.
+pub fn compute_recent_scroll_offset_from_mouse_y(
+    mouse_y: f32,
+    track_top: f32,
+    track_height: f32,
+    max_scroll_y: f32,
+) -> f32 {
+    if !mouse_y.is_finite()
+        || !track_top.is_finite()
+        || !track_height.is_finite()
+        || !max_scroll_y.is_finite()
+        || track_height <= 0.0
+        || max_scroll_y <= 0.0
+    {
+        return 0.0;
+    }
+    let thumb_height = recent_thumb_height(track_height, max_scroll_y);
+    let scrollable_track = track_height - thumb_height;
+    let rel_y = (mouse_y - track_top).clamp(0.0, track_height);
+    let ratio = if scrollable_track > 0.0 {
+        let target_thumb_top = (rel_y - thumb_height * 0.5).clamp(0.0, scrollable_track);
+        (target_thumb_top / scrollable_track).clamp(0.0, 1.0)
+    } else {
+        (rel_y / track_height).clamp(0.0, 1.0)
+    };
+    let offset = -(ratio * max_scroll_y);
+    if offset == 0.0 {
+        0.0
+    } else {
+        offset.clamp(-max_scroll_y, 0.0)
+    }
+}
+
+/// Computes the fixed height in logical pixels for the expanded Recent Workspaces scroll container.
+/// Returns `None` when collapsed or when all items fit within `RECENT_WORKSPACES_COLLAPSED_COUNT`.
+pub fn compute_recent_list_height_px(item_count: usize, is_expanded: bool) -> Option<f32> {
+    if is_expanded && item_count > RECENT_WORKSPACES_COLLAPSED_COUNT {
+        let visible_rows = item_count.min(RECENT_WORKSPACES_EXPANDED_MAX_VISIBLE_ROWS);
+        let gaps = visible_rows.saturating_sub(1) as f32;
+        let height = (visible_rows as f32) * RECENT_WORKSPACE_ROW_HEIGHT_PX
+            + gaps * RECENT_WORKSPACE_ROW_GAP_PX
+            + RECENT_WORKSPACE_LIST_BOTTOM_PAD_PX;
+        Some(height.min(RECENT_WORKSPACES_EXPANDED_MAX_HEIGHT_PX))
+    } else {
+        None
+    }
+}
+
+/// Returns `true` when the Recent Workspaces scroll container should consume a vertical
+/// scroll wheel delta rather than chaining to the outer onboarding scroll container.
+pub fn should_consume_recent_scroll_wheel(delta_y: f32, scroll_y: f32, max_scroll_y: f32) -> bool {
+    if !delta_y.is_finite()
+        || !scroll_y.is_finite()
+        || !max_scroll_y.is_finite()
+        || max_scroll_y <= 0.5
+    {
+        return false;
+    }
+    if delta_y < 0.0 {
+        scroll_y < max_scroll_y - 0.5
+    } else if delta_y > 0.0 {
+        scroll_y > 0.5
+    } else {
+        false
+    }
+}
 
 /// Computes the rendered log row height in logical pixels for a given `font_size`.
 #[inline]
@@ -2438,19 +2611,22 @@ fn render_onboarding_empty_state(
         .flex()
         .flex_col()
         .items_center()
-        .justify_center()
-        .p(px(24.0))
+        .justify_start()
+        .p(px(16.0))
         .child(
             div()
                 .w_full()
                 .max_w(px(860.0))
+                .flex_shrink_0()
+                .my_auto()
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap_5()
+                .gap_3p5()
                 // Title Header
                 .child(
                     div()
+                        .flex_shrink_0()
                         .flex()
                         .flex_col()
                         .items_center()
@@ -2498,6 +2674,7 @@ fn render_onboarding_empty_state(
                 .child(
                     div()
                         .w_full()
+                        .flex_shrink_0()
                         .flex()
                         .flex_row()
                         .gap_3p5()
@@ -2521,7 +2698,7 @@ fn render_onboarding_empty_state(
                                 )
                                 .child(
                                     div()
-                                        .p(px(18.0))
+                                        .p(px(14.0))
                                         .flex_1()
                                         .flex()
                                         .flex_col()
@@ -2549,7 +2726,7 @@ fn render_onboarding_empty_state(
                                                     div()
                                                         .id("drop-zone-local-file")
                                                         .mt(px(4.0))
-                                                        .p(px(14.0))
+                                                        .p(px(10.0))
                                                         .rounded_md()
                                                         .border_1()
                                                         .border_dashed()
@@ -2619,7 +2796,7 @@ fn render_onboarding_empty_state(
                                 )
                                 .child(
                                     div()
-                                        .p(px(18.0))
+                                        .p(px(14.0))
                                         .flex_1()
                                         .flex()
                                         .flex_col()
@@ -2646,7 +2823,7 @@ fn render_onboarding_empty_state(
                                                 .child(
                                                     div()
                                                         .mt(px(4.0))
-                                                        .p(px(12.0))
+                                                        .p(px(10.0))
                                                         .rounded_md()
                                                         .border_1()
                                                         .border_color(theme.border_subtle)
@@ -2722,7 +2899,7 @@ fn render_onboarding_empty_state(
                                 )
                                 .child(
                                     div()
-                                        .p(px(18.0))
+                                        .p(px(14.0))
                                         .flex_1()
                                         .flex()
                                         .flex_col()
@@ -2772,7 +2949,7 @@ fn render_onboarding_empty_state(
                                                     if is_scanning {
                                                         div()
                                                             .mt(px(4.0))
-                                                            .p(px(12.0))
+                                                            .p(px(10.0))
                                                             .rounded_md()
                                                             .bg(theme.bg_card)
                                                             .text_size(px(11.0))
@@ -2905,9 +3082,288 @@ fn render_onboarding_empty_state(
                 )
                 // Recent Workspaces Shelf (when recent_files is not empty)
                 .children(if !workspace.recent_files.is_empty() {
+                    let total = workspace.recent_files.len();
+                    let is_expanded = workspace.is_recent_workspaces_expanded;
+                    let (visible_recents, hidden_count) =
+                        visible_recent_files_slice(&workspace.recent_files, is_expanded);
+                    let list_height_opt = compute_recent_list_height_px(total, is_expanded);
+
+                    let recent_items: Vec<AnyElement> = visible_recents
+                        .iter()
+                        .map(|path_buf| {
+                            let path_clone = path_buf.clone();
+                            let path_for_remove = path_buf.clone();
+                            let path_display = path_buf.to_string_lossy().to_string();
+                            let file_name = path_buf
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .filter(|n| !n.is_empty())
+                                .unwrap_or_else(|| path_display.clone());
+                            let compact_parent =
+                                format_compact_recent_path(path_buf, RECENT_PATH_MAX_CHARS);
+
+                            div()
+                                .id(ElementId::Name(
+                                    format!("recent-item-{path_display}").into(),
+                                ))
+                                .h(px(RECENT_WORKSPACE_ROW_HEIGHT_PX))
+                                .flex_shrink_0()
+                                .px(px(10.0))
+                                .rounded_md()
+                                .bg(theme.bg_card)
+                                .border_1()
+                                .border_color(theme.border_subtle)
+                                .hover(|s| {
+                                    s.bg(theme.btn_hover)
+                                        .border_color(theme.accent)
+                                })
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .tooltip(render_tooltip(
+                                    path_display.clone(),
+                                    None,
+                                    theme,
+                                ))
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    this.open_file(&path_clone, cx);
+                                }))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .text_size(px(12.5))
+                                                .flex_shrink_0()
+                                                .child("📄"),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_size(px(11.5))
+                                                .text_color(theme.text_primary)
+                                                .whitespace_nowrap()
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .child(file_name),
+                                        )
+                                        .when(!compact_parent.is_empty(), |s| {
+                                            s.child(
+                                                div()
+                                                    .font_family("monospace")
+                                                    .text_size(px(10.0))
+                                                    .text_color(theme.kbd_fg)
+                                                    .whitespace_nowrap()
+                                                    .min_w_0()
+                                                    .overflow_hidden()
+                                                    .child(compact_parent),
+                                            )
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .text_size(px(10.5))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(theme.accent_muted_fg)
+                                                .whitespace_nowrap()
+                                                .child("Open ➔"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id(ElementId::Name(
+                                                    format!(
+                                                        "btn-remove-recent-{path_display}"
+                                                    )
+                                                    .into(),
+                                                ))
+                                                .px(px(5.0))
+                                                .py(px(1.5))
+                                                .rounded_sm()
+                                                .cursor_pointer()
+                                                .text_size(px(10.5))
+                                                .text_color(theme.kbd_fg)
+                                                .hover(|s| {
+                                                    s.bg(theme.error_red)
+                                                        .text_color(theme.on_error)
+                                                })
+                                                .tooltip(render_tooltip(
+                                                    "Remove from recent workspaces",
+                                                    None,
+                                                    theme,
+                                                ))
+                                                .on_click(cx.listener(
+                                                    move |this, _, _window, cx| {
+                                                        cx.stop_propagation();
+                                                        this.remove_recent_file_async(
+                                                            &path_for_remove,
+                                                            cx,
+                                                        );
+                                                    },
+                                                ))
+                                                .child("✕"),
+                                        ),
+                                )
+                                .into_any_element()
+                        })
+                        .collect();
+
+                    let list_container = if let Some(list_height_px) = list_height_opt {
+                        let rendered_track_height: f32 =
+                            workspace.recent_workspaces_scroll_handle.bounds().size.height.into();
+                        let rendered_max_scroll_y: f32 = workspace
+                            .recent_workspaces_scroll_handle
+                            .max_offset()
+                            .height
+                            .into();
+                        let rendered_scroll_y: f32 =
+                            (-workspace.recent_workspaces_scroll_handle.offset().y).into();
+                        let thumb_opt = compute_recent_scrollbar_thumb(
+                            rendered_track_height,
+                            rendered_max_scroll_y,
+                            rendered_scroll_y,
+                        );
+                        let handle_for_prepaint =
+                            workspace.recent_workspaces_scroll_handle.clone();
+                        let weak_for_prepaint = cx.entity().downgrade();
+
+                        div()
+                            .h(px(list_height_px))
+                            .w_full()
+                            .flex()
+                            .flex_row()
+                            .gap_1p5()
+                            .on_children_prepainted(move |_, window, _cx| {
+                                let latest_track_height: f32 =
+                                    handle_for_prepaint.bounds().size.height.into();
+                                let latest_max_scroll_y: f32 =
+                                    handle_for_prepaint.max_offset().height.into();
+                                let latest_scroll_y: f32 =
+                                    (-handle_for_prepaint.offset().y).into();
+                                if (latest_max_scroll_y - rendered_max_scroll_y).abs() > 0.5
+                                    || (latest_scroll_y - rendered_scroll_y).abs() > 0.5
+                                    || (latest_track_height - rendered_track_height).abs() > 0.5
+                                {
+                                    let weak = weak_for_prepaint.clone();
+                                    window.on_next_frame(move |_, cx| {
+                                        let _ = weak.update(cx, |_, cx| cx.notify());
+                                    });
+                                }
+                            })
+                            .child(
+                                div()
+                                    .id("recent-workspaces-scroll-list")
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h_full()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&workspace.recent_workspaces_scroll_handle)
+                                    .on_scroll_wheel(cx.listener(
+                                        |this, event: &ScrollWheelEvent, window, cx| {
+                                            let delta_y = f32::from(
+                                                event.delta.pixel_delta(window.line_height()).y,
+                                            );
+                                            let max_scroll_y = f32::from(
+                                                this.recent_workspaces_scroll_handle
+                                                    .max_offset()
+                                                    .height,
+                                            )
+                                            .max(0.0);
+                                            let prev_scroll_y = (-f32::from(
+                                                this.recent_workspaces_scroll_handle.offset().y,
+                                            ) + delta_y)
+                                                .clamp(0.0, max_scroll_y);
+                                            if should_consume_recent_scroll_wheel(
+                                                delta_y,
+                                                prev_scroll_y,
+                                                max_scroll_y,
+                                            ) {
+                                                cx.stop_propagation();
+                                            }
+                                        },
+                                    ))
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .flex_shrink_0()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(RECENT_WORKSPACE_ROW_GAP_PX))
+                                            .pb(px(RECENT_WORKSPACE_LIST_BOTTOM_PAD_PX))
+                                            .children(recent_items),
+                                    ),
+                            )
+                            .children(thumb_opt.map(|(thumb_top, thumb_height)| {
+                                let thumb_color = if workspace.is_dragging_recent_scrollbar {
+                                    theme.accent
+                                } else if workspace.is_dark_theme {
+                                    rgba(0xffffff38)
+                                } else {
+                                    rgba(0x00000038)
+                                };
+                                div()
+                                    .id("recent-workspaces-scrollbar-track")
+                                    .flex_shrink_0()
+                                    .w(px(8.0))
+                                    .h_full()
+                                    .relative()
+                                    .rounded_full()
+                                    .bg(theme.bg_gutter)
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                            this.is_dragging_recent_scrollbar = true;
+                                            this.scroll_recent_workspaces_to_mouse_y(
+                                                event.position.y,
+                                                cx,
+                                            );
+                                        }),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("recent-workspaces-scrollbar-thumb")
+                                            .absolute()
+                                            .left(px(1.0))
+                                            .right(px(1.0))
+                                            .top(px(thumb_top))
+                                            .h(px(thumb_height))
+                                            .rounded_full()
+                                            .bg(thumb_color)
+                                            .hover(move |s| s.bg(theme.accent)),
+                                    )
+                            }))
+                            .into_any_element()
+                    } else {
+                        div()
+                            .id("recent-workspaces-scroll-list")
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .gap(px(RECENT_WORKSPACE_ROW_GAP_PX))
+                            .children(recent_items)
+                            .into_any_element()
+                    };
+
                     Some(
                         div()
                             .w_full()
+                            .flex_shrink_0()
                             .rounded_xl()
                             .bg(theme.bg_panel)
                             .border_1()
@@ -2924,7 +3380,7 @@ fn render_onboarding_empty_state(
                             )
                             .child(
                                 div()
-                                    .p(px(14.0))
+                                    .p(px(12.0))
                                     .flex()
                                     .flex_col()
                                     .gap_2()
@@ -2941,82 +3397,91 @@ fn render_onboarding_empty_state(
                                                     .text_size(px(11.0))
                                                     .font_weight(FontWeight::BOLD)
                                                     .text_color(theme.text_muted)
-                                                    .child("🕒 RECENT WORKSPACES"),
+                                                    .child(format!(
+                                                        "🕒 RECENT WORKSPACES ({total})"
+                                                    )),
                                             )
                                             .child(
                                                 div()
-                                                    .id("btn-clear-recent-files")
-                                                    .cursor_pointer()
-                                                    .text_size(px(10.0))
-                                                    .text_color(theme.text_muted)
-                                                    .hover(|s| s.text_color(theme.error_red))
-                                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                                        this.clear_recent_files_async(cx);
-                                                    }))
-                                                    .child("Clear history"),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_1()
-                                            .children(workspace.recent_files.iter().map(|path_buf| {
-                                                let path_clone = path_buf.clone();
-                                                let file_name = path_buf
-                                                    .file_name()
-                                                    .unwrap_or_default()
-                                                    .to_string_lossy()
-                                                    .to_string();
-                                                let path_display = path_buf.to_string_lossy().to_string();
-
-                                                div()
-                                                    .id(ElementId::Name(format!("recent-item-{}", path_display).into()))
-                                                    .px(px(10.0))
-                                                    .py(px(6.0))
-                                                    .rounded_md()
-                                                    .bg(theme.bg_card)
-                                                    .border_1()
-                                                    .border_color(theme.border_subtle)
-                                                    .hover(|s| s.bg(theme.btn_hover).border_color(theme.accent))
-                                                    .cursor_pointer()
                                                     .flex()
                                                     .items_center()
-                                                    .justify_between()
-                                                    .on_click(cx.listener(move |this, _, _window, cx| {
-                                                        this.open_file(&path_clone, cx);
-                                                    }))
-                                                    .child(
-                                                        div()
-                                                            .flex()
-                                                            .items_center()
-                                                            .gap_2()
-                                                            .child(div().text_size(px(13.0)).child("📄"))
-                                                            .child(
+                                                    .gap_3()
+                                                    .when(
+                                                        total > RECENT_WORKSPACES_COLLAPSED_COUNT,
+                                                        |s| {
+                                                            s.child(
                                                                 div()
-                                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                                    .text_size(px(11.5))
-                                                                    .text_color(theme.text_primary)
-                                                                    .child(file_name),
-                                                            )
-                                                            .child(
-                                                                div()
-                                                                    .font_family("monospace")
+                                                                    .id("btn-toggle-recent-workspaces")
+                                                                    .px(px(6.0))
+                                                                    .py(px(1.5))
+                                                                    .rounded_sm()
+                                                                    .bg(theme.accent_muted)
+                                                                    .cursor_pointer()
                                                                     .text_size(px(10.0))
-                                                                    .text_color(theme.text_muted)
-                                                                    .child(path_display),
-                                                            ),
+                                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                                    .text_color(theme.accent_muted_fg)
+                                                                    .hover(|s| {
+                                                                        s.bg(theme.accent_hover)
+                                                                            .text_color(gpui::white())
+                                                                    })
+                                                                    .on_click(cx.listener(
+                                                                        |this, _, _window, cx| {
+                                                                            this.toggle_recent_workspaces_expanded(cx);
+                                                                        },
+                                                                    ))
+                                                                    .child(if is_expanded {
+                                                                        "Show less ▴".to_string()
+                                                                    } else {
+                                                                        format!(
+                                                                            "Show all ({total}) ▾"
+                                                                        )
+                                                                    }),
+                                                            )
+                                                        },
                                                     )
                                                     .child(
                                                         div()
-                                                            .text_size(px(10.5))
-                                                            .font_weight(FontWeight::MEDIUM)
-                                                            .text_color(theme.accent)
-                                                            .child("Open ➔"),
-                                                    )
-                                                    .into_any_element()
-                                            })),
-                                    ),
+                                                            .id("btn-clear-recent-files")
+                                                            .cursor_pointer()
+                                                            .text_size(px(10.0))
+                                                            .text_color(theme.text_muted)
+                                                            .hover(|s| {
+                                                                s.text_color(theme.error_red)
+                                                            })
+                                                            .on_click(cx.listener(
+                                                                |this, _, _window, cx| {
+                                                                    this.clear_recent_files_async(
+                                                                        cx,
+                                                                    );
+                                                                },
+                                                            ))
+                                                            .child("Clear history"),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(list_container)
+                                    .when(!is_expanded && hidden_count > 0, |s| {
+                                        s.child(
+                                            div()
+                                                .id("btn-recent-workspaces-more-hint")
+                                                .w_full()
+                                                .pt(px(2.0))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .cursor_pointer()
+                                                .text_size(px(10.0))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(theme.accent_muted_fg)
+                                                .hover(|s| s.text_color(theme.accent))
+                                                .on_click(cx.listener(|this, _, _window, cx| {
+                                                    this.toggle_recent_workspaces_expanded(cx);
+                                                }))
+                                                .child(format!(
+                                                    "+ {hidden_count} more recent — Show all ▾"
+                                                )),
+                                        )
+                                    }),
                             ),
                     )
                 } else {
@@ -3026,7 +3491,8 @@ fn render_onboarding_empty_state(
                 .child(
                     div()
                         .w_full()
-                        .pt(px(14.0))
+                        .flex_shrink_0()
+                        .pt(px(10.0))
                         .border_t_1()
                         .border_color(theme.border_subtle)
                         .flex()
@@ -3546,5 +4012,282 @@ mod tests {
             calculate_selection_bar_top_with_split(true, false, true),
             px(52.0 + SPLIT_PANE_HEADER_OFFSET_PX)
         );
+    }
+
+    #[test]
+    fn test_format_compact_recent_path_cases() {
+        use super::format_compact_recent_path;
+        use std::path::Path;
+
+        // Short parent path fits without ellipsis
+        assert_eq!(
+            format_compact_recent_path(Path::new("/var/log/crash.log"), 48),
+            "/var/log"
+        );
+
+        // Filename-only and root paths return empty string
+        assert_eq!(format_compact_recent_path(Path::new("crash.log"), 48), "");
+        assert_eq!(format_compact_recent_path(Path::new("/"), 48), "");
+
+        // Boundary budgets
+        assert_eq!(
+            format_compact_recent_path(Path::new("/var/log/crash.log"), 0),
+            ""
+        );
+        assert_eq!(
+            format_compact_recent_path(Path::new("/var/log/crash.log"), 1),
+            "…"
+        );
+
+        // Deep Unix path snaps cleanly to directory boundary
+        let deep_unix = Path::new("/home/engineer/projects/android/dumps/crash.log");
+        let compact_unix = format_compact_recent_path(deep_unix, 16);
+        assert_eq!(compact_unix, "…/android/dumps");
+        assert!(compact_unix.chars().count() <= 16);
+
+        // Deep Windows-style backslash path snaps cleanly to backslash boundary
+        let deep_win = Path::new(r"C:\Users\engineer\Documents\android\dumps\crash.log");
+        let compact_win = format_compact_recent_path(deep_win, 16);
+        assert_eq!(compact_win, r"…\android\dumps");
+        assert!(compact_win.chars().count() <= 16);
+
+        // Single long directory without separator inside tail falls back cleanly
+        let single_long = Path::new("/a/supercalifragilisticexpialidocious/crash.log");
+        let compact_single = format_compact_recent_path(single_long, 15);
+        assert_eq!(compact_single, "…expialidocious");
+        assert_eq!(compact_single.chars().count(), 15);
+
+        // Multibyte Korean & emoji UTF-8 safety across all small/medium budgets
+        let utf8_path = Path::new("/사용자/로그🚀/안드로이드/덤프폴더/crash.log");
+        for max_chars in 0..=35 {
+            let formatted = format_compact_recent_path(utf8_path, max_chars);
+            assert!(
+                formatted.chars().count() <= max_chars,
+                "char count {} exceeded max_chars {max_chars} for {formatted:?}",
+                formatted.chars().count()
+            );
+        }
+    }
+
+    #[test]
+    fn test_visible_recent_files_slice_and_constants() {
+        use super::{
+            visible_recent_files_slice, RECENT_WORKSPACES_COLLAPSED_COUNT,
+            RECENT_WORKSPACES_EXPANDED_MAX_HEIGHT_PX, RECENT_WORKSPACES_EXPANDED_MAX_VISIBLE_ROWS,
+            RECENT_WORKSPACE_LIST_BOTTOM_PAD_PX, RECENT_WORKSPACE_ROW_ESTIMATE_PX,
+            RECENT_WORKSPACE_ROW_GAP_PX, RECENT_WORKSPACE_ROW_HEIGHT_PX,
+        };
+
+        assert_eq!(RECENT_WORKSPACES_COLLAPSED_COUNT, 3);
+        assert_eq!(RECENT_WORKSPACE_ROW_HEIGHT_PX, 30.0);
+        assert_eq!(RECENT_WORKSPACE_ROW_GAP_PX, 4.0);
+        assert_eq!(RECENT_WORKSPACE_LIST_BOTTOM_PAD_PX, 4.0);
+        assert_eq!(RECENT_WORKSPACES_EXPANDED_MAX_VISIBLE_ROWS, 5);
+        assert_eq!(RECENT_WORKSPACES_EXPANDED_MAX_HEIGHT_PX, 170.0);
+        assert_eq!(RECENT_WORKSPACE_ROW_ESTIMATE_PX, 34.0);
+
+        // 0 items
+        let empty: Vec<usize> = Vec::new();
+        assert_eq!(visible_recent_files_slice(&empty, false), (&[][..], 0));
+        assert_eq!(visible_recent_files_slice(&empty, true), (&[][..], 0));
+
+        // 3 items (at collapsed cap)
+        let three = vec![1, 2, 3];
+        assert_eq!(visible_recent_files_slice(&three, false), (&[1, 2, 3][..], 0));
+        assert_eq!(visible_recent_files_slice(&three, true), (&[1, 2, 3][..], 0));
+
+        // 5 items
+        let five = vec![1, 2, 3, 4, 5];
+        assert_eq!(visible_recent_files_slice(&five, false), (&[1, 2, 3][..], 2));
+        assert_eq!(
+            visible_recent_files_slice(&five, true),
+            (&[1, 2, 3, 4, 5][..], 0)
+        );
+
+        // 10 items (at MAX_RECENT_FILES cap)
+        let ten: Vec<usize> = (1..=10).collect();
+        assert_eq!(visible_recent_files_slice(&ten, false), (&[1, 2, 3][..], 7));
+        assert_eq!(visible_recent_files_slice(&ten, true), (&ten[..], 0));
+    }
+
+    #[test]
+    fn test_compute_recent_scrollbar_thumb() {
+        use super::{compute_recent_scrollbar_thumb, RECENT_SCROLLBAR_MIN_THUMB_HEIGHT_PX};
+
+        // Non-overflowing / invalid track or max_scroll returns None
+        assert_eq!(compute_recent_scrollbar_thumb(0.0, 100.0, 0.0), None);
+        assert_eq!(compute_recent_scrollbar_thumb(-10.0, 100.0, 0.0), None);
+        assert_eq!(compute_recent_scrollbar_thumb(160.0, 0.0, 0.0), None);
+        assert_eq!(compute_recent_scrollbar_thumb(160.0, 0.5, 0.0), None);
+        assert_eq!(compute_recent_scrollbar_thumb(f32::NAN, 100.0, 0.0), None);
+        assert_eq!(compute_recent_scrollbar_thumb(160.0, f32::INFINITY, 0.0), None);
+
+        // Overflowing: track=160, max_scroll=160 => content=320 => thumb_height=80
+        let (top0, h0) = compute_recent_scrollbar_thumb(160.0, 160.0, 0.0).unwrap();
+        assert!((top0 - 0.0).abs() < 1e-4);
+        assert!((h0 - 80.0).abs() < 1e-4);
+
+        // Midpoint scroll=80 => thumb_top=40
+        let (top_mid, h_mid) = compute_recent_scrollbar_thumb(160.0, 160.0, 80.0).unwrap();
+        assert!((top_mid - 40.0).abs() < 1e-4);
+        assert!((h_mid - 80.0).abs() < 1e-4);
+
+        // Bottom scroll=160 => thumb_top=80
+        let (top_bot, h_bot) = compute_recent_scrollbar_thumb(160.0, 160.0, 160.0).unwrap();
+        assert!((top_bot - 80.0).abs() < 1e-4);
+        assert!((h_bot - 80.0).abs() < 1e-4);
+
+        // Minimum thumb height enforced (huge max_scroll_y)
+        let (top_huge, h_huge) = compute_recent_scrollbar_thumb(160.0, 10_000.0, 10_000.0).unwrap();
+        assert!((h_huge - RECENT_SCROLLBAR_MIN_THUMB_HEIGHT_PX).abs() < 1e-4);
+        assert!((top_huge - (160.0 - RECENT_SCROLLBAR_MIN_THUMB_HEIGHT_PX)).abs() < 1e-4);
+
+        // Track smaller than min thumb height clamps thumb to track_height
+        let (top_tiny, h_tiny) = compute_recent_scrollbar_thumb(16.0, 200.0, 100.0).unwrap();
+        assert!((h_tiny - 16.0).abs() < 1e-4);
+        assert!((top_tiny - 0.0).abs() < 1e-4);
+
+        // NaN / negative / infinite scroll_y clamping
+        assert_eq!(
+            compute_recent_scrollbar_thumb(160.0, 160.0, f32::NAN),
+            Some((0.0, 80.0))
+        );
+        assert_eq!(
+            compute_recent_scrollbar_thumb(160.0, 160.0, -50.0),
+            Some((0.0, 80.0))
+        );
+        assert_eq!(
+            compute_recent_scrollbar_thumb(160.0, 160.0, f32::INFINITY),
+            Some((80.0, 80.0))
+        );
+    }
+
+    #[test]
+    fn test_compute_recent_scroll_offset_from_mouse_y() {
+        use super::{
+            compute_recent_scroll_offset_from_mouse_y, compute_recent_scrollbar_thumb,
+        };
+
+        // Invalid inputs return 0.0
+        assert_eq!(
+            compute_recent_scroll_offset_from_mouse_y(100.0, 50.0, 0.0, 100.0),
+            0.0
+        );
+        assert_eq!(
+            compute_recent_scroll_offset_from_mouse_y(100.0, 50.0, 160.0, 0.0),
+            0.0
+        );
+        assert_eq!(
+            compute_recent_scroll_offset_from_mouse_y(f32::NAN, 50.0, 160.0, 100.0),
+            0.0
+        );
+        assert_eq!(
+            compute_recent_scroll_offset_from_mouse_y(100.0, 50.0, 160.0, f32::INFINITY),
+            0.0
+        );
+
+        // Above track / at top edge -> 0.0
+        assert_eq!(
+            compute_recent_scroll_offset_from_mouse_y(20.0, 100.0, 160.0, 200.0),
+            0.0
+        );
+        assert_eq!(
+            compute_recent_scroll_offset_from_mouse_y(100.0, 100.0, 160.0, 200.0),
+            0.0
+        );
+
+        // At bottom edge / below track -> -max_scroll_y
+        assert_eq!(
+            compute_recent_scroll_offset_from_mouse_y(260.0, 100.0, 160.0, 200.0),
+            -200.0
+        );
+        assert_eq!(
+            compute_recent_scroll_offset_from_mouse_y(500.0, 100.0, 160.0, 200.0),
+            -200.0
+        );
+
+        // Track midpoint maps to -max_scroll_y / 2 and matches thumb center
+        let mid_offset =
+            compute_recent_scroll_offset_from_mouse_y(180.0, 100.0, 160.0, 200.0);
+        assert!((mid_offset - (-100.0)).abs() < 1e-4);
+
+        // Arbitrary pointer inside scrollable range places thumb center at pointer
+        let mouse_y = 165.0;
+        let offset = compute_recent_scroll_offset_from_mouse_y(mouse_y, 100.0, 160.0, 200.0);
+        assert!((-200.0..=0.0).contains(&offset));
+        let (thumb_top, thumb_height) =
+            compute_recent_scrollbar_thumb(160.0, 200.0, -offset).unwrap();
+        let thumb_center = 100.0 + thumb_top + thumb_height * 0.5;
+        assert!((thumb_center - mouse_y).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_compute_recent_list_height_px() {
+        use super::{
+            compute_recent_list_height_px, RECENT_WORKSPACES_COLLAPSED_COUNT,
+            RECENT_WORKSPACES_EXPANDED_MAX_HEIGHT_PX,
+        };
+
+        // Collapsed always returns None
+        assert_eq!(compute_recent_list_height_px(0, false), None);
+        assert_eq!(compute_recent_list_height_px(3, false), None);
+        assert_eq!(compute_recent_list_height_px(10, false), None);
+
+        // Expanded with <= collapsed count returns None
+        assert_eq!(compute_recent_list_height_px(0, true), None);
+        assert_eq!(
+            compute_recent_list_height_px(RECENT_WORKSPACES_COLLAPSED_COUNT, true),
+            None
+        );
+
+        // Expanded with 4 items uses exact 4 * 30.0 + 3 * 4.0 + 4.0 = 136.0 (< 170.0)
+        assert_eq!(compute_recent_list_height_px(4, true), Some(136.0));
+
+        // Expanded with 5..=10 items caps at RECENT_WORKSPACES_EXPANDED_MAX_HEIGHT_PX (170.0)
+        assert_eq!(
+            compute_recent_list_height_px(5, true),
+            Some(RECENT_WORKSPACES_EXPANDED_MAX_HEIGHT_PX)
+        );
+        assert_eq!(
+            compute_recent_list_height_px(7, true),
+            Some(RECENT_WORKSPACES_EXPANDED_MAX_HEIGHT_PX)
+        );
+        assert_eq!(
+            compute_recent_list_height_px(10, true),
+            Some(RECENT_WORKSPACES_EXPANDED_MAX_HEIGHT_PX)
+        );
+    }
+
+    #[test]
+    fn test_should_consume_recent_scroll_wheel_boundary_chaining() {
+        use super::should_consume_recent_scroll_wheel;
+
+        // No overflow (max_scroll_y <= 0.5) or non-finite inputs never consume
+        for max_scroll in [0.0, 0.5, -10.0, f32::NAN, f32::INFINITY] {
+            assert!(!should_consume_recent_scroll_wheel(-12.0, 0.0, max_scroll));
+            assert!(!should_consume_recent_scroll_wheel(12.0, 0.0, max_scroll));
+        }
+
+        // Top boundary: scrolling up chains out, scrolling down is consumed
+        assert!(!should_consume_recent_scroll_wheel(16.0, 0.0, 170.0));
+        assert!(!should_consume_recent_scroll_wheel(16.0, 0.5, 170.0));
+        assert!(should_consume_recent_scroll_wheel(-16.0, 0.0, 170.0));
+        assert!(should_consume_recent_scroll_wheel(-16.0, 0.5, 170.0));
+
+        // Middle of scroll range: both directions are consumed
+        assert!(should_consume_recent_scroll_wheel(16.0, 85.0, 170.0));
+        assert!(should_consume_recent_scroll_wheel(-16.0, 85.0, 170.0));
+
+        // Bottom boundary: scrolling down chains out, scrolling up is consumed
+        assert!(!should_consume_recent_scroll_wheel(-16.0, 170.0, 170.0));
+        assert!(!should_consume_recent_scroll_wheel(-16.0, 169.5, 170.0));
+        assert!(should_consume_recent_scroll_wheel(16.0, 170.0, 170.0));
+        assert!(should_consume_recent_scroll_wheel(16.0, 169.5, 170.0));
+
+        // Zero delta and non-finite delta/scroll_y never consume
+        assert!(!should_consume_recent_scroll_wheel(0.0, 85.0, 170.0));
+        assert!(!should_consume_recent_scroll_wheel(-0.0, 85.0, 170.0));
+        assert!(!should_consume_recent_scroll_wheel(f32::NAN, 85.0, 170.0));
+        assert!(!should_consume_recent_scroll_wheel(-16.0, f32::NAN, 170.0));
     }
 }

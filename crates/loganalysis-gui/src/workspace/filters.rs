@@ -444,6 +444,7 @@ impl LogAnalysisWorkspace {
     pub(crate) fn clear_filter_drag_state_fields(&mut self) {
         self.filter_drag_drop_target = None;
         self.dragging_filter_rule_index = None;
+        self.hovered_filter_rule_id = None;
     }
 
     /// Clears active filter rule drag-and-drop state and notifies the UI if anything changed.
@@ -544,6 +545,7 @@ impl LogAnalysisWorkspace {
 
     /// Deletes a rule from active tab
     pub fn delete_rule(&mut self, rule_idx: usize, cx: &mut Context<Self>) {
+        self.hovered_filter_rule_id = None;
         self.clear_filter_drag_state(cx);
         if let Some(tab) = self.filter_tabs.get_mut(self.active_tab_index) {
             if rule_idx < tab.filters.len() {
@@ -1027,6 +1029,7 @@ impl LogAnalysisWorkspace {
 
     /// Deletes the current filter tab (Ctrl+D)
     pub fn delete_current_tab(&mut self, cx: &mut Context<Self>) {
+        self.hovered_filter_rule_id = None;
         self.clear_filter_drag_state(cx);
         if self.filter_tabs.len() <= 1 {
             self.status_text = "Cannot delete the last remaining filter tab".into();
@@ -1069,6 +1072,7 @@ impl LogAnalysisWorkspace {
 
     /// Switches active filter tab
     pub fn select_tab(&mut self, tab_idx: usize, cx: &mut Context<Self>) {
+        self.hovered_filter_rule_id = None;
         self.clear_filter_drag_state(cx);
         if tab_idx < self.filter_tabs.len() {
             self.dismiss_filter_edit_modal_if_open();

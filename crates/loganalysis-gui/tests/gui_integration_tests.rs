@@ -569,21 +569,26 @@ fn test_simple_tooltip_initialization() {
 #[test]
 fn test_recent_files_lru_and_persistence() {
     use loganalysis_gui::workspace::{
-        load_recent_files_from_path, push_recent_path, save_recent_files_to_path,
+        load_recent_files_from_path, push_recent_path, remove_recent_path,
+        save_recent_files_to_path, MAX_RECENT_FILES,
     };
 
+    assert_eq!(MAX_RECENT_FILES, 10);
+
     let dir = tempfile::TempDir::new().unwrap();
-    let p1 = dir.path().join("log1.txt");
-    let p2 = dir.path().join("log2.txt");
-    let p3 = dir.path().join("log3.txt");
-    let p4 = dir.path().join("log4.txt");
-    let p5 = dir.path().join("log5.txt");
-    let p6 = dir.path().join("log6.txt");
+    let paths: Vec<std::path::PathBuf> = (1..=11)
+        .map(|i| dir.path().join(format!("log{i}.txt")))
+        .collect();
     let missing = dir.path().join("nonexistent.txt");
 
-    for p in [&p1, &p2, &p3, &p4, &p5, &p6] {
+    for p in &paths {
         std::fs::write(p, b"log line\n").unwrap();
     }
+
+    let p1 = &paths[0];
+    let p2 = &paths[1];
+    let p10 = &paths[9];
+    let p11 = &paths[10];
 
     let mut recents = Vec::new();
     push_recent_path(&mut recents, p1.clone());
@@ -594,30 +599,42 @@ fn test_recent_files_lru_and_persistence() {
     push_recent_path(&mut recents, p1.clone());
     assert_eq!(recents, vec![p1.clone(), p2.clone()]);
 
-    // Truncate at 5 items (evicts p2)
-    push_recent_path(&mut recents, p3.clone());
-    push_recent_path(&mut recents, p4.clone());
-    push_recent_path(&mut recents, p5.clone());
-    push_recent_path(&mut recents, p6.clone());
-    assert_eq!(recents.len(), 5);
-    assert_eq!(recents[0], p6);
-    assert_eq!(recents[4], p1);
+    // Retention up to MAX_RECENT_FILES (10): p1..=p10 all retained without eviction
+    for p in &paths[2..10] {
+        push_recent_path(&mut recents, p.clone());
+    }
+    assert_eq!(recents.len(), 10);
+    assert_eq!(&recents[0], p10);
+    assert_eq!(&recents[9], p2);
 
-    // Atomic persistence roundtrip on disk
+    // 11th entry evicts the LRU tail (p2)
+    push_recent_path(&mut recents, p11.clone());
+    assert_eq!(recents.len(), 10);
+    assert_eq!(&recents[0], p11);
+    assert_eq!(&recents[9], p1);
+    assert!(!recents.contains(p2));
+
+    // Atomic persistence roundtrip on disk for all 10 entries
     let store_path = dir.path().join("nested/recent_files.json");
     save_recent_files_to_path(&store_path, &recents).unwrap();
     assert_eq!(load_recent_files_from_path(&store_path), recents);
 
+    // Per-item removal preserves order of remaining entries
+    assert!(remove_recent_path(&mut recents, p10));
+    assert_eq!(recents.len(), 9);
+    assert!(!recents.contains(p10));
+    assert!(!remove_recent_path(&mut recents, &missing));
+
     // Missing-file filtering on load
-    save_recent_files_to_path(&store_path, &[p6.clone(), missing, p1.clone()]).unwrap();
+    save_recent_files_to_path(&store_path, &[p11.clone(), missing, p1.clone()]).unwrap();
     assert_eq!(
         load_recent_files_from_path(&store_path),
-        vec![p6.clone(), p1.clone()]
+        vec![p11.clone(), p1.clone()]
     );
 
     // Deleted file filtering on load
-    std::fs::remove_file(&p1).unwrap();
-    assert_eq!(load_recent_files_from_path(&store_path), vec![p6]);
+    std::fs::remove_file(p1).unwrap();
+    assert_eq!(load_recent_files_from_path(&store_path), vec![p11.clone()]);
 
     // Malformed JSON recovery
     std::fs::write(&store_path, b"{corrupted json").unwrap();

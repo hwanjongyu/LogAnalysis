@@ -21,7 +21,10 @@ pub use filters::{
     remap_index_after_move, validate_modal_hex_field,
 };
 pub use pattern_history::{PatternHistory, PatternHistoryEntry};
-pub use recent_files::{load_recent_files_from_path, push_recent_path, save_recent_files_to_path};
+pub use recent_files::{
+    load_recent_files_from_path, push_recent_path, remove_recent_path, save_recent_files_to_path,
+    MAX_RECENT_FILES,
+};
 pub use selection::ActiveSelectedLine;
 pub use split_view::probe_parent_timestamp;
 
@@ -117,6 +120,7 @@ pub struct LogAnalysisWorkspace {
     pub(crate) filter_rules_scroll_handle: ScrollHandle,
     pub(crate) filter_drag_drop_target: Option<FilterDropTarget>,
     pub(crate) dragging_filter_rule_index: Option<usize>,
+    pub(crate) hovered_filter_rule_id: Option<loganalysis_core::uuid::Uuid>,
 
     // Search state
     pub(crate) search_ctrl: SearchController,
@@ -131,6 +135,9 @@ pub struct LogAnalysisWorkspace {
     pub(crate) active_file_name: Option<SharedString>,
     pub(crate) recent_files: Vec<std::path::PathBuf>,
     pub(crate) recent_files_gen: u64,
+    pub(crate) is_recent_workspaces_expanded: bool,
+    pub(crate) recent_workspaces_scroll_handle: ScrollHandle,
+    pub(crate) is_dragging_recent_scrollbar: bool,
     pub(crate) pattern_history: PatternHistory,
     pub(crate) pattern_history_gen: u64,
     pub(crate) is_dark_theme: bool,
@@ -481,6 +488,7 @@ impl LogAnalysisWorkspace {
             filter_rules_scroll_handle: ScrollHandle::new(),
             filter_drag_drop_target: None,
             dragging_filter_rule_index: None,
+            hovered_filter_rule_id: None,
 
             search_ctrl: SearchController::new(),
             find_input,
@@ -492,6 +500,9 @@ impl LogAnalysisWorkspace {
             active_file_name: None,
             recent_files: Vec::new(),
             recent_files_gen: 0,
+            is_recent_workspaces_expanded: false,
+            recent_workspaces_scroll_handle: ScrollHandle::new(),
+            is_dragging_recent_scrollbar: false,
             pattern_history: PatternHistory::default(),
             pattern_history_gen: 0,
             is_dark_theme: false,
@@ -1300,18 +1311,40 @@ impl LogAnalysisWorkspace {
         }
     }
 
+    /// Scrolls the Welcome Screen recent workspaces list based on pointer Y coordinate.
+    pub fn scroll_recent_workspaces_to_mouse_y(&mut self, mouse_y: Pixels, cx: &mut Context<Self>) {
+        let bounds = self.recent_workspaces_scroll_handle.bounds();
+        let track_top: f32 = bounds.origin.y.into();
+        let track_height: f32 = bounds.size.height.into();
+        let max_scroll_y: f32 = self.recent_workspaces_scroll_handle.max_offset().height.into();
+        if track_height <= 0.0 || max_scroll_y <= 0.0 {
+            return;
+        }
+        let target_y = crate::components::log_view::compute_recent_scroll_offset_from_mouse_y(
+            mouse_y.into(),
+            track_top,
+            track_height,
+            max_scroll_y,
+        );
+        self.recent_workspaces_scroll_handle
+            .set_offset(point(px(0.0), px(target_y)));
+        cx.notify();
+    }
+
     /// Clears all active vertical/horizontal scrollbar drag flags, returning `true` if any changed.
     pub(crate) fn clear_scrollbar_drag_flags(&mut self) -> bool {
         let had_drag = self.is_dragging_scrollbar
             || self.is_dragging_secondary_scrollbar
             || self.is_dragging_h_scrollbar
             || self.is_dragging_secondary_h_scrollbar
+            || self.is_dragging_recent_scrollbar
             || self.h_scrollbar_drag_grab_offset.is_some();
         if had_drag {
             self.is_dragging_scrollbar = false;
             self.is_dragging_secondary_scrollbar = false;
             self.is_dragging_h_scrollbar = false;
             self.is_dragging_secondary_h_scrollbar = false;
+            self.is_dragging_recent_scrollbar = false;
             self.h_scrollbar_drag_grab_offset = None;
         }
         had_drag
@@ -1634,6 +1667,17 @@ impl LogAnalysisWorkspace {
         } else {
             "Structured Column Grid View: OFF (Raw Monospace)".into()
         };
+        cx.notify();
+    }
+
+    /// Toggles whether the Welcome Screen recent workspaces shelf is expanded to show all entries.
+    pub fn toggle_recent_workspaces_expanded(&mut self, cx: &mut Context<Self>) {
+        self.is_recent_workspaces_expanded = !self.is_recent_workspaces_expanded;
+        if !self.is_recent_workspaces_expanded {
+            self.recent_workspaces_scroll_handle
+                .set_offset(Point::default());
+            self.is_dragging_recent_scrollbar = false;
+        }
         cx.notify();
     }
 

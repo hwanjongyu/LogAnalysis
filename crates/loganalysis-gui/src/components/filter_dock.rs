@@ -135,11 +135,34 @@ pub fn resolve_filter_row_style(
     }
 }
 
+/// Height in logical pixels of the Filter Dock tab bar (Bar 1).
+pub const FILTER_DOCK_TAB_BAR_HEIGHT_PX: f32 = 28.0;
+/// Height in logical pixels of the Filter Dock unified search + add toolbar (Bar 2).
+pub const FILTER_DOCK_TOOLBAR_HEIGHT_PX: f32 = 28.0;
+/// Fixed height in logical pixels of each flat dense filter rule row.
+pub const FILTER_ROW_HEIGHT_PX: f32 = 24.0;
+/// Vertical padding in logical pixels around each filter rule slot.
+pub const FILTER_ROW_SLOT_PY_PX: f32 = 0.0;
+/// Extra top padding in logical pixels above the first filter rule slot.
+pub const FILTER_ROW_FIRST_EXTRA_TOP_PX: f32 = 0.0;
+/// Horizontal padding in logical pixels around each filter rule slot.
+pub const FILTER_ROW_SLOT_PX: f32 = 0.0;
+
 /// Folds a 128-bit rule UUID into a stable 64-bit `ElementId` key across reorders.
 #[inline]
 pub fn filter_rule_element_key(rule_id: loganalysis_core::uuid::Uuid) -> u64 {
     let raw = rule_id.as_u128();
     (raw as u64) ^ ((raw >> 64) as u64)
+}
+
+/// Returns whether inline hover actions (`✎` / `✕`) should be revealed for a filter row.
+#[inline]
+pub fn should_show_filter_row_hover_actions(
+    hovered_rule_id: Option<loganalysis_core::uuid::Uuid>,
+    rule_id: loganalysis_core::uuid::Uuid,
+    is_internal_rule_drag: bool,
+) -> bool {
+    !is_internal_rule_drag && hovered_rule_id == Some(rule_id)
 }
 
 /// Returns whether the inline Edit (`✎`) button should be rendered for the current dock geometry.
@@ -156,12 +179,8 @@ pub fn is_compact_filter_row(is_bottom_dock: bool, dock_width: f32) -> bool {
 
 /// Returns horizontal slot padding in logical pixels for the current dock geometry.
 #[inline]
-fn filter_row_slot_px(is_bottom_dock: bool, dock_width: f32) -> f32 {
-    if is_compact_filter_row(is_bottom_dock, dock_width) {
-        4.0
-    } else {
-        8.0
-    }
+fn filter_row_slot_px(_is_bottom_dock: bool, _dock_width: f32) -> f32 {
+    FILTER_ROW_SLOT_PX
 }
 
 /// Normalizes painted slot or tail bounds into screen-space hit-test bounds by adding
@@ -305,9 +324,9 @@ impl Render for DraggedFilterRuleView {
         div()
             .max_w(px(260.0))
             .overflow_hidden()
-            .px(px(10.0))
-            .py(px(5.0))
-            .rounded_md()
+            .px(px(8.0))
+            .py(px(3.0))
+            .rounded_sm()
             .bg(bg)
             .border_1()
             .border_color(self.theme.accent)
@@ -319,7 +338,7 @@ impl Render for DraggedFilterRuleView {
             .child(
                 div()
                     .flex_shrink_0()
-                    .text_size(px(11.0))
+                    .text_size(px(10.0))
                     .text_color(if bg_opt.is_some() {
                         fg
                     } else {
@@ -335,7 +354,7 @@ impl Render for DraggedFilterRuleView {
                         .py(px(0.5))
                         .rounded_sm()
                         .bg(self.theme.bg_badge)
-                        .text_size(px(9.0))
+                        .text_size(px(8.5))
                         .font_weight(FontWeight::BOLD)
                         .text_color(self.theme.error_red)
                         .child("NOT"),
@@ -347,7 +366,7 @@ impl Render for DraggedFilterRuleView {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .font_family("monospace")
-                    .text_size(px(11.5))
+                    .text_size(px(11.0))
                     .text_color(fg)
                     .child(self.payload.pattern.clone()),
             )
@@ -443,12 +462,20 @@ fn render_filter_rule_search_box(
         .h(px(height_px))
         .when_some(width_px, |s, w| s.w(px(w)))
         .when(width_px.is_none(), |s| s.w_full())
+        .px(px(6.0))
+        .rounded_sm()
+        .bg(theme.bg_dark)
+        .border_1()
+        .border_color(theme.border_subtle)
+        .text_size(px(11.0))
+        .text_color(theme.text_primary)
         .flex()
         .items_center()
         .gap_1()
         .child(
             div()
                 .flex_1()
+                .min_w_0()
                 .h_full()
                 .child(workspace.filter_rule_input.clone()),
         )
@@ -456,7 +483,8 @@ fn render_filter_rule_search_box(
             Some(
                 div()
                     .id(clear_id)
-                    .px(px(4.0))
+                    .px(px(3.0))
+                    .py(px(0.0))
                     .cursor_pointer()
                     .text_size(px(10.0))
                     .text_color(theme.text_muted)
@@ -514,6 +542,11 @@ fn render_filter_rule_slot(
         workspace.filter_panel_position == FilterPanelPosition::Bottom,
         workspace.filter_dock_width,
     );
+    let show_hover_actions = should_show_filter_row_hover_actions(
+        workspace.hovered_filter_rule_id,
+        rule_id,
+        is_internal_rule_drag,
+    );
 
     let drop_pos_for_slot = if is_internal_rule_drag && !is_filtering_rules {
         workspace.filter_drag_drop_target.and_then(|target| {
@@ -548,14 +581,14 @@ fn render_filter_rule_slot(
 
     let grip_el = div()
         .id(grip_id)
-        .w(px(if is_compact { 12.0 } else { 14.0 }))
-        .h(px(if is_compact { 20.0 } else { 22.0 }))
+        .w(px(if is_compact { 10.0 } else { 12.0 }))
+        .h_full()
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
         .rounded_sm()
-        .text_size(px(11.0))
+        .text_size(px(10.0))
         .text_color(theme.text_muted)
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(|_, _, cx| cx.stop_propagation())
@@ -564,13 +597,16 @@ fn render_filter_rule_slot(
                 .tooltip(render_tooltip("Clear search to reorder rules", None, theme))
         })
         .when(!is_filtering_rules, |s| {
-            s.cursor(CursorStyle::OpenHand)
+            s.opacity(0.35)
+                .group_hover(row_group.clone(), |h| h.opacity(0.95))
+                .cursor(CursorStyle::OpenHand)
                 .hover(move |h| h.text_color(theme.text_primary))
                 .tooltip(render_tooltip("Drag to reorder rule", None, theme))
                 .on_drag(drag_payload, move |payload, _offset, window, cx| {
                     let _ = workspace_weak.update(cx, |ws, cx| {
                         window.focus(&ws.focus_handle);
                         ws.dragging_filter_rule_index = Some(payload.source_index);
+                        ws.hovered_filter_rule_id = None;
                         cx.notify();
                     });
                     cx.new(|_| DraggedFilterRuleView {
@@ -583,8 +619,8 @@ fn render_filter_rule_slot(
 
     let checkbox_el = div()
         .id(chk_id)
-        .w(px(if is_compact { 18.0 } else { 22.0 }))
-        .h(px(if is_compact { 20.0 } else { 22.0 }))
+        .w(px(18.0))
+        .h_full()
         .flex_shrink_0()
         .flex()
         .items_center()
@@ -606,8 +642,8 @@ fn render_filter_rule_slot(
         }))
         .child(
             div()
-                .w(px(15.0))
-                .h(px(15.0))
+                .w(px(13.0))
+                .h(px(13.0))
                 .rounded_sm()
                 .border_1()
                 .border_color(if is_active {
@@ -623,18 +659,20 @@ fn render_filter_rule_slot(
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(10.0))
+                .text_size(px(9.0))
                 .font_weight(FontWeight::BOLD)
                 .text_color(rgb(0xffffff))
                 .child(if is_active { "✓" } else { "" }),
         );
 
     let left_gutter_el = div()
+        .h_full()
         .flex()
         .items_center()
         .flex_shrink_0()
-        .when(!is_compact, |s| s.px(px(4.0)).gap_1())
-        .when(is_compact, |s| s.px(px(3.0)).gap(px(2.0)))
+        .pl(px(if is_compact { 2.0 } else { 4.0 }))
+        .pr(px(3.0))
+        .gap(px(if is_compact { 1.0 } else { 2.0 }))
         .bg(theme.bg_panel)
         .when(!style.has_custom_bg, |s| {
             s.group_hover(row_group.clone(), move |h| h.bg(theme.btn_hover))
@@ -649,17 +687,16 @@ fn render_filter_rule_slot(
         .id(strip_id)
         .flex_1()
         .min_w_0()
+        .h_full()
         .overflow_hidden()
         .flex()
         .items_center()
         .justify_between()
         .gap_1()
-        .pl(px(if is_compact { 4.0 } else { 8.0 }))
+        .pl(px(if is_compact { 4.0 } else { 6.0 }))
         .pr(px(if is_compact { 4.0 } else { 6.0 }))
-        .py(px(5.0))
         .bg(style.strip_bg)
         .border_l_1()
-        .border_r_1()
         .border_color(theme.border_subtle)
         .when(is_compact && style.show_low_contrast_hint, |s| {
             s.tooltip(render_tooltip(
@@ -678,7 +715,7 @@ fn render_filter_rule_slot(
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .font_family("monospace")
-                .text_size(px(11.5))
+                .text_size(px(11.0))
                 .text_color(style.strip_fg)
                 .child(rule.text.clone()),
         )
@@ -687,19 +724,19 @@ fn render_filter_rule_slot(
                 .flex()
                 .items_center()
                 .flex_shrink_0()
-                .gap(px(if is_compact { 2.0 } else { 4.0 }))
+                .gap(px(if is_compact { 2.0 } else { 3.0 }))
                 .when(!is_compact && style.show_low_contrast_hint, |s| {
                     s.child(
                         div()
                             .id(contrast_warn_id)
                             .flex_shrink_0()
-                            .px(px(3.5))
-                            .py(px(0.5))
+                            .px(px(3.0))
+                            .py(px(0.0))
                             .rounded_sm()
                             .bg(warn_bg)
                             .border_1()
                             .border_color(theme.warning_amber)
-                            .text_size(px(9.5))
+                            .text_size(px(9.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(warn_fg)
                             .tooltip(render_tooltip(
@@ -716,13 +753,13 @@ fn render_filter_rule_slot(
                 .when(is_regex, |s| {
                     s.child(
                         div()
-                            .px(px(if is_compact { 2.5 } else { 4.0 }))
-                            .py(px(1.0))
+                            .px(px(if is_compact { 2.5 } else { 3.5 }))
+                            .py(px(0.0))
                             .rounded_sm()
                             .bg(theme.bg_badge)
                             .border_1()
                             .border_color(theme.border)
-                            .text_size(px(9.0))
+                            .text_size(px(8.5))
                             .text_color(theme.accent)
                             .child(".*"),
                     )
@@ -730,13 +767,13 @@ fn render_filter_rule_slot(
                 .when(is_exclude, |s| {
                     s.child(
                         div()
-                            .px(px(if is_compact { 3.0 } else { 4.0 }))
-                            .py(px(1.0))
+                            .px(px(if is_compact { 2.5 } else { 3.5 }))
+                            .py(px(0.0))
                             .rounded_sm()
                             .bg(theme.bg_badge)
                             .border_1()
                             .border_color(theme.border)
-                            .text_size(px(9.0))
+                            .text_size(px(8.5))
                             .font_weight(FontWeight::BOLD)
                             .text_color(theme.error_red)
                             .child(if is_compact { "!" } else { "NOT" }),
@@ -744,14 +781,14 @@ fn render_filter_rule_slot(
                 })
                 .child(
                     div()
-                        .px(px(if is_compact { 4.0 } else { 6.0 }))
-                        .py(px(1.0))
+                        .px(px(if is_compact { 4.0 } else { 5.0 }))
+                        .py(px(0.0))
                         .rounded_full()
                         .bg(theme.bg_badge)
                         .border_1()
                         .border_color(theme.border)
                         .font_family("monospace")
-                        .text_size(px(if is_compact { 9.5 } else { 10.0 }))
+                        .text_size(px(9.5))
                         .text_color(if count > 0 {
                             theme.text_primary
                         } else {
@@ -762,11 +799,14 @@ fn render_filter_rule_slot(
         );
 
     let right_controls_el = div()
+        .h_full()
         .flex()
         .items_center()
         .flex_shrink_0()
-        .when(!is_compact, |s| s.px(px(4.0)).gap_1())
-        .when(is_compact, |s| s.px(px(3.0)))
+        .px(px(3.0))
+        .gap(px(2.0))
+        .border_l_1()
+        .border_color(theme.border_subtle)
         .bg(theme.bg_panel)
         .when(!style.has_custom_bg, |s| {
             s.group_hover(row_group.clone(), move |h| h.bg(theme.btn_hover))
@@ -775,14 +815,13 @@ fn render_filter_rule_slot(
             s.child(
                 div()
                     .id(edit_id)
-                    .px(px(4.0))
-                    .py(px(2.0))
+                    .px(px(3.0))
+                    .py(px(1.0))
                     .rounded_sm()
                     .cursor_pointer()
-                    .text_size(px(11.0))
+                    .text_size(px(10.5))
                     .text_color(theme.text_muted)
-                    .opacity(0.65)
-                    .group_hover(row_group.clone(), |h| h.opacity(1.0))
+                    .opacity(0.75)
                     .hover(move |h| h.text_color(theme.accent).opacity(1.0))
                     .tooltip(render_tooltip("Edit filter rule", None, theme))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -797,14 +836,13 @@ fn render_filter_rule_slot(
         .child(
             div()
                 .id(del_id)
-                .px(px(if is_compact { 2.0 } else { 4.0 }))
-                .py(px(2.0))
+                .px(px(3.0))
+                .py(px(1.0))
                 .rounded_sm()
                 .cursor_pointer()
-                .text_size(px(11.0))
+                .text_size(px(10.5))
                 .text_color(theme.text_muted)
-                .opacity(0.65)
-                .group_hover(row_group.clone(), |h| h.opacity(1.0))
+                .opacity(0.75)
                 .hover(move |h| h.text_color(theme.error_red).opacity(1.0))
                 .tooltip(render_tooltip("Delete filter rule", None, theme))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -819,17 +857,12 @@ fn render_filter_rule_slot(
         .id(row_id)
         .group(row_group)
         .w_full()
-        .min_h(px(30.0))
+        .h(px(FILTER_ROW_HEIGHT_PX))
         .flex()
-        .rounded_md()
         .overflow_hidden()
         .bg(style.outer_bg)
-        .border_1()
-        .border_color(if is_active {
-            theme.border
-        } else {
-            theme.border_subtle
-        })
+        .border_b_1()
+        .border_color(theme.border_subtle)
         .when(is_drag_source, |s| s.opacity(0.4))
         .hover(move |s| {
             if !style.has_custom_bg {
@@ -838,6 +871,24 @@ fn render_filter_rule_slot(
                 s.border_color(theme.accent)
             }
         })
+        .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
+            let changed = if *hovered {
+                if this.hovered_filter_rule_id != Some(rule_id) {
+                    this.hovered_filter_rule_id = Some(rule_id);
+                    true
+                } else {
+                    false
+                }
+            } else if this.hovered_filter_rule_id == Some(rule_id) {
+                this.hovered_filter_rule_id = None;
+                true
+            } else {
+                false
+            };
+            if changed {
+                cx.notify();
+            }
+        }))
         .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
             if event.standard_click() && event.click_count() == 2 {
                 this.open_edit_filter_modal(r_idx, cx);
@@ -846,18 +897,20 @@ fn render_filter_rule_slot(
             }
         }))
         .when_some(style.left_accent_bar, |s, bar_color| {
-            s.child(div().w(px(3.0)).flex_shrink_0().bg(bar_color))
+            s.child(div().w(px(3.0)).h_full().flex_shrink_0().bg(bar_color))
         })
         .child(left_gutter_el)
         .child(pattern_strip_el)
-        .child(right_controls_el);
+        .when(show_hover_actions, |s| s.child(right_controls_el));
 
     div()
         .relative()
         .w_full()
         .px(px(slot_px))
-        .py(px(3.0))
-        .when(vis_idx == 0, |s| s.pt(px(8.0)))
+        .py(px(FILTER_ROW_SLOT_PY_PX))
+        .when(vis_idx == 0 && FILTER_ROW_FIRST_EXTRA_TOP_PX > 0.0, |s| {
+            s.pt(px(FILTER_ROW_SLOT_PY_PX + FILTER_ROW_FIRST_EXTRA_TOP_PX))
+        })
         .on_children_prepainted(move |children_bounds, _window, _cx| {
             if let Some(&row_bounds) = children_bounds.first() {
                 cell_for_prepaint.set(row_bounds);
@@ -897,7 +950,11 @@ fn render_filter_rule_slot(
                     .rounded_full()
                     .bg(theme.accent)
                     .when(pos == DropPosition::Before, |b| {
-                        b.top(px(if vis_idx == 0 { 5.0 } else { 0.0 }))
+                        b.top(px(if vis_idx == 0 {
+                            FILTER_ROW_FIRST_EXTRA_TOP_PX
+                        } else {
+                            0.0
+                        }))
                     })
                     .when(pos == DropPosition::After, |b| b.bottom(px(0.0))),
             )
@@ -961,7 +1018,6 @@ pub fn render_filter_dock(
     let is_compact = is_compact_filter_row(is_bottom_dock, workspace.filter_dock_width);
     let show_edit_btn =
         should_show_inline_edit_button(is_bottom_dock, workspace.filter_dock_width);
-    let show_bottom_wins_hint = is_bottom_dock || workspace.filter_dock_width >= 300.0;
     let slot_px = filter_row_slot_px(is_bottom_dock, workspace.filter_dock_width);
     let is_internal_rule_drag =
         cx.has_active_drag() && workspace.dragging_filter_rule_index.is_some();
@@ -978,10 +1034,10 @@ pub fn render_filter_dock(
         .when(is_bottom_dock, |s| {
             s.w_full().h(px(workspace.filter_dock_height)).flex_shrink_0()
         })
-        // Tab Bar Header
+        // Bar 1 — Tab Bar (28px)
         .child(
             div()
-                .h(px(36.0))
+                .h(px(FILTER_DOCK_TAB_BAR_HEIGHT_PX))
                 .w_full()
                 .bg(theme.bg_header)
                 .border_b_1()
@@ -989,7 +1045,8 @@ pub fn render_filter_dock(
                 .flex()
                 .items_center()
                 .justify_between()
-                .px(px(8.0))
+                .px(px(6.0))
+                .flex_shrink_0()
                 .child(
                     div()
                         .flex()
@@ -1006,9 +1063,9 @@ pub fn render_filter_dock(
                                         "tab-header-btn".into(),
                                         t_idx as u64,
                                     ))
-                                    .px(px(8.0))
-                                    .py(px(3.0))
-                                    .rounded_md()
+                                    .px(px(7.0))
+                                    .py(px(2.0))
+                                    .rounded_sm()
                                     .bg(if is_active_tab {
                                         theme.accent
                                     } else {
@@ -1019,7 +1076,7 @@ pub fn render_filter_dock(
                                     } else {
                                         theme.text_muted
                                     })
-                                    .text_size(px(11.0))
+                                    .text_size(px(10.5))
                                     .font_weight(if is_active_tab {
                                         FontWeight::SEMIBOLD
                                     } else {
@@ -1042,8 +1099,8 @@ pub fn render_filter_dock(
                         .child(
                             div()
                                 .id("btn-add-tab")
-                                .px(px(6.0))
-                                .py(px(2.0))
+                                .px(px(5.0))
+                                .py(px(1.5))
                                 .rounded_sm()
                                 .bg(theme.bg_card)
                                 .hover(move |s| s.bg(theme.btn_hover))
@@ -1058,8 +1115,8 @@ pub fn render_filter_dock(
                         .child(
                             div()
                                 .id("btn-del-tab")
-                                .px(px(5.0))
-                                .py(px(2.0))
+                                .px(px(4.0))
+                                .py(px(1.5))
                                 .rounded_sm()
                                 .bg(theme.bg_card)
                                 .hover(move |s| s.bg(theme.btn_hover))
@@ -1078,41 +1135,53 @@ pub fn render_filter_dock(
                         ),
                 ),
         )
-        // Section Header + Inline/Dedicated Search Bar + Add Rule CTA
+        // Bar 2 — Unified Search + Add Toolbar (28px)
         .child(
             div()
-                .h(px(34.0))
+                .h(px(FILTER_DOCK_TOOLBAR_HEIGHT_PX))
                 .w_full()
-                .px(px(10.0))
+                .px(px(6.0))
+                .gap_1p5()
+                .flex_shrink_0()
                 .border_b_1()
                 .border_color(theme.border_subtle)
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .min_w_0()
-                        .flex_1()
-                        .overflow_hidden()
-                        .child(
-                            div()
-                                .id("filter-rules-heading")
-                                .flex_shrink_0()
-                                .text_size(px(11.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.text_muted)
-                                .tooltip(render_tooltip(
-                                    "Last-match-wins: bottom-most matching rule takes precedence",
-                                    None,
-                                    theme,
-                                ))
-                                .child("FILTER RULES"),
-                        )
-                        .when(show_bottom_wins_hint, |s| {
-                            s.child(
+                .when(!is_bottom_dock, |s| {
+                    s.child(div().flex_1().min_w_0().child(render_filter_rule_search_box(
+                        workspace,
+                        "input-filter-rule-search",
+                        "btn-clear-filter-search",
+                        22.0,
+                        None,
+                        cx,
+                    )))
+                })
+                .when(is_bottom_dock, |s| {
+                    s.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .min_w_0()
+                            .flex_1()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .id("filter-rules-heading")
+                                    .flex_shrink_0()
+                                    .text_size(px(10.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.text_muted)
+                                    .tooltip(render_tooltip(
+                                        "Last-match-wins: bottom-most matching rule takes precedence",
+                                        None,
+                                        theme,
+                                    ))
+                                    .child("FILTER RULES"),
+                            )
+                            .child(
                                 div()
                                     .id("filter-rules-precedence-hint")
                                     .flex_shrink_0()
@@ -1125,31 +1194,27 @@ pub fn render_filter_dock(
                                     ))
                                     .child("Bottom wins"),
                             )
-                        })
-                        .children(if is_bottom_dock {
-                            Some(render_filter_rule_search_box(
+                            .child(render_filter_rule_search_box(
                                 workspace,
                                 "input-filter-rule-search-inline",
                                 "btn-clear-filter-search-inline",
-                                24.0,
+                                22.0,
                                 Some(220.0),
                                 cx,
-                            ))
-                        } else {
-                            None
-                        }),
-                )
+                            )),
+                    )
+                })
                 .child(
                     div()
                         .id("btn-add-filter-rule")
                         .flex_shrink_0()
-                        .px(px(8.0))
-                        .py(px(3.0))
-                        .rounded_md()
+                        .h(px(22.0))
+                        .px(px(7.0))
+                        .rounded_sm()
                         .bg(theme.accent)
                         .hover(move |s| s.bg(theme.accent_hover))
                         .text_color(rgb(0xffffff))
-                        .text_size(px(11.0))
+                        .text_size(px(10.5))
                         .font_weight(FontWeight::MEDIUM)
                         .cursor_pointer()
                         .flex()
@@ -1172,25 +1237,6 @@ pub fn render_filter_dock(
                         }),
                 ),
         )
-        // In Left Sidebar mode, display the full-width dedicated search box
-        .children(if !is_bottom_dock {
-            Some(
-                div()
-                    .p(px(8.0))
-                    .border_b_1()
-                    .border_color(theme.border_subtle)
-                    .child(render_filter_rule_search_box(
-                        workspace,
-                        "input-filter-rule-search",
-                        "btn-clear-filter-search",
-                        28.0,
-                        None,
-                        cx,
-                    )),
-            )
-        } else {
-            None
-        })
         // Scrollable Color-Coded Filter Rule Cards (Vertical List format)
         .child(
             div()
@@ -1252,7 +1298,11 @@ pub fn render_filter_dock(
                                 }
                                 return;
                             };
-                            let extra_top_trim = if ix == 0 { 5.0 } else { 0.0 };
+                            let extra_top_trim = if ix == 0 {
+                                FILTER_ROW_FIRST_EXTRA_TOP_PX
+                            } else {
+                                0.0
+                            };
                             row_screen_bounds.push(normalize_slot_hit_bounds(
                                 raw_bounds,
                                 scroll_offset,
@@ -2306,5 +2356,144 @@ mod tests {
 
         // Non-matching trimmed query returns empty
         assert!(filter_matching_rules(&rules, "  nonexistent  ").is_empty());
+    }
+
+    #[test]
+    fn test_filter_dock_flat_dense_constants_and_geometry() {
+        use super::{
+            filter_row_slot_px, FILTER_DOCK_TAB_BAR_HEIGHT_PX, FILTER_DOCK_TOOLBAR_HEIGHT_PX,
+            FILTER_ROW_FIRST_EXTRA_TOP_PX, FILTER_ROW_HEIGHT_PX, FILTER_ROW_SLOT_PX,
+            FILTER_ROW_SLOT_PY_PX,
+        };
+
+        assert_eq!(FILTER_DOCK_TAB_BAR_HEIGHT_PX, 28.0);
+        assert_eq!(FILTER_DOCK_TOOLBAR_HEIGHT_PX, 28.0);
+        assert_eq!(FILTER_ROW_HEIGHT_PX, 24.0);
+        assert_eq!(FILTER_ROW_SLOT_PY_PX, 0.0);
+        assert_eq!(FILTER_ROW_FIRST_EXTRA_TOP_PX, 0.0);
+        assert_eq!(FILTER_ROW_SLOT_PX, 0.0);
+
+        for is_bottom in [false, true] {
+            for width in [180.0_f32, 229.0, 230.0, 310.0] {
+                assert_eq!(filter_row_slot_px(is_bottom, width), 0.0);
+            }
+        }
+
+        let scroll_bounds =
+            Bounds::new(Point::new(px(0.0), px(100.0)), Size::new(px(300.0), px(200.0)));
+        let scroll_offset = Point::new(px(0.0), px(-12.0));
+        let slot_px = filter_row_slot_px(false, 310.0);
+        let row_h = FILTER_ROW_HEIGHT_PX + FILTER_ROW_SLOT_PY_PX * 2.0;
+
+        let raw_slot_0 = Bounds::new(
+            Point::new(px(0.0), px(112.0)),
+            Size::new(px(300.0), px(row_h + FILTER_ROW_FIRST_EXTRA_TOP_PX)),
+        );
+        let raw_slot_1 = Bounds::new(
+            Point::new(px(0.0), px(112.0 + row_h + FILTER_ROW_FIRST_EXTRA_TOP_PX)),
+            Size::new(px(300.0), px(row_h)),
+        );
+
+        let norm_0 = normalize_slot_hit_bounds(
+            raw_slot_0,
+            scroll_offset,
+            slot_px,
+            FILTER_ROW_FIRST_EXTRA_TOP_PX,
+        );
+        let norm_1 = normalize_slot_hit_bounds(raw_slot_1, scroll_offset, slot_px, 0.0);
+
+        // Contiguous 24px rows: zero deadzone between row 0 bottom and row 1 top
+        assert_eq!(norm_0.origin, Point::new(px(0.0), px(100.0)));
+        assert_eq!(norm_0.size, Size::new(px(300.0), px(24.0)));
+        assert_eq!(norm_0.bottom(), norm_1.origin.y);
+        assert_eq!(norm_1.size, Size::new(px(300.0), px(24.0)));
+
+        // Midpoint checks across row 0 (y = 100..124, mid = 112) and row 1 (y = 124..148, mid = 136)
+        assert_eq!(
+            resolve_drop_target_at_position(
+                Point::new(px(150.0), px(111.9)),
+                scroll_bounds,
+                &[norm_0, norm_1],
+                None
+            ),
+            Some(FilterDropTarget {
+                target_row_index: 0,
+                position: DropPosition::Before
+            })
+        );
+        assert_eq!(
+            resolve_drop_target_at_position(
+                Point::new(px(150.0), px(112.0)),
+                scroll_bounds,
+                &[norm_0, norm_1],
+                None
+            ),
+            Some(FilterDropTarget {
+                target_row_index: 0,
+                position: DropPosition::After
+            })
+        );
+        // Exact seam y = 124.0 hits row 0 After (no deadzone); y = 125.0 hits row 1 Before
+        assert_eq!(
+            resolve_drop_target_at_position(
+                Point::new(px(150.0), px(124.0)),
+                scroll_bounds,
+                &[norm_0, norm_1],
+                None
+            ),
+            Some(FilterDropTarget {
+                target_row_index: 0,
+                position: DropPosition::After
+            })
+        );
+        assert_eq!(
+            resolve_drop_target_at_position(
+                Point::new(px(150.0), px(125.0)),
+                scroll_bounds,
+                &[norm_0, norm_1],
+                None
+            ),
+            Some(FilterDropTarget {
+                target_row_index: 1,
+                position: DropPosition::Before
+            })
+        );
+        assert_eq!(
+            resolve_drop_target_at_position(
+                Point::new(px(150.0), px(136.0)),
+                scroll_bounds,
+                &[norm_0, norm_1],
+                None
+            ),
+            Some(FilterDropTarget {
+                target_row_index: 1,
+                position: DropPosition::After
+            })
+        );
+    }
+
+    #[test]
+    fn test_should_show_filter_row_hover_actions() {
+        use super::should_show_filter_row_hover_actions;
+
+        let rule_a = FilterRule::default().id;
+        let rule_b = FilterRule::default().id;
+
+        assert!(!should_show_filter_row_hover_actions(None, rule_a, false));
+        assert!(!should_show_filter_row_hover_actions(
+            Some(rule_b),
+            rule_a,
+            false
+        ));
+        assert!(should_show_filter_row_hover_actions(
+            Some(rule_a),
+            rule_a,
+            false
+        ));
+        assert!(!should_show_filter_row_hover_actions(
+            Some(rule_a),
+            rule_a,
+            true
+        ));
     }
 }

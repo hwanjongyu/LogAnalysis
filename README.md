@@ -3,7 +3,7 @@
 [![Rust](https://img.shields.io/badge/Rust-1.80+-orange.svg)](https://www.rust-lang.org/)
 [![UI: GPUI](https://img.shields.io/badge/UI-GPUI%20(Zed)-blueviolet.svg)](https://gpui.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests: Passing](https://img.shields.io/badge/Tests-441%2F441%20Passing-brightgreen.svg)](#running-tests)
+[![Tests: Passing](https://img.shields.io/badge/Tests-451%2F451%20Passing-brightgreen.svg)](#running-tests)
 
 **LogAnalysis** is a surgical, ultra-fast desktop log analysis and real-time Android `adb logcat` exploration tool. Inspired by the classic [TextAnalysisTool](https://textanalysistool.github.io/) and evolved from [loganalysis_gui](https://github.com/hwanjongyu/loganalysis_gui), it is re-engineered from the ground up in **pure Rust** using Zed Industries' GPU-accelerated **GPUI** framework.
 

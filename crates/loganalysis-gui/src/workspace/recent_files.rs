@@ -2,6 +2,8 @@ use gpui::*;
 
 use super::LogAnalysisWorkspace;
 
+/// Maximum number of recent file paths retained in history.
+pub const MAX_RECENT_FILES: usize = 10;
 /// Maximum on-disk `recent_files.json` size (1 MiB).
 pub const MAX_RECENT_FILES_BYTES: usize = 1024 * 1024;
 
@@ -9,14 +11,35 @@ static RECENT_FILES_SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static RECENT_FILES_SAVE_GEN: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// Inserts `path` at the front of `recent_files`, deduplicating and capping at 5 entries.
+/// Inserts `path` at the front of `recent_files`, deduplicating and capping at `MAX_RECENT_FILES` entries.
 pub fn push_recent_path(recent_files: &mut Vec<std::path::PathBuf>, path: std::path::PathBuf) {
     recent_files.retain(|p| p != &path);
     recent_files.insert(0, path);
-    recent_files.truncate(5);
+    recent_files.truncate(MAX_RECENT_FILES);
+}
+
+/// Removes `target` from `recent_files` if present, returning `true` when at least one entry was removed.
+pub fn remove_recent_path(
+    recent_files: &mut Vec<std::path::PathBuf>,
+    target: &std::path::Path,
+) -> bool {
+    let before = recent_files.len();
+    recent_files.retain(|p| p != target);
+    recent_files.len() != before
 }
 
 impl LogAnalysisWorkspace {
+    fn collapse_recent_workspaces_if_needed(&mut self) {
+        if self.recent_files.len()
+            <= crate::components::log_view::RECENT_WORKSPACES_COLLAPSED_COUNT
+        {
+            self.is_recent_workspaces_expanded = false;
+            self.recent_workspaces_scroll_handle
+                .set_offset(Point::default());
+            self.is_dragging_recent_scrollbar = false;
+        }
+    }
+
     /// Asynchronously loads persisted recent file paths on startup without blocking the UI thread.
     pub fn load_recent_files_async(&mut self, cx: &mut Context<Self>) {
         let load_gen = self.recent_files_gen;
@@ -29,6 +52,7 @@ impl LogAnalysisWorkspace {
                 let _ = this.update(&mut async_cx, |workspace, cx| {
                     if workspace.recent_files_gen == load_gen {
                         workspace.recent_files = loaded;
+                        workspace.collapse_recent_workspaces_if_needed();
                         cx.notify();
                     }
                 });
@@ -41,6 +65,7 @@ impl LogAnalysisWorkspace {
     pub fn add_recent_file_async(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
         self.recent_files_gen = self.recent_files_gen.wrapping_add(1);
         push_recent_path(&mut self.recent_files, path.clone());
+        self.collapse_recent_workspaces_if_needed();
         cx.notify();
 
         let raw_path = path.clone();
@@ -63,6 +88,7 @@ impl LogAnalysisWorkspace {
                         .recent_files
                         .retain(|p| p != &raw_path && p != &canonical);
                     push_recent_path(&mut workspace.recent_files, canonical);
+                    workspace.collapse_recent_workspaces_if_needed();
                     let save_gen = RECENT_FILES_SAVE_GEN
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                         + 1;
@@ -82,10 +108,39 @@ impl LogAnalysisWorkspace {
         .detach();
     }
 
+    /// Removes a single path from recent history immediately and persists the updated list asynchronously.
+    pub fn remove_recent_file_async(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        if !remove_recent_path(&mut self.recent_files, path) {
+            return;
+        }
+        self.recent_files_gen = self.recent_files_gen.wrapping_add(1);
+        self.collapse_recent_workspaces_if_needed();
+        let save_gen =
+            RECENT_FILES_SAVE_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let snapshot = self.recent_files.clone();
+        cx.notify();
+
+        cx.spawn(move |_this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let bg_executor = cx.background_executor().clone();
+            async move {
+                bg_executor
+                    .spawn(async move {
+                        save_recent_files_serialized(&snapshot, save_gen);
+                    })
+                    .await;
+            }
+        })
+        .detach();
+    }
+
     /// Clears the recent files list immediately and persists the empty list asynchronously.
     pub fn clear_recent_files_async(&mut self, cx: &mut Context<Self>) {
         self.recent_files_gen = self.recent_files_gen.wrapping_add(1);
         self.recent_files.clear();
+        self.is_recent_workspaces_expanded = false;
+        self.recent_workspaces_scroll_handle
+            .set_offset(Point::default());
+        self.is_dragging_recent_scrollbar = false;
         let save_gen =
             RECENT_FILES_SAVE_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         cx.notify();
@@ -164,12 +219,16 @@ where
     }
 }
 
-/// Loads up to 5 existing recent file paths from a JSON file at `path`.
+/// Loads up to `MAX_RECENT_FILES` existing recent file paths from a JSON file at `path`.
 /// Nonexistent entries and malformed/unreadable/oversized JSON files resolve to an empty/filtered list.
 pub fn load_recent_files_from_path(path: &std::path::Path) -> Vec<std::path::PathBuf> {
     if let Ok(data) = super::pattern_history::read_to_string_bounded(path, MAX_RECENT_FILES_BYTES) {
         if let Ok(paths) = serde_json::from_str::<Vec<std::path::PathBuf>>(&data) {
-            return paths.into_iter().filter(|p| p.exists()).take(5).collect();
+            return paths
+                .into_iter()
+                .filter(|p| p.exists())
+                .take(MAX_RECENT_FILES)
+                .collect();
         }
     }
     Vec::new()
@@ -220,23 +279,77 @@ pub(crate) fn save_recent_files_serialized(files: &[std::path::PathBuf], save_ge
 
 #[cfg(test)]
 mod tests {
-    use super::{load_recent_files_from_path, push_recent_path, save_recent_files_to_path};
+    use super::{
+        load_recent_files_from_path, push_recent_path, remove_recent_path,
+        save_recent_files_to_path, MAX_RECENT_FILES,
+    };
     use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[test]
     fn test_push_recent_path_lru_dedup_and_cap() {
+        assert_eq!(MAX_RECENT_FILES, 10);
         let mut recent = Vec::new();
-        for i in 1..=6 {
+        for i in 1..=12 {
             push_recent_path(&mut recent, PathBuf::from(format!("/tmp/file{i}.log")));
         }
-        assert_eq!(recent.len(), 5);
-        assert_eq!(recent[0], PathBuf::from("/tmp/file6.log"));
-        assert_eq!(recent[4], PathBuf::from("/tmp/file2.log"));
+        assert_eq!(recent.len(), MAX_RECENT_FILES);
+        assert_eq!(recent[0], PathBuf::from("/tmp/file12.log"));
+        assert_eq!(recent[MAX_RECENT_FILES - 1], PathBuf::from("/tmp/file3.log"));
 
-        push_recent_path(&mut recent, PathBuf::from("/tmp/file3.log"));
-        assert_eq!(recent.len(), 5);
-        assert_eq!(recent[0], PathBuf::from("/tmp/file3.log"));
+        push_recent_path(&mut recent, PathBuf::from("/tmp/file5.log"));
+        assert_eq!(recent.len(), MAX_RECENT_FILES);
+        assert_eq!(recent[0], PathBuf::from("/tmp/file5.log"));
+    }
+
+    #[test]
+    fn test_remove_recent_path() {
+        let mut empty: Vec<PathBuf> = Vec::new();
+        assert!(!remove_recent_path(&mut empty, &PathBuf::from("/tmp/a.log")));
+        assert!(empty.is_empty());
+
+        let p1 = PathBuf::from("/tmp/1.log");
+        let p2 = PathBuf::from("/tmp/2.log");
+        let p3 = PathBuf::from("/tmp/3.log");
+        let p4 = PathBuf::from("/tmp/4.log");
+        let mut recent = vec![p1.clone(), p2.clone(), p3.clone(), p4.clone()];
+
+        // Non-existent target leaves list unchanged
+        assert!(!remove_recent_path(&mut recent, &PathBuf::from("/tmp/missing.log")));
+        assert_eq!(recent, vec![p1.clone(), p2.clone(), p3.clone(), p4.clone()]);
+
+        // Remove middle entry
+        assert!(remove_recent_path(&mut recent, &p2));
+        assert_eq!(recent, vec![p1.clone(), p3.clone(), p4.clone()]);
+
+        // Remove first entry
+        assert!(remove_recent_path(&mut recent, &p1));
+        assert_eq!(recent, vec![p3.clone(), p4.clone()]);
+
+        // Remove last entry
+        assert!(remove_recent_path(&mut recent, &p4));
+        assert_eq!(recent, vec![p3.clone()]);
+
+        // Remove final remaining entry
+        assert!(remove_recent_path(&mut recent, &p3));
+        assert!(recent.is_empty());
+    }
+
+    #[test]
+    fn test_load_recent_files_from_path_caps_at_max_recent_files() {
+        let dir = TempDir::new().expect("create temp dir");
+        let mut paths = Vec::new();
+        for i in 1..=12 {
+            let p = dir.path().join(format!("f{i}.log"));
+            std::fs::write(&p, b"x").unwrap();
+            paths.push(p);
+        }
+        let store_path = dir.path().join("recent_files.json");
+        save_recent_files_to_path(&store_path, &paths).expect("save should succeed");
+
+        let loaded = load_recent_files_from_path(&store_path);
+        assert_eq!(loaded.len(), MAX_RECENT_FILES);
+        assert_eq!(loaded, paths[..MAX_RECENT_FILES]);
     }
 
     #[test]

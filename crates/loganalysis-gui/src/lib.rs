@@ -306,6 +306,9 @@ impl Render for LogAnalysisWorkspace {
                     if this.is_dragging_secondary_h_scrollbar {
                         this.scroll_h_to_mouse_x(false, event.position.x, cx);
                     }
+                    if this.is_dragging_recent_scrollbar {
+                        this.scroll_recent_workspaces_to_mouse_y(event.position.y, cx);
+                    }
                 } else {
                     if this.dragging_filter_rule_index.is_some() {
                         if cx.has_active_drag() {
