@@ -101,6 +101,7 @@ pub fn get_active_x11_window_id() -> Option<std::os::raw::c_ulong> {
 
 /// Returns `true` when running inside a Linux Wayland session (`WAYLAND_DISPLAY` is non-empty
 /// or `XDG_SESSION_TYPE` equals `"wayland"` case-insensitively).
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
 #[inline]
 pub(crate) fn is_wayland_session() -> bool {
     #[cfg(target_os = "linux")]
