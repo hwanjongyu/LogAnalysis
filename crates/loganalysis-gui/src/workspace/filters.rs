@@ -640,6 +640,7 @@ impl LogAnalysisWorkspace {
     /// Opens modal to add new filter rule
     pub fn open_add_filter_modal(&mut self, cx: &mut Context<Self>) {
         self.clear_filter_drag_state_fields();
+        self.is_update_modal_open = false;
         self.modal_pattern_input.update(cx, |input, cx| {
             input.clear(cx);
         });
@@ -663,6 +664,7 @@ impl LogAnalysisWorkspace {
     /// Opens modal to edit existing filter rule
     pub fn open_edit_filter_modal(&mut self, rule_idx: usize, cx: &mut Context<Self>) {
         self.clear_filter_drag_state(cx);
+        self.is_update_modal_open = false;
         if let Some(tab) = self.filter_tabs.get(self.active_tab_index) {
             if let Some(rule) = tab.filters.get(rule_idx) {
                 let pattern = rule.text.clone();

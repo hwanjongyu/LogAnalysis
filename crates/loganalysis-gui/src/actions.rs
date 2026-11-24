@@ -51,11 +51,13 @@ actions!(
         ToggleZenMode,
         ToggleLineDetail,
         ClearPatternHistory,
+        CheckForUpdates,
+        ToggleAutoUpdateCheck,
     ]
 );
 
 /// Total number of GPUI actions registered in this crate.
-pub const REGISTERED_ACTION_COUNT: usize = 48;
+pub const REGISTERED_ACTION_COUNT: usize = 50;
 
 /// Returns the canonical GPUI action names of all registered workspace actions.
 pub fn all_action_names() -> Vec<&'static str> {
@@ -108,5 +110,7 @@ pub fn all_action_names() -> Vec<&'static str> {
         gpui::Action::name(&ToggleZenMode),
         gpui::Action::name(&ToggleLineDetail),
         gpui::Action::name(&ClearPatternHistory),
+        gpui::Action::name(&CheckForUpdates),
+        gpui::Action::name(&ToggleAutoUpdateCheck),
     ]
 }

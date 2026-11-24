@@ -9,6 +9,7 @@ mod recent_files;
 mod search;
 mod selection;
 mod split_view;
+pub mod updater;
 
 pub use dock::{
     apply_facet_filter_to_tab, clamp_filter_dock_height, clamp_filter_dock_width,
@@ -197,12 +198,20 @@ pub struct LogAnalysisWorkspace {
     pub(crate) is_resizing_filter_dock: bool,
     pub(crate) filter_dock_drag_start_pos: Option<Point<Pixels>>,
     pub(crate) filter_dock_drag_start_size: f32,
+
+    // Auto-updater state
+    pub(crate) update_settings: updater::UpdateSettings,
+    pub(crate) update_settings_loaded: bool,
+    pub(crate) update_check_state: updater::UpdateCheckState,
+    pub(crate) update_check_gen: u64,
+    pub(crate) is_update_modal_open: bool,
+    pub(crate) update_notes_scroll_handle: ScrollHandle,
 }
 
 /// Priority action to execute when Escape key is pressed in the application,
 /// evaluated in strict reverse z-order:
 /// 1. Floating ephemeral menus (Overflow menu -> ADB device selector)
-/// 2. Modals and drawers (Filter modal -> Note modal -> Bookmark drawer -> Command palette)
+/// 2. Modals and drawers (Filter modal -> Note modal -> Update modal -> Bookmark drawer -> Command palette)
 /// 3. Collapsible bottom inspector (Line Detail)
 /// 4. Active log row selection (Primary / Secondary)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +220,7 @@ pub enum EscapeAction {
     CloseDeviceSelector,
     CloseFilterModal,
     CloseNoteModal,
+    CloseUpdateModal,
     CloseBookmarkDrawer,
     CloseCommandPalette,
     CloseLineDetail,
@@ -225,6 +235,7 @@ pub fn determine_escape_action(
     is_device_selector_open: bool,
     is_filter_modal_open: bool,
     is_note_modal_open: bool,
+    is_update_modal_open: bool,
     is_bookmark_drawer_open: bool,
     is_command_palette_open: bool,
     is_line_detail_open: bool,
@@ -238,6 +249,8 @@ pub fn determine_escape_action(
         EscapeAction::CloseFilterModal
     } else if is_note_modal_open {
         EscapeAction::CloseNoteModal
+    } else if is_update_modal_open {
+        EscapeAction::CloseUpdateModal
     } else if is_bookmark_drawer_open {
         EscapeAction::CloseBookmarkDrawer
     } else if is_command_palette_open {
@@ -256,6 +269,7 @@ pub fn determine_escape_action(
 pub(crate) enum ModalKeyLayer {
     FilterEditModal,
     NoteEditModal,
+    UpdateModal,
     CommandPalette,
     BookmarkDrawer,
     Workspace,
@@ -265,6 +279,7 @@ pub(crate) enum ModalKeyLayer {
 pub(crate) fn resolve_modal_key_layer(
     is_filter_modal_open: bool,
     is_note_modal_open: bool,
+    is_update_modal_open: bool,
     is_command_palette_open: bool,
     is_bookmark_drawer_open: bool,
 ) -> ModalKeyLayer {
@@ -272,6 +287,8 @@ pub(crate) fn resolve_modal_key_layer(
         ModalKeyLayer::FilterEditModal
     } else if is_note_modal_open {
         ModalKeyLayer::NoteEditModal
+    } else if is_update_modal_open {
+        ModalKeyLayer::UpdateModal
     } else if is_command_palette_open {
         ModalKeyLayer::CommandPalette
     } else if is_bookmark_drawer_open {
@@ -282,13 +299,14 @@ pub(crate) fn resolve_modal_key_layer(
 }
 
 /// Pure helper returning `true` when any blocking modal dialog (`FilterEditModal`,
-/// `NoteEditModal`, or `CommandPalette`) is open.
+/// `NoteEditModal`, `CommandPalette`, or `UpdateModal`) is open.
 pub(crate) fn is_blocking_modal_open(
     is_filter_modal_open: bool,
     is_note_modal_open: bool,
     is_command_palette_open: bool,
+    is_update_modal_open: bool,
 ) -> bool {
-    is_filter_modal_open || is_note_modal_open || is_command_palette_open
+    is_filter_modal_open || is_note_modal_open || is_command_palette_open || is_update_modal_open
 }
 
 impl LogAnalysisWorkspace {
@@ -549,9 +567,16 @@ impl LogAnalysisWorkspace {
             is_resizing_filter_dock: false,
             filter_dock_drag_start_pos: None,
             filter_dock_drag_start_size: 0.0,
+            update_settings: updater::UpdateSettings::default(),
+            update_settings_loaded: false,
+            update_check_state: updater::UpdateCheckState::Idle,
+            update_check_gen: 0,
+            is_update_modal_open: false,
+            update_notes_scroll_handle: ScrollHandle::new(),
         };
         workspace.load_recent_files_async(cx);
         workspace.load_pattern_history_async(cx);
+        workspace.load_update_settings_and_maybe_check_async(cx);
         workspace
     }
 
@@ -842,6 +867,7 @@ impl LogAnalysisWorkspace {
             self.adb.is_device_selector_open,
             self.filter_edit_modal.is_open,
             self.bookmarks.is_note_modal_open,
+            self.is_update_modal_open,
             self.bookmarks.is_drawer_open,
             self.is_command_palette_open,
             self.is_line_detail_open,
@@ -861,6 +887,10 @@ impl LogAnalysisWorkspace {
             }
             EscapeAction::CloseNoteModal => {
                 self.close_note_modal(cx);
+                true
+            }
+            EscapeAction::CloseUpdateModal => {
+                self.close_update_modal(cx);
                 true
             }
             EscapeAction::CloseBookmarkDrawer => {
@@ -890,13 +920,14 @@ impl LogAnalysisWorkspace {
         }
     }
 
-    /// Returns `true` when any blocking modal dialog (`filter_edit_modal`, `note_modal`, or
-    /// `command_palette`) is currently open.
+    /// Returns `true` when any blocking modal dialog (`filter_edit_modal`, `note_modal`,
+    /// `command_palette`, or `update_modal`) is currently open.
     pub(crate) fn has_blocking_modal_open(&self) -> bool {
         is_blocking_modal_open(
             self.filter_edit_modal.is_open,
             self.bookmarks.is_note_modal_open,
             self.is_command_palette_open,
+            self.is_update_modal_open,
         )
     }
 
@@ -981,6 +1012,7 @@ impl LogAnalysisWorkspace {
         match resolve_modal_key_layer(
             self.filter_edit_modal.is_open,
             self.bookmarks.is_note_modal_open,
+            self.is_update_modal_open,
             self.is_command_palette_open,
             self.bookmarks.is_drawer_open,
         ) {
@@ -995,6 +1027,7 @@ impl LogAnalysisWorkspace {
                     self.save_bookmark_note(cx);
                 }
             }
+            ModalKeyLayer::UpdateModal => {}
             ModalKeyLayer::CommandPalette => {}
             ModalKeyLayer::BookmarkDrawer => {
                 if key == "up" {
@@ -2304,43 +2337,51 @@ mod tests {
         use super::{resolve_modal_key_layer, ModalKeyLayer};
 
         assert_eq!(
-            resolve_modal_key_layer(false, false, false, false),
+            resolve_modal_key_layer(false, false, false, false, false),
             ModalKeyLayer::Workspace
         );
         assert_eq!(
-            resolve_modal_key_layer(false, false, false, true),
+            resolve_modal_key_layer(false, false, false, false, true),
             ModalKeyLayer::BookmarkDrawer
         );
         assert_eq!(
-            resolve_modal_key_layer(false, false, true, false),
+            resolve_modal_key_layer(false, false, false, true, false),
             ModalKeyLayer::CommandPalette
         );
         assert_eq!(
-            resolve_modal_key_layer(false, false, true, true),
+            resolve_modal_key_layer(false, false, false, true, true),
             ModalKeyLayer::CommandPalette
         );
         assert_eq!(
-            resolve_modal_key_layer(false, true, false, false),
+            resolve_modal_key_layer(false, false, true, false, false),
+            ModalKeyLayer::UpdateModal
+        );
+        assert_eq!(
+            resolve_modal_key_layer(false, false, true, true, true),
+            ModalKeyLayer::UpdateModal
+        );
+        assert_eq!(
+            resolve_modal_key_layer(false, true, false, false, false),
             ModalKeyLayer::NoteEditModal
         );
         assert_eq!(
-            resolve_modal_key_layer(false, true, false, true),
+            resolve_modal_key_layer(false, true, false, false, true),
             ModalKeyLayer::NoteEditModal
         );
         assert_eq!(
-            resolve_modal_key_layer(false, true, true, true),
+            resolve_modal_key_layer(false, true, true, true, true),
             ModalKeyLayer::NoteEditModal
         );
         assert_eq!(
-            resolve_modal_key_layer(true, false, false, false),
+            resolve_modal_key_layer(true, false, false, false, false),
             ModalKeyLayer::FilterEditModal
         );
         assert_eq!(
-            resolve_modal_key_layer(true, false, false, true),
+            resolve_modal_key_layer(true, false, false, false, true),
             ModalKeyLayer::FilterEditModal
         );
         assert_eq!(
-            resolve_modal_key_layer(true, true, true, true),
+            resolve_modal_key_layer(true, true, true, true, true),
             ModalKeyLayer::FilterEditModal
         );
     }
@@ -2352,12 +2393,19 @@ mod tests {
         for filter_open in [false, true] {
             for note_open in [false, true] {
                 for palette_open in [false, true] {
-                    let expected = filter_open || note_open || palette_open;
-                    assert_eq!(
-                        is_blocking_modal_open(filter_open, note_open, palette_open),
-                        expected,
-                        "mismatch for ({filter_open}, {note_open}, {palette_open})"
-                    );
+                    for update_open in [false, true] {
+                        let expected = filter_open || note_open || palette_open || update_open;
+                        assert_eq!(
+                            is_blocking_modal_open(
+                                filter_open,
+                                note_open,
+                                palette_open,
+                                update_open
+                            ),
+                            expected,
+                            "mismatch for ({filter_open}, {note_open}, {palette_open}, {update_open})"
+                        );
+                    }
                 }
             }
         }

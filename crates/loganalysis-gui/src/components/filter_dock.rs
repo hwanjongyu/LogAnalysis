@@ -381,6 +381,7 @@ fn has_blocking_filter_drag_overlay_flags(
     bookmark_drawer_open: bool,
     bookmark_note_modal_open: bool,
     adb_device_selector_open: bool,
+    update_modal_open: bool,
 ) -> bool {
     filter_edit_modal_open
         || overflow_menu_open
@@ -388,6 +389,7 @@ fn has_blocking_filter_drag_overlay_flags(
         || bookmark_drawer_open
         || bookmark_note_modal_open
         || adb_device_selector_open
+        || update_modal_open
 }
 
 #[inline]
@@ -399,6 +401,7 @@ fn has_blocking_filter_drag_overlay(workspace: &LogAnalysisWorkspace) -> bool {
         workspace.bookmarks.is_drawer_open,
         workspace.bookmarks.is_note_modal_open,
         workspace.adb.is_device_selector_open,
+        workspace.is_update_modal_open,
     )
 }
 
@@ -2076,9 +2079,9 @@ mod tests {
     fn test_has_blocking_filter_drag_overlay_and_can_accept_filter_drop() {
         // Every individual overlay flag blocks drag-and-drop; all false permits it
         assert!(!has_blocking_filter_drag_overlay_flags(
-            false, false, false, false, false, false
+            false, false, false, false, false, false, false
         ));
-        for i in 0..6 {
+        for i in 0..7 {
             assert!(has_blocking_filter_drag_overlay_flags(
                 i == 0,
                 i == 1,
@@ -2086,6 +2089,7 @@ mod tests {
                 i == 3,
                 i == 4,
                 i == 5,
+                i == 6,
             ));
         }
 

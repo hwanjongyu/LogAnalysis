@@ -16,6 +16,7 @@ impl LogAnalysisWorkspace {
         if self.filter_edit_modal.is_open {
             self.close_filter_modal(cx);
         }
+        self.is_update_modal_open = false;
         self.is_command_palette_open = true;
         self.palette_selected_index = 0;
         self.palette_input.update(cx, |input, cx| {
@@ -136,6 +137,8 @@ impl LogAnalysisWorkspace {
                 self.prompt_open_merged_files(window.as_deref(), cx)
             }
             PaletteCommandId::ToggleZenMode => self.toggle_zen_mode(cx),
+            PaletteCommandId::CheckForUpdates => self.open_update_modal_and_check(cx),
+            PaletteCommandId::ToggleAutoUpdateCheck => self.toggle_auto_check_updates(cx),
         }
     }
 }

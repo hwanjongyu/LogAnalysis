@@ -215,6 +215,7 @@ impl LogAnalysisWorkspace {
             self.bookmarks.drawer_selected_index = 0;
             self.is_command_palette_open = false;
             self.bookmarks.is_note_modal_open = false;
+            self.is_update_modal_open = false;
             self.input_focus = InputFocusTarget::None;
         }
         cx.notify();
@@ -287,6 +288,7 @@ impl LogAnalysisWorkspace {
             .and_then(|b| b.note.clone())
             .unwrap_or_default();
 
+        self.is_update_modal_open = false;
         self.note_input
             .update(cx, |input, cx| input.set_text(&existing, cx));
         self.bookmarks.note_editing_source_idx = Some(source_idx);

@@ -27,6 +27,7 @@ use modals::bookmark_drawer::render_bookmark_drawer;
 use modals::command_palette::render_command_palette;
 use modals::filter_edit_modal::render_filter_edit_modal;
 use modals::note_edit_modal::render_note_edit_modal;
+use modals::update_modal::render_update_modal;
 use types::{FilterPanelPosition, InputFocusTarget};
 pub use workspace::LogAnalysisWorkspace;
 
@@ -198,6 +199,10 @@ impl Render for LogAnalysisWorkspace {
             if !palette_input_focused {
                 window.focus(&self.palette_input.read(cx).focus_handle);
             }
+        } else if self.is_update_modal_open {
+            if !self.focus_handle.is_focused(window) {
+                window.focus(&self.focus_handle);
+            }
         } else if self.search_ctrl.is_visible && self.input_focus == InputFocusTarget::SearchBar {
             if !find_input_focused {
                 window.focus(&self.find_input.read(cx).focus_handle);
@@ -235,6 +240,7 @@ impl Render for LogAnalysisWorkspace {
         let palette_el = render_command_palette(self, cx);
         let bookmark_drawer_el = render_bookmark_drawer(self, cx);
         let note_modal_el = render_note_edit_modal(self, cx);
+        let update_modal_el = render_update_modal(self, cx);
         let resize_borders = render_window_resize_borders(is_csd, window, cx);
 
         let content_area =
@@ -543,7 +549,10 @@ impl Render for LogAnalysisWorkspace {
                 }),
             )
             .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
-                if this.filter_edit_modal.is_open || this.bookmarks.is_note_modal_open {
+                if this.filter_edit_modal.is_open
+                    || this.bookmarks.is_note_modal_open
+                    || this.is_update_modal_open
+                {
                     return;
                 }
                 this.toggle_command_palette(cx);
@@ -686,6 +695,18 @@ impl Render for LogAnalysisWorkspace {
                 }
                 this.refresh_adb_devices(cx);
             }))
+            .on_action(cx.listener(|this, _: &CheckForUpdates, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
+                this.open_update_modal_and_check(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleAutoUpdateCheck, _window, cx| {
+                if this.has_blocking_modal_open() {
+                    return;
+                }
+                this.toggle_auto_check_updates(cx);
+            }))
             .relative()
             .flex()
             .flex_col()
@@ -705,6 +726,7 @@ impl Render for LogAnalysisWorkspace {
             .children(palette_el)
             .children(bookmark_drawer_el)
             .children(note_modal_el)
+            .children(update_modal_el)
             .children(resize_borders)
     }
 }

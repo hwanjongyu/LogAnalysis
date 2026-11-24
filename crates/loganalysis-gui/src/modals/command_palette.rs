@@ -46,6 +46,8 @@ pub enum PaletteCommandId {
     ToggleColumnView,
     OpenMergedLogs,
     ToggleZenMode,
+    CheckForUpdates,
+    ToggleAutoUpdateCheck,
 }
 
 /// Maps a [`PaletteCommandId`] to its canonical GPUI action identifier string.
@@ -95,6 +97,8 @@ pub fn palette_command_action_name(id: PaletteCommandId) -> &'static str {
         PaletteCommandId::ToggleColumnView => gpui::Action::name(&ToggleColumnView),
         PaletteCommandId::OpenMergedLogs => gpui::Action::name(&OpenMergedLogs),
         PaletteCommandId::ToggleZenMode => gpui::Action::name(&ToggleZenMode),
+        PaletteCommandId::CheckForUpdates => gpui::Action::name(&CheckForUpdates),
+        PaletteCommandId::ToggleAutoUpdateCheck => gpui::Action::name(&ToggleAutoUpdateCheck),
     }
 }
 
@@ -354,6 +358,18 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
             category: "EXPORT",
             shortcut: None,
         },
+        PaletteCommand {
+            id: PaletteCommandId::CheckForUpdates,
+            title: "App: Check for Updates...",
+            category: "APP",
+            shortcut: None,
+        },
+        PaletteCommand {
+            id: PaletteCommandId::ToggleAutoUpdateCheck,
+            title: "App: Toggle Auto-Check for Updates",
+            category: "APP",
+            shortcut: None,
+        },
     ]
 }
 
@@ -401,6 +417,7 @@ pub fn render_command_palette(
                     "ADB" => rgba(0x10b98125),
                     "FILTER" => rgba(0xf59e0b25),
                     "VIEW" => rgba(0x8b5cf625),
+                    "APP" => theme.accent_muted,
                     _ => rgba(0x6b728025),
                 };
 
@@ -409,6 +426,7 @@ pub fn render_command_palette(
                     "ADB" => rgb(0x10b981),
                     "FILTER" => theme.warning_text,
                     "VIEW" => rgb(0x8b5cf6),
+                    "APP" => theme.accent_muted_fg,
                     _ => rgb(0x9ca3af),
                 };
 

@@ -3,6 +3,7 @@ use gpui::*;
 use loganalysis_core::LogSource;
 
 use crate::components::tooltip::render_tooltip;
+use crate::workspace::updater::{format_display_tag, UpdateCheckState};
 use crate::workspace::LogAnalysisWorkspace;
 
 pub fn render_status_bar(
@@ -352,9 +353,50 @@ pub fn render_status_bar(
                         }))
                         .child("?"),
                 )
-                // App Version Badge
+                // Update-Available Pill (hidden when version is skipped)
+                .when_some(
+                    match &workspace.update_check_state {
+                        UpdateCheckState::UpdateAvailable(info)
+                            if !workspace.update_settings.is_version_skipped(&info.tag_name) =>
+                        {
+                            Some(format_display_tag(&info.tag_name))
+                        }
+                        _ => None,
+                    },
+                    |parent, normalized_tag| {
+                        let tooltip_text = format!(
+                            "Update available ({normalized_tag}) — click to view release details"
+                        );
+                        parent.child(
+                            div()
+                                .id("btn-status-update-available")
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded_xs()
+                                .bg(theme.accent_muted)
+                                .border_1()
+                                .border_color(theme.accent)
+                                .text_size(px(10.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.accent_muted_fg)
+                                .hover(move |s| s.bg(theme.accent_hover).text_color(rgb(0xffffff)))
+                                .tooltip(render_tooltip(tooltip_text, None, theme))
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.open_update_modal(cx);
+                                }))
+                                .child(format!("↑ {normalized_tag}")),
+                        )
+                    },
+                )
+                // Interactive App Version Badge
                 .child(
                     div()
+                        .id("btn-status-version")
+                        .cursor_pointer()
                         .px_1p5()
                         .py_0p5()
                         .rounded_xs()
@@ -363,6 +405,15 @@ pub fn render_status_bar(
                         .border_color(theme.border)
                         .text_size(px(10.0))
                         .text_color(theme.text_muted)
+                        .hover(|s| s.bg(theme.btn_hover).text_color(theme.text_primary))
+                        .tooltip(render_tooltip(
+                            "Check for updates / view release status",
+                            None,
+                            theme,
+                        ))
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            this.open_update_modal(cx);
+                        }))
                         .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
                 ),
         )

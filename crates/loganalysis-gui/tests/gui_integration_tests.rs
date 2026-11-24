@@ -796,6 +796,7 @@ fn test_overflow_menu_state_and_escape_priority() {
     let mut device_open = false;
     let filter_modal_open = false;
     let note_modal_open = false;
+    let update_modal_open = false;
     let drawer_open = false;
     let palette_open = false;
     let mut line_detail_open = false;
@@ -808,6 +809,7 @@ fn test_overflow_menu_state_and_escape_priority() {
             device_open,
             filter_modal_open,
             note_modal_open,
+            update_modal_open,
             drawer_open,
             palette_open,
             line_detail_open,
@@ -849,6 +851,7 @@ fn test_overflow_menu_state_and_escape_priority() {
             true,
             true,
             true,
+            true,
             selection.selected_row.is_some()
         ),
         EscapeAction::CloseOverflowMenu
@@ -858,6 +861,7 @@ fn test_overflow_menu_state_and_escape_priority() {
     assert_eq!(
         determine_escape_action(
             false,
+            true,
             true,
             true,
             true,
@@ -878,6 +882,7 @@ fn test_overflow_menu_state_and_escape_priority() {
             false,
             false,
             false,
+            false,
             true,
             selection.selected_row.is_some()
         ),
@@ -889,6 +894,7 @@ fn test_overflow_menu_state_and_escape_priority() {
             false,
             false,
             true,
+            false,
             false,
             false,
             true,
@@ -904,6 +910,21 @@ fn test_overflow_menu_state_and_escape_priority() {
             false,
             true,
             false,
+            false,
+            true,
+            selection.selected_row.is_some()
+        ),
+        EscapeAction::CloseUpdateModal
+    );
+    assert_eq!(
+        determine_escape_action(
+            false,
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
             true,
             selection.selected_row.is_some()
         ),
@@ -911,6 +932,7 @@ fn test_overflow_menu_state_and_escape_priority() {
     );
     assert_eq!(
         determine_escape_action(
+            false,
             false,
             false,
             false,
@@ -933,6 +955,7 @@ fn test_overflow_menu_state_and_escape_priority() {
             false,
             false,
             false,
+            false,
             line_detail_open,
             selection.selected_row.is_some()
         ),
@@ -943,6 +966,7 @@ fn test_overflow_menu_state_and_escape_priority() {
     // Priority 4: Selection clearing when no popovers, modals, or Line Detail are open
     assert_eq!(
         determine_escape_action(
+            false,
             false,
             false,
             false,
@@ -963,6 +987,7 @@ fn test_overflow_menu_state_and_escape_priority() {
     // Once cleared, action becomes None
     assert_eq!(
         determine_escape_action(
+            false,
             false,
             false,
             false,
@@ -1155,8 +1180,8 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
     use gpui::Action;
     use loganalysis_core::fuzzy_match;
     use loganalysis_gui::actions::{
-        all_action_names, CloseFind, ResetZoom, ToggleLineDetail, ToggleZenMode,
-        REGISTERED_ACTION_COUNT,
+        all_action_names, CheckForUpdates, CloseFind, ResetZoom, ToggleAutoUpdateCheck,
+        ToggleLineDetail, ToggleZenMode, REGISTERED_ACTION_COUNT,
     };
     use loganalysis_gui::components::timeline_sparkline::should_render_timeline_ribbon;
     use loganalysis_gui::modals::command_palette::{
@@ -1168,9 +1193,9 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
         workspace_shows_status_bar, LogAnalysisWorkspace,
     };
 
-    // 1. Verification of compiled registered action contracts (48 actions including ToggleLineDetail, ClearPatternHistory)
+    // 1. Verification of compiled registered action contracts (50 actions including CheckForUpdates, ToggleAutoUpdateCheck)
     let action_names = all_action_names();
-    assert_eq!(REGISTERED_ACTION_COUNT, 48);
+    assert_eq!(REGISTERED_ACTION_COUNT, 50);
     assert_eq!(action_names.len(), REGISTERED_ACTION_COUNT);
     let unique_actions: HashSet<&str> = action_names.iter().copied().collect();
     assert_eq!(unique_actions.len(), REGISTERED_ACTION_COUNT);
@@ -1178,6 +1203,8 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
     assert!(action_names.contains(&Action::name(&ResetZoom)));
     assert!(action_names.contains(&Action::name(&CloseFind)));
     assert!(action_names.contains(&Action::name(&ToggleLineDetail)));
+    assert!(action_names.contains(&Action::name(&CheckForUpdates)));
+    assert!(action_names.contains(&Action::name(&ToggleAutoUpdateCheck)));
 
     // 2. Verification of workspace default state contracts & toggle/reset method existence
     let defaults = std::hint::black_box(WORKSPACE_DEFAULTS);
@@ -1264,6 +1291,33 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
         Action::name(&ResetZoom)
     );
 
+    let check_updates_cmd = commands
+        .iter()
+        .find(|c| c.id == PaletteCommandId::CheckForUpdates)
+        .expect("CheckForUpdates must exist");
+    assert_eq!(check_updates_cmd.category, "APP");
+    assert_eq!(check_updates_cmd.title, "App: Check for Updates...");
+    assert_eq!(
+        palette_command_action_name(PaletteCommandId::CheckForUpdates),
+        Action::name(&CheckForUpdates)
+    );
+    assert!(fuzzy_match("update", check_updates_cmd.title).is_some());
+
+    let toggle_auto_update_cmd = commands
+        .iter()
+        .find(|c| c.id == PaletteCommandId::ToggleAutoUpdateCheck)
+        .expect("ToggleAutoUpdateCheck must exist");
+    assert_eq!(toggle_auto_update_cmd.category, "APP");
+    assert_eq!(
+        toggle_auto_update_cmd.title,
+        "App: Toggle Auto-Check for Updates"
+    );
+    assert_eq!(
+        palette_command_action_name(PaletteCommandId::ToggleAutoUpdateCheck),
+        Action::name(&ToggleAutoUpdateCheck)
+    );
+    assert!(fuzzy_match("auto", toggle_auto_update_cmd.title).is_some());
+
     // Fuzzy search capability
     let zen_match = fuzzy_match("zen", zen_cmd.title);
     assert!(
@@ -1307,7 +1361,7 @@ fn test_milestone4_collapsible_timeline_and_zen_focus_mode() {
 
     // 7. Verification of Escape key dismissal fallback (None permits Zen mode exit in workspace::handle_escape)
     assert_eq!(
-        determine_escape_action(false, false, false, false, false, false, false, false),
+        determine_escape_action(false, false, false, false, false, false, false, false, false),
         EscapeAction::None
     );
 }
@@ -1491,6 +1545,7 @@ fn test_escape_priority_with_controllers() {
     let mut bookmarks = BookmarkController::new();
     bookmarks.toggle_drawer();
     bookmarks.open_note_modal(42);
+    let mut is_update_modal_open = true;
     let mut is_command_palette_open = true;
     let mut is_line_detail_open = true;
     let mut selection = SelectionModel::new();
@@ -1500,6 +1555,7 @@ fn test_escape_priority_with_controllers() {
                 adb_ctrl: &AdbController,
                 filter_modal: &FilterEditState,
                 bm_ctrl: &BookmarkController,
+                update_modal: bool,
                 palette: bool,
                 line_detail: bool,
                 sel: &SelectionModel| {
@@ -1510,6 +1566,7 @@ fn test_escape_priority_with_controllers() {
             adb_state.is_device_selector_open,
             filter_modal.is_open,
             bm_state.is_note_modal_open,
+            update_modal,
             bm_state.is_bookmark_drawer_open,
             palette,
             line_detail,
@@ -1517,13 +1574,14 @@ fn test_escape_priority_with_controllers() {
         )
     };
 
-    // Walk strictly down the 9-level Escape priority chain driven by controller snapshots
+    // Walk strictly down the 10-level Escape priority chain driven by controller snapshots
     assert_eq!(
         eval(
             is_overflow_menu_open,
             &adb,
             &filter_edit_modal,
             &bookmarks,
+            is_update_modal_open,
             is_command_palette_open,
             is_line_detail_open,
             &selection
@@ -1538,6 +1596,7 @@ fn test_escape_priority_with_controllers() {
             &adb,
             &filter_edit_modal,
             &bookmarks,
+            is_update_modal_open,
             is_command_palette_open,
             is_line_detail_open,
             &selection
@@ -1552,6 +1611,7 @@ fn test_escape_priority_with_controllers() {
             &adb,
             &filter_edit_modal,
             &bookmarks,
+            is_update_modal_open,
             is_command_palette_open,
             is_line_detail_open,
             &selection
@@ -1566,6 +1626,7 @@ fn test_escape_priority_with_controllers() {
             &adb,
             &filter_edit_modal,
             &bookmarks,
+            is_update_modal_open,
             is_command_palette_open,
             is_line_detail_open,
             &selection
@@ -1580,6 +1641,22 @@ fn test_escape_priority_with_controllers() {
             &adb,
             &filter_edit_modal,
             &bookmarks,
+            is_update_modal_open,
+            is_command_palette_open,
+            is_line_detail_open,
+            &selection
+        ),
+        EscapeAction::CloseUpdateModal
+    );
+    is_update_modal_open = false;
+
+    assert_eq!(
+        eval(
+            is_overflow_menu_open,
+            &adb,
+            &filter_edit_modal,
+            &bookmarks,
+            is_update_modal_open,
             is_command_palette_open,
             is_line_detail_open,
             &selection
@@ -1594,6 +1671,7 @@ fn test_escape_priority_with_controllers() {
             &adb,
             &filter_edit_modal,
             &bookmarks,
+            is_update_modal_open,
             is_command_palette_open,
             is_line_detail_open,
             &selection
@@ -1608,6 +1686,7 @@ fn test_escape_priority_with_controllers() {
             &adb,
             &filter_edit_modal,
             &bookmarks,
+            is_update_modal_open,
             is_command_palette_open,
             is_line_detail_open,
             &selection
@@ -1622,6 +1701,7 @@ fn test_escape_priority_with_controllers() {
             &adb,
             &filter_edit_modal,
             &bookmarks,
+            is_update_modal_open,
             is_command_palette_open,
             is_line_detail_open,
             &selection
@@ -1636,6 +1716,7 @@ fn test_escape_priority_with_controllers() {
             &adb,
             &filter_edit_modal,
             &bookmarks,
+            is_update_modal_open,
             is_command_palette_open,
             is_line_detail_open,
             &selection
